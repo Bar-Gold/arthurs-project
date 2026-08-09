@@ -1,36 +1,25 @@
-"""Queue screen: what the worker is doing, and what it will do next.
+"""Queue screen: what is queued, and what happened to it.
 
-Phase 2 renders the states with sample rows so the styling is real and
-reviewable. The worker that fills them in is Phase 5.
+Reads real rows from the database. Nothing executes them yet -- the worker that
+does is Phase 5 -- so everything here sits at "pending" until then.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 import customtkinter as ctk
+
+from fbposter.db.models import (
+    TASK_CANCELLED,
+    TASK_DONE,
+    TASK_FAILED,
+    TASK_HALTED,
+    TASK_PENDING,
+    TASK_RUNNING,
+    Task,
+)
 
 from .. import theme
 from .base import View, card, phase_note
-
-
-@dataclass(frozen=True)
-class QueueRow:
-    group: str
-    state: str
-    detail: str
-
-
-# The states the worker can put a group in, each shown once so the styling can
-# be checked against every case rather than only the happy path.
-SAMPLE_ROWS: tuple[QueueRow, ...] = (
-    QueueRow("gardening.tlv", "done", "Posted 14:02 — verified"),
-    QueueRow("secondhand-north", "done", "Posted 14:21 — verified"),
-    QueueRow("142857291043", "running", "Typing post text…"),
-    QueueRow("city-marketplace", "waiting", "Next in 18 min"),
-    QueueRow("home-and-garden", "pending", "Queued"),
-    QueueRow("bikes-for-sale", "failed", "Composer never appeared — batch halted"),
-)
 
 STATE_COLORS: dict[str, theme.Color] = {
     "done": theme.SUCCESS,
@@ -38,15 +27,34 @@ STATE_COLORS: dict[str, theme.Color] = {
     "waiting": theme.WARNING,
     "pending": theme.NEUTRAL,
     "failed": theme.DANGER,
+    "skipped": theme.NEUTRAL,
+    "cancelled": theme.NEUTRAL,
+    "halted": theme.DANGER,
 }
 
 STATE_LABELS = {
-    "done": "Done",
-    "running": "Running",
+    TASK_PENDING: "Pending",
+    TASK_RUNNING: "Running",
+    TASK_DONE: "Done",
+    TASK_FAILED: "Failed",
+    TASK_CANCELLED: "Cancelled",
+    TASK_HALTED: "Halted",
     "waiting": "Waiting",
-    "pending": "Pending",
-    "failed": "Failed",
+    "skipped": "Skipped",
 }
+
+
+def summarise(task: Task) -> str:
+    """One line describing when a batch runs and what it says."""
+    if task.scheduled_for is not None:
+        when = f"Scheduled {task.scheduled_for.astimezone():%Y-%m-%d %H:%M}"
+    else:
+        when = "Post now"
+
+    preview = " ".join(task.body.split())
+    if len(preview) > 60:
+        preview = preview[:57] + "…"
+    return f"{when} — {preview}"
 
 
 class QueueView(View):
@@ -54,83 +62,112 @@ class QueueView(View):
     subtitle = "One group at a time, with a randomised 10–25 minute gap between them."
 
     def build(self) -> None:
-        banner = card(self.body)
-        banner.pack(fill="x")
-
-        inner = ctk.CTkFrame(banner, fg_color="transparent")
-        inner.pack(fill="x", padx=theme.PAD_M, pady=theme.PAD_M)
-
-        ctk.CTkLabel(
-            inner,
-            text="Next group in 18:24",
-            font=ctk.CTkFont(
-                family=theme.FONT_FAMILY, size=theme.SIZE_HEADING, weight="bold"
-            ),
-            text_color=theme.TEXT,
-            anchor="w",
-        ).pack(side="left")
-
-        ctk.CTkButton(
-            inner,
-            text="Cancel batch",
-            width=110,
-            height=30,
-            fg_color="transparent",
-            border_width=1,
-            border_color=theme.DANGER,
-            text_color=theme.DANGER,
-            hover_color=theme.NAV_ACTIVE_BG,
-            corner_radius=theme.RADIUS,
-            command=lambda: self.notify("The worker arrives in Phase 5.", "info"),
-        ).pack(side="right")
-
         self.rows_frame = ctk.CTkScrollableFrame(self.body, fg_color="transparent")
         self.note = phase_note(
             self.body,
-            "Sample data — the queue is driven by the posting worker in Phase 5.",
+            "Queued batches wait here — the worker that posts them arrives in Phase 5.",
         )
 
-        # Fixed-height note first, so the expanding list cannot push it off-window.
         self.note.pack(side="bottom", anchor="w", pady=(theme.PAD_S, 0))
-        self.rows_frame.pack(side="top", fill="both", expand=True, pady=(theme.PAD_M, 0))
+        self.rows_frame.pack(side="top", fill="both", expand=True)
 
-        for row in SAMPLE_ROWS:
-            self._render_row(row)
+        self.refresh()
 
-    def _render_row(self, row: QueueRow) -> None:
-        color = STATE_COLORS.get(row.state, theme.NEUTRAL)
+    def on_show(self) -> None:
+        self.refresh()
 
+    def refresh(self) -> None:
+        for child in self.rows_frame.winfo_children():
+            child.destroy()
+
+        tasks = self.app.task_repo.list_recent()
+        if not tasks:
+            phase_note(
+                self.rows_frame,
+                "Nothing queued. Write a post on the Compose screen and add it to the queue.",
+            ).pack(anchor="w", pady=theme.PAD_S)
+            return
+
+        for task in tasks:
+            self._render_task(task)
+
+    def cancel_task(self, task: Task) -> None:
+        self.app.task_repo.cancel(task.id)
+        self.refresh()
+        self.notify("Batch cancelled.", "info")
+
+    # -- rendering ---------------------------------------------------------
+    def _render_task(self, task: Task) -> None:
         container = card(self.rows_frame)
-        container.pack(fill="x", pady=(0, theme.PAD_XS))
+        container.pack(fill="x", pady=(0, theme.PAD_S))
 
-        # height=1 matters: CTkFrame defaults to 200px, and a spine that asks
-        # for 200 drags the whole row to that height. fill="y" then stretches
-        # it to whatever the text column actually needs.
-        spine = ctk.CTkFrame(container, fg_color=color, width=4, height=1, corner_radius=2)
-        spine.pack(side="left", fill="y", padx=(theme.PAD_S, 0), pady=theme.PAD_S)
-
-        text_col = ctk.CTkFrame(container, fg_color="transparent")
-        text_col.pack(side="left", fill="x", expand=True, padx=theme.PAD_M, pady=theme.PAD_S)
+        header = ctk.CTkFrame(container, fg_color="transparent")
+        header.pack(fill="x", padx=theme.PAD_M, pady=(theme.PAD_M, theme.PAD_XS))
 
         ctk.CTkLabel(
-            text_col,
-            text=row.group,
+            header,
+            text=summarise(task),
             font=ctk.CTkFont(family=theme.FONT_FAMILY, size=theme.SIZE_BODY, weight="bold"),
             text_color=theme.TEXT,
             anchor="w",
-        ).pack(fill="x")
+            justify="left",
+        ).pack(side="left")
 
         ctk.CTkLabel(
-            text_col,
-            text=row.detail,
-            font=ctk.CTkFont(family=theme.FONT_FAMILY, size=theme.SIZE_SMALL),
-            text_color=theme.TEXT_MUTED,
-            anchor="w",
-        ).pack(fill="x")
-
-        ctk.CTkLabel(
-            container,
-            text=STATE_LABELS.get(row.state, row.state),
+            header,
+            text=STATE_LABELS.get(task.state, task.state),
             font=ctk.CTkFont(family=theme.FONT_FAMILY, size=theme.SIZE_SMALL, weight="bold"),
-            text_color=color,
-        ).pack(side="right", padx=theme.PAD_M)
+            text_color=STATE_COLORS.get(task.state, theme.NEUTRAL),
+        ).pack(side="right")
+
+        if task.state == TASK_PENDING:
+            ctk.CTkButton(
+                header,
+                text="Cancel",
+                width=70,
+                height=24,
+                fg_color="transparent",
+                border_width=1,
+                border_color=theme.DANGER,
+                text_color=theme.DANGER,
+                hover_color=theme.NAV_ACTIVE_BG,
+                font=ctk.CTkFont(family=theme.FONT_FAMILY, size=theme.SIZE_SMALL),
+                command=lambda t=task: self.cancel_task(t),
+            ).pack(side="right", padx=theme.PAD_S)
+
+        targets = self.app.task_repo.targets_for(task.id)
+        for index, target in enumerate(targets):
+            is_last = index == len(targets) - 1
+            row = ctk.CTkFrame(container, fg_color="transparent")
+            # Bottom padding comes from the last row rather than a spacer frame:
+            # an empty CTkFrame defaults to 200px wide and draws as a stray line.
+            row.pack(
+                fill="x",
+                padx=theme.PAD_M,
+                pady=(0, theme.PAD_M if is_last else theme.PAD_XS),
+            )
+
+            spine = ctk.CTkFrame(
+                row,
+                fg_color=STATE_COLORS.get(target.state, theme.NEUTRAL),
+                width=3,
+                # CTkFrame defaults to 200px tall; without this the row balloons.
+                height=1,
+                corner_radius=2,
+            )
+            spine.pack(side="left", fill="y", padx=(0, theme.PAD_S))
+
+            ctk.CTkLabel(
+                row,
+                text=target.group_identifier,
+                font=ctk.CTkFont(family=theme.FONT_FAMILY, size=theme.SIZE_SMALL),
+                text_color=theme.TEXT,
+                anchor="w",
+            ).pack(side="left")
+
+            ctk.CTkLabel(
+                row,
+                text=target.error or STATE_LABELS.get(target.state, target.state),
+                font=ctk.CTkFont(family=theme.FONT_FAMILY, size=theme.SIZE_SMALL),
+                text_color=STATE_COLORS.get(target.state, theme.NEUTRAL),
+            ).pack(side="right")

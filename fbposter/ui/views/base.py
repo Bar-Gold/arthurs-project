@@ -51,6 +51,13 @@ class View(ctk.CTkFrame):
     def build(self) -> None:  # pragma: no cover - overridden by every subclass
         raise NotImplementedError
 
+    def on_show(self) -> None:
+        """Called each time the view is navigated to.
+
+        Views read shared state from the database, so a group added on one
+        screen has to appear on another without restarting the app.
+        """
+
     def notify(self, message: str, level: str = "info") -> None:
         """Send a message to the app's toast area, if there is one."""
         if self.app is not None and hasattr(self.app, "toast"):

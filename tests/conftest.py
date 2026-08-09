@@ -16,13 +16,21 @@ import pytest
 
 
 @pytest.fixture(scope="session")
-def ui_app():
-    """The one and only Tk interpreter for the test session."""
+def ui_app(tmp_path_factory):
+    """The one and only Tk interpreter for the test session.
+
+    Backed by a throwaway database: the tests must never touch the user's real
+    C:\\FBAutomation\\fbposter.db.
+    """
     try:
+        from fbposter.db import Database
         from fbposter.ui.app import App
         from fbposter.ui.connection import ConnectionResult, ConnectionState
 
-        application = App(check_fn=lambda: ConnectionResult(ConnectionState.UNKNOWN, ""))
+        db = Database(tmp_path_factory.mktemp("uidb") / "ui.db")
+        application = App(
+            check_fn=lambda: ConnectionResult(ConnectionState.UNKNOWN, ""), db=db
+        )
     except Exception as exc:  # no display, no Tcl, no GUI tests
         pytest.skip(f"Tk is unavailable here: {exc}")
 

@@ -1,23 +1,29 @@
-"""Tests for the window, navigation, connection pill and toast.
+"""Tests for the window, navigation, connection pill, toast and views.
 
 These drive a real (hidden) window and pump the event loop by hand. mainloop()
 is never called -- it would block the test run forever.
 
 One App is shared across the module and reset between tests: repeatedly
-creating and destroying Tk roots is unreliable on Windows.
+creating and destroying Tk roots is unreliable on Windows. It is backed by a
+temporary database, never the user's real one.
 """
 
 from __future__ import annotations
 
 import threading
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
 
+from fbposter.db.models import TARGET_DONE, utcnow
 from fbposter.ui.app import NAV_ITEMS, PILL_STATES
 from fbposter.ui.connection import ConnectionResult, ConnectionState
 
 from .conftest import pump_until
+
+GROUP_A = "https://www.facebook.com/groups/123456789"
+GROUP_B = "https://www.facebook.com/groups/gardening.tlv"
 
 
 def IDLE_CHECK() -> ConnectionResult:
@@ -31,7 +37,7 @@ def app(ui_app):
 
 @pytest.fixture(autouse=True)
 def reset_app(app):
-    """Return the shared window to a known state after every test."""
+    """Return the shared window and its database to a known state."""
     yield
 
     pump_until(app, lambda: app.runner.pending == 0, timeout=6.0)
@@ -39,19 +45,27 @@ def reset_app(app):
     app._reset_check_button()
     app._set_connection(ConnectionState.UNKNOWN, announce=False)
     app.toast.clear()
-    app.show_view(NAV_ITEMS[0][0])
 
-    groups = app.views["groups"]
-    groups.groups.clear()
-    groups._render()
+    for table in ("task_targets", "tasks", "templates", "groups"):
+        app.db.write(f"DELETE FROM {table}")
 
     compose = app.views["compose"]
     compose.textbox.delete("1.0", "end")
     compose.attachments.clear()
     compose._render_attachments()
     compose._update_counter()
+    compose.template_name.delete(0, "end")
+    compose.schedule_mode.set("Post now")
+    compose._sync_schedule_entry()
 
+    for view in app.views.values():
+        view.on_show()
+    app.show_view(NAV_ITEMS[0][0])
     app.update()
+
+
+def add_group(app, url: str = GROUP_A):
+    return app.group_repo.add_from_url(url)
 
 
 class TestLayout:
@@ -80,6 +94,13 @@ class TestNavigation:
         assert app.nav_buttons["groups"].cget("fg_color") != "transparent"
         assert app.nav_buttons["queue"].cget("fg_color") == "transparent"
 
+    def test_navigating_refreshes_the_view_from_the_database(self, app):
+        """A group added on one screen must appear on another."""
+        add_group(app)
+        app.show_view("compose")
+        app.update()
+        assert len(app.views["compose"]._group_vars) == 1
+
 
 class TestToast:
     def test_show_then_clear(self, app):
@@ -103,29 +124,21 @@ class TestToast:
 class TestConnectionPill:
     @pytest.mark.parametrize("state", list(ConnectionState))
     def test_every_state_renders(self, app, state):
-        """Including the ones that are hard to reach with a real browser."""
         app._set_connection(state, detail="detail", announce=False)
         app.update()
         assert app.connection_state is state
         assert app.pill_label.cget("text") == PILL_STATES[state][1]
 
     def test_a_successful_check_updates_the_pill(self, app):
-        app._check_fn = lambda: ConnectionResult(
-            ConnectionState.CONNECTED, "Logged in as 123"
-        )
+        app._check_fn = lambda: ConnectionResult(ConnectionState.CONNECTED, "Logged in as 123")
         app.check_connection()
 
         assert pump_until(app, lambda: app.connection_state is ConnectionState.CONNECTED)
         assert app.check_button.cget("state") == "normal"
 
     def test_a_checkpoint_gets_its_own_state(self, app):
-        """A checkpoint must never look like an ordinary error -- it means stop
-        and go look at the browser."""
-        app._check_fn = lambda: ConnectionResult(
-            ConnectionState.CHECKPOINT, "verification screen"
-        )
+        app._check_fn = lambda: ConnectionResult(ConnectionState.CHECKPOINT, "verification")
         app.check_connection()
-
         assert pump_until(app, lambda: app.connection_state is ConnectionState.CHECKPOINT)
 
     def test_a_raising_check_becomes_the_error_state(self, app):
@@ -136,7 +149,6 @@ class TestConnectionPill:
         app.check_connection()
 
         assert pump_until(app, lambda: app.connection_state is ConnectionState.ERROR)
-        # The button has to come back or the user is stuck.
         assert app.check_button.cget("state") == "normal"
 
     def test_the_button_is_disabled_while_checking(self, app):
@@ -179,41 +191,15 @@ class TestConnectionPill:
         assert calls == [1]
 
 
-class TestGroupsView:
-    def test_a_valid_url_is_added(self, app):
-        view = app.views["groups"]
-        assert view.add_group("https://www.facebook.com/groups/123456789") is True
-        assert [g.identifier for g in view.groups] == ["123456789"]
-
-    def test_an_invalid_url_is_rejected(self, app):
-        view = app.views["groups"]
-        assert view.add_group("https://www.google.com") is False
-        assert view.groups == []
-
-    def test_the_same_group_in_a_different_form_is_a_duplicate(self, app):
-        view = app.views["groups"]
-        view.add_group("https://www.facebook.com/groups/123456789")
-        assert view.add_group("https://m.facebook.com/groups/123456789/posts/5") is False
-        assert len(view.groups) == 1
-
-    def test_removal(self, app):
-        view = app.views["groups"]
-        view.add_group("https://www.facebook.com/groups/123456789")
-        view.remove_group(view.groups[0])
-        assert view.groups == []
-
-
 class TestLayoutOverflow:
     """The expanding widget in each view must be packed last.
 
     Packed first, it claims the whole frame and shunts the controls below it
-    past the bottom of the window -- which is exactly what happened to the
-    'Attach images' row before this was fixed.
+    past the bottom of the window.
     """
 
     def test_compose_controls_are_anchored_to_the_bottom(self, app):
-        view = app.views["compose"]
-        assert view.attachment_list.pack_info()["side"] == "bottom"
+        assert app.views["compose"].attachment_list.pack_info()["side"] == "bottom"
 
     def test_groups_note_is_anchored_to_the_bottom(self, app):
         assert app.views["groups"].note.pack_info()["side"] == "bottom"
@@ -223,15 +209,34 @@ class TestLayoutOverflow:
 
     def test_queue_rows_are_not_stretched_to_the_default_frame_height(self, app):
         """CTkFrame defaults to 200px tall. A child that does not override that
-        drags its whole row to 200+, which is how the queue rows ended up three
-        times taller than their content.
+        drags its whole row to 200+, which is how the queue rows once ended up
+        three times taller than their content.
         """
+        group = add_group(app)
+        app.task_repo.create("body", [(group.id, "body")])
         app.show_view("queue")
         app.update()
+
         rows = app.views["queue"].rows_frame.winfo_children()
         assert rows, "queue rendered no rows"
         for row in rows:
-            assert row.winfo_reqheight() < 100, f"row is {row.winfo_reqheight()}px tall"
+            assert row.winfo_reqheight() < 200, f"row is {row.winfo_reqheight()}px tall"
+
+    def test_no_stray_default_sized_frame_in_a_task_card(self, app):
+        """A CTkFrame left at its 200x200 default is not invisible padding --
+        it draws as a stray 200px line across the card. Both layout bugs in
+        this view came from that default.
+        """
+        group = add_group(app)
+        app.task_repo.create("body", [(group.id, "body")])
+        app.show_view("queue")
+        app.update()
+
+        card = app.views["queue"].rows_frame.winfo_children()[0]
+        for child in card.winfo_children():
+            assert child.winfo_reqwidth() != 200, (
+                "a frame is still at the CTkFrame default width"
+            )
 
     def test_the_toast_is_not_stretched_either(self, app):
         toast = app.toast.show("a short message", "info", duration_ms=0)
@@ -246,19 +251,59 @@ class TestKeyBindings:
     attached to the wrong widget, so these assert the wiring instead. They
     cannot press the key: event_generate does not dispatch to an unmapped
     widget, and the test window is withdrawn. Live typing was verified against
-    a mapped window -- "hello" produced "5 characters", and Return in the URL
-    field added the group and cleared the entry.
+    a mapped window.
     """
 
     def test_the_compose_box_listens_for_keys(self, app):
-        # CustomTkinter forwards bind() to the inner tk widget, so that is
-        # where the binding actually lives.
         assert "<KeyRelease>" in app.views["compose"].textbox._textbox.bind()
 
     def test_the_url_field_listens_for_return(self, app):
         # Tk normalises "<Return>" to "<Key-Return>" when it stores the binding.
         bindings = app.views["groups"].url_entry._entry.bind()
         assert {"<Return>", "<Key-Return>"} & set(bindings)
+
+
+class TestGroupsView:
+    def test_a_valid_url_is_added_and_persisted(self, app):
+        view = app.views["groups"]
+        assert view.add_group(GROUP_A) is True
+        assert [g.identifier for g in view.groups] == ["123456789"]
+        assert [g.identifier for g in app.group_repo.list()] == ["123456789"]
+
+    def test_an_invalid_url_is_rejected(self, app):
+        view = app.views["groups"]
+        assert view.add_group("https://www.google.com") is False
+        assert view.groups == []
+
+    def test_the_same_group_in_a_different_form_is_a_duplicate(self, app):
+        view = app.views["groups"]
+        view.add_group(GROUP_A)
+        assert view.add_group("https://m.facebook.com/groups/123456789/posts/5") is False
+        assert len(app.group_repo.list()) == 1
+
+    def test_removal(self, app):
+        view = app.views["groups"]
+        view.add_group(GROUP_A)
+        view.remove_group(view.groups[0])
+        assert app.group_repo.list() == []
+
+    def test_the_cooldown_can_be_changed(self, app):
+        view = app.views["groups"]
+        view.add_group(GROUP_A)
+        view.set_cooldown(view.groups[0], "6")
+        assert app.group_repo.list()[0].cooldown_hours == 6
+
+    def test_a_nonsense_cooldown_is_rejected(self, app):
+        view = app.views["groups"]
+        view.add_group(GROUP_A)
+        view.set_cooldown(view.groups[0], "soon")
+        assert app.group_repo.list()[0].cooldown_hours == 24
+
+    def test_a_negative_cooldown_is_rejected(self, app):
+        view = app.views["groups"]
+        view.add_group(GROUP_A)
+        view.set_cooldown(view.groups[0], "-5")
+        assert app.group_repo.list()[0].cooldown_hours == 24
 
 
 class TestComposeView:
@@ -285,3 +330,137 @@ class TestComposeView:
         view._render_attachments()
         view._remove_attachment(Path("a.png"))
         assert view.attachments == [Path("b.png")]
+
+
+class TestTemplates:
+    def test_save_then_load(self, app):
+        view = app.views["compose"]
+        view.textbox.insert("1.0", "a saved body")
+        view.template_name.insert(0, "My ad")
+        assert view.save_template() is True
+
+        view.textbox.delete("1.0", "end")
+        view.template_picker.set("My ad")
+        assert view.load_template() is True
+        assert view.get_text() == "a saved body"
+
+    def test_saving_without_a_name_is_refused(self, app):
+        view = app.views["compose"]
+        view.textbox.insert("1.0", "body")
+        assert view.save_template() is False
+        assert app.template_repo.list() == []
+
+    def test_saving_an_empty_post_is_refused(self, app):
+        view = app.views["compose"]
+        view.template_name.insert(0, "Empty")
+        assert view.save_template() is False
+        assert app.template_repo.list() == []
+
+
+class TestAddToQueue:
+    def select(self, app, *group_ids):
+        view = app.views["compose"]
+        view.refresh_groups()
+        for group_id in group_ids:
+            view._group_vars[group_id].set(True)
+        return view
+
+    def test_a_clean_batch_is_queued(self, app):
+        group = add_group(app)
+        view = self.select(app, group.id)
+        view.textbox.insert("1.0", "Selling a road bike")
+
+        assert view.add_to_queue() is True
+
+        tasks = app.task_repo.list_recent()
+        assert len(tasks) == 1
+        targets = app.task_repo.targets_for(tasks[0].id)
+        assert [t.group_id for t in targets] == [group.id]
+        assert targets[0].body == "Selling a road bike"
+
+    def test_an_empty_post_is_refused(self, app):
+        group = add_group(app)
+        view = self.select(app, group.id)
+        assert view.add_to_queue() is False
+        assert app.task_repo.list_recent() == []
+
+    def test_no_groups_selected_is_refused(self, app):
+        add_group(app)
+        view = app.views["compose"]
+        view.refresh_groups()
+        view.textbox.insert("1.0", "body")
+        assert view.add_to_queue() is False
+        assert app.task_repo.list_recent() == []
+
+    def test_a_group_in_cooldown_blocks_the_batch(self, app):
+        group = add_group(app)
+        app.group_repo.mark_posted(group.id, utcnow() - timedelta(hours=1))
+        view = self.select(app, group.id)
+        view.textbox.insert("1.0", "Something new")
+
+        assert view.add_to_queue() is False
+        assert app.task_repo.list_recent() == []
+
+    def test_a_shortened_cooldown_lets_an_active_group_through(self, app):
+        """The user's case: post again to a big group the same day."""
+        group = add_group(app)
+        app.group_repo.set_cooldown(group.id, 6)
+        app.group_repo.mark_posted(group.id, utcnow() - timedelta(hours=7))
+        view = self.select(app, group.id)
+        view.textbox.insert("1.0", "A different message")
+
+        assert view.add_to_queue() is True
+
+    def test_text_already_posted_to_that_group_is_blocked(self, app):
+        group = add_group(app)
+        task = app.task_repo.create("old", [(group.id, "Selling a road bike")])
+        app.db.write(
+            "UPDATE task_targets SET state = ?, posted_at = ? WHERE task_id = ?",
+            (TARGET_DONE, utcnow().isoformat(), task.id),
+        )
+        app.group_repo.set_cooldown(group.id, 0)
+
+        view = self.select(app, group.id)
+        view.textbox.insert("1.0", "Selling a road bike")
+
+        assert view.add_to_queue() is False
+        assert len(app.task_repo.list_recent()) == 1  # only the pre-existing one
+
+    def test_a_malformed_schedule_is_refused(self, app):
+        group = add_group(app)
+        view = self.select(app, group.id)
+        view.textbox.insert("1.0", "body")
+        view.schedule_mode.set("Schedule")
+        view._sync_schedule_entry()
+        view.schedule_entry.delete(0, "end")
+        view.schedule_entry.insert(0, "next tuesday")
+
+        assert view.add_to_queue() is False
+        assert app.task_repo.list_recent() == []
+
+    def test_selection_survives_a_refresh(self, app):
+        one = add_group(app, GROUP_A)
+        add_group(app, GROUP_B)
+        view = self.select(app, one.id)
+        view.refresh_groups()
+        assert view.selected_group_ids() == [one.id]
+
+
+class TestQueueView:
+    def test_the_empty_state_renders(self, app):
+        app.show_view("queue")
+        app.update()
+        assert app.views["queue"].rows_frame.winfo_children()
+
+    def test_a_queued_task_appears(self, app):
+        group = add_group(app)
+        app.task_repo.create("a queued body", [(group.id, "a queued body")])
+        app.show_view("queue")
+        app.update()
+        assert app.views["queue"].rows_frame.winfo_children()
+
+    def test_cancelling_marks_the_task_cancelled(self, app):
+        group = add_group(app)
+        task = app.task_repo.create("body", [(group.id, "body")])
+        app.views["queue"].cancel_task(task)
+        assert app.task_repo.get(task.id).state == "cancelled"

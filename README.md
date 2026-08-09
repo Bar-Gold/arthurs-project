@@ -103,14 +103,24 @@ The delay ranges in §7 are a conservative engineering judgement, not a Meta-pub
 
 DOM selectors are a separate ongoing risk: Facebook's class names are obfuscated and change frequently. Selectors must be role- and `aria-label`-based rather than class-based, and they depend on the account's UI language, which must be fixed and known before the automation layer is written.
 
-## 9. Data Model (SQLite, initial sketch)
-*   `groups` — id, name, url, last_posted_at, notes
-*   `tags` — id, name
-*   `group_tags` — group_id, tag_id
-*   `templates` — id, name, body, media_paths, created_at
-*   `tasks` — id, body, media_paths, schedule_type (now / once / recurring), run_at, cron_spec, status
-*   `task_targets` — task_id, group_id, status (pending / posted / failed / skipped), attempted_at, error
-*   `run_log` — append-only history for auditing what actually went out and when
+## 9. Data Model (SQLite, as built)
+Stored at `C:\FBAutomation\fbposter.db`, beside the Chrome profile. Migrations are keyed on `PRAGMA user_version`, so the schema can change without wiping stored groups.
+
+*   `groups` — identifier (UNIQUE), url, name, **cooldown_hours**, last_posted_at, notes, archived, created_at
+*   `templates` — name (UNIQUE), body, media_paths, created_at, updated_at
+*   `tasks` — body, media_paths, scheduled_for (NULL = post now), state, created_at / started_at / finished_at, error
+*   `task_targets` — task_id, group_id, position, **body**, state, attempted_at, posted_at, post_url, error, **`UNIQUE(task_id, group_id)`**
+*   `settings` — key/value: daily cap, posting window, default cooldown
+
+Two columns carry most of the safety weight. **`UNIQUE(task_id, group_id)`** means the database itself refuses to let one batch target the same group twice — a duplicate post is the worst failure mode here, so it is not left to application code. **`task_targets.body`** is per-group rather than per-batch, which is what makes content variation expressible at all.
+
+`tags`, `group_tags` and `run_log` from the original sketch were cut (see §10).
+
+### Safety settings (confirmed)
+*   **Daily cap: 25** individual group posts — just above the realistic ceiling of 3 posts x 7 groups, so it catches a runaway rather than normal use.
+*   **Posting window: 08:00–23:00.**
+*   **Cooldown: per-group**, default 24h, editable on the Groups screen. Large, active groups can be lowered to a few hours. New groups start conservative because a too-tight default costs a warning while a too-loose one costs the account.
+*   **Identical text is never sent to the same group twice**, regardless of cooldown. This is the rule that does the real work: posting more often to an active group is only safe while the wording changes.
 
 ## 10. Scope Control
 

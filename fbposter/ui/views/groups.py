@@ -2,12 +2,22 @@
 
 from __future__ import annotations
 
+from datetime import timezone
+
 import customtkinter as ctk
 
-from fbposter.groups import GroupRef, parse_group_url
+from fbposter.db.models import Group
+from fbposter.errors import DuplicateGroup, InvalidGroupURL
 
 from .. import theme
 from .base import View, card, phase_note
+
+
+def format_last_posted(group: Group) -> str:
+    if group.last_posted_at is None:
+        return "Last posted: never"
+    local = group.last_posted_at.astimezone()
+    return f"Last posted: {local:%Y-%m-%d %H:%M}"
 
 
 class GroupsView(View):
@@ -15,7 +25,7 @@ class GroupsView(View):
     subtitle = "Groups you can post to. Admin groups do not belong here — Facebook schedules those natively."
 
     def build(self) -> None:
-        self.groups: list[GroupRef] = []
+        self.groups: list[Group] = []
 
         entry_row = ctk.CTkFrame(self.body, fg_color="transparent")
         entry_row.pack(fill="x")
@@ -49,40 +59,65 @@ class GroupsView(View):
             self.body, fg_color="transparent", label_text=""
         )
         self.note = phase_note(
-            self.body, "Groups are held in memory for now; SQLite storage arrives in Phase 3."
+            self.body,
+            "Cooldown is the minimum gap before this group can be posted to again. "
+            "Lower it for large, active groups — but the same text is never sent twice.",
         )
 
-        # Fixed-height note first, so the expanding list cannot push it off-window.
         self.note.pack(side="bottom", anchor="w", pady=(theme.PAD_S, 0))
         self.list_frame.pack(side="top", fill="both", expand=True, pady=(theme.PAD_M, 0))
 
-        self._render()
+        self.refresh()
+
+    def on_show(self) -> None:
+        self.refresh()
 
     # -- data --------------------------------------------------------------
-    def add_group(self, raw: str | None = None) -> bool:
-        """Validate and add a group URL. Returns True if it was added."""
-        text = raw if raw is not None else self.url_entry.get()
-        ref = parse_group_url(text)
+    @property
+    def repo(self):
+        return self.app.group_repo
 
-        if ref is None:
+    def refresh(self) -> None:
+        self.groups = self.repo.list()
+        self._render()
+
+    def add_group(self, raw: str | None = None) -> bool:
+        """Validate and store a group URL. Returns True if it was added."""
+        text = raw if raw is not None else self.url_entry.get()
+        try:
+            group = self.repo.add_from_url(text)
+        except InvalidGroupURL:
             self.notify("That is not a Facebook group URL.", "error")
             return False
-
-        if any(existing.identifier == ref.identifier for existing in self.groups):
-            # Parsing to an identifier first is what makes this work even when
-            # the same group is pasted in two different URL forms.
+        except DuplicateGroup:
             self.notify("That group is already in the list.", "warning")
             return False
 
-        self.groups.append(ref)
         self.url_entry.delete(0, "end")
-        self._render()
-        self.notify(f"Added {ref.identifier}.", "success")
+        self.refresh()
+        self.notify(f"Added {group.identifier}.", "success")
         return True
 
-    def remove_group(self, ref: GroupRef) -> None:
-        self.groups = [g for g in self.groups if g.identifier != ref.identifier]
-        self._render()
+    def remove_group(self, group: Group) -> None:
+        self.repo.remove(group.id)
+        self.refresh()
+
+    def set_cooldown(self, group: Group, raw: str) -> None:
+        try:
+            hours = int(raw.strip())
+        except (TypeError, ValueError):
+            self.notify("Cooldown must be a whole number of hours.", "error")
+            self.refresh()
+            return
+
+        if hours < 0:
+            self.notify("Cooldown cannot be negative.", "error")
+            self.refresh()
+            return
+
+        self.repo.set_cooldown(group.id, hours)
+        self.refresh()
+        self.notify(f"{group.display_name}: cooldown set to {hours}h.", "success")
 
     # -- rendering ---------------------------------------------------------
     def _render(self) -> None:
@@ -95,39 +130,74 @@ class GroupsView(View):
             )
             return
 
-        for ref in self.groups:
-            row = card(self.list_frame)
-            row.pack(fill="x", pady=(0, theme.PAD_XS))
+        for group in self.groups:
+            self._render_row(group)
 
-            text_col = ctk.CTkFrame(row, fg_color="transparent")
-            text_col.pack(side="left", fill="x", expand=True, padx=theme.PAD_M, pady=theme.PAD_S)
+    def _render_row(self, group: Group) -> None:
+        row = card(self.list_frame)
+        row.pack(fill="x", pady=(0, theme.PAD_XS))
 
-            ctk.CTkLabel(
-                text_col,
-                text=ref.identifier,
-                font=ctk.CTkFont(
-                    family=theme.FONT_FAMILY, size=theme.SIZE_BODY, weight="bold"
-                ),
-                text_color=theme.TEXT,
-                anchor="w",
-            ).pack(fill="x")
+        text_col = ctk.CTkFrame(row, fg_color="transparent")
+        text_col.pack(side="left", fill="x", expand=True, padx=theme.PAD_M, pady=theme.PAD_S)
 
-            ctk.CTkLabel(
-                text_col,
-                text="Last posted: never",
-                font=ctk.CTkFont(family=theme.FONT_FAMILY, size=theme.SIZE_SMALL),
-                text_color=theme.TEXT_MUTED,
-                anchor="w",
-            ).pack(fill="x")
+        ctk.CTkLabel(
+            text_col,
+            text=group.display_name,
+            font=ctk.CTkFont(family=theme.FONT_FAMILY, size=theme.SIZE_BODY, weight="bold"),
+            text_color=theme.TEXT,
+            anchor="w",
+        ).pack(fill="x")
 
-            ctk.CTkButton(
-                row,
-                text="Remove",
-                width=70,
-                height=26,
-                fg_color="transparent",
-                text_color=theme.DANGER,
-                hover_color=theme.NAV_ACTIVE_BG,
-                font=ctk.CTkFont(family=theme.FONT_FAMILY, size=theme.SIZE_SMALL),
-                command=lambda r=ref: self.remove_group(r),
-            ).pack(side="right", padx=theme.PAD_M)
+        ctk.CTkLabel(
+            text_col,
+            text=format_last_posted(group),
+            font=ctk.CTkFont(family=theme.FONT_FAMILY, size=theme.SIZE_SMALL),
+            text_color=theme.TEXT_MUTED,
+            anchor="w",
+        ).pack(fill="x")
+
+        ctk.CTkButton(
+            row,
+            text="Remove",
+            width=70,
+            height=26,
+            fg_color="transparent",
+            text_color=theme.DANGER,
+            hover_color=theme.NAV_ACTIVE_BG,
+            font=ctk.CTkFont(family=theme.FONT_FAMILY, size=theme.SIZE_SMALL),
+            command=lambda g=group: self.remove_group(g),
+        ).pack(side="right", padx=(0, theme.PAD_M))
+
+        cooldown_box = ctk.CTkFrame(row, fg_color="transparent")
+        cooldown_box.pack(side="right", padx=theme.PAD_S)
+
+        ctk.CTkLabel(
+            cooldown_box,
+            text="cooldown h",
+            font=ctk.CTkFont(family=theme.FONT_FAMILY, size=theme.SIZE_SMALL),
+            text_color=theme.TEXT_MUTED,
+        ).pack(side="left", padx=(0, theme.PAD_XS))
+
+        entry = ctk.CTkEntry(
+            cooldown_box,
+            width=52,
+            height=26,
+            justify="center",
+            border_color=theme.BORDER,
+            fg_color=theme.SURFACE,
+            text_color=theme.TEXT,
+            font=ctk.CTkFont(family=theme.FONT_FAMILY, size=theme.SIZE_SMALL),
+        )
+        entry.insert(0, str(group.cooldown_hours))
+        entry.pack(side="left")
+        entry.bind("<Return>", lambda _e, g=group, w=entry: self.set_cooldown(g, w.get()))
+        entry.bind("<FocusOut>", lambda _e, g=group, w=entry: self._maybe_save(g, w.get()))
+
+    def _maybe_save(self, group: Group, raw: str) -> None:
+        """Only write on focus-out if the value actually changed.
+
+        Re-rendering on every focus change would destroy the widget the user is
+        tabbing through.
+        """
+        if raw.strip() != str(group.cooldown_hours):
+            self.set_cooldown(group, raw)

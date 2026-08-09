@@ -36,6 +36,19 @@ PROBE_TIMEOUT_S = 1.0
 NAV_TIMEOUT_MS = 30_000
 
 
+DB_FILENAME = "fbposter.db"
+
+
+def database_path() -> Path:
+    """The SQLite file, kept beside the Chrome profile.
+
+    User data (groups, templates, post history) lives with the other user data
+    rather than inside the source tree, so the repo stays clean and the
+    database survives moving or reinstalling the app.
+    """
+    return resolve_profile_dir().parent / DB_FILENAME
+
+
 def cdp_endpoint(port: int = DEBUG_PORT) -> str:
     """The HTTP endpoint Playwright's connect_over_cdp accepts."""
     return f"http://{CDP_HOST}:{port}"

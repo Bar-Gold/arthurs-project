@@ -9,6 +9,9 @@ from __future__ import annotations
 
 import customtkinter as ctk
 
+from .. import config
+from ..db import Database
+from ..db.repo import GroupRepo, SettingsRepo, TaskRepo, TemplateRepo
 from . import theme
 from .background import BackgroundRunner
 from .connection import ConnectionResult, ConnectionState, check_connection
@@ -39,10 +42,16 @@ PILL_STATES: dict[ConnectionState, tuple[theme.Color, str, str]] = {
 
 
 class App(ctk.CTk):
-    def __init__(self, check_fn=check_connection) -> None:
+    def __init__(self, check_fn=check_connection, db: Database | None = None) -> None:
         super().__init__()
-        # Injectable so tests can drive every pill state without a browser.
+        # Both injectable so tests can drive every pill state without a browser
+        # and run against a throwaway database instead of the user's real one.
         self._check_fn = check_fn
+        self.db = db if db is not None else Database(config.database_path())
+        self.group_repo = GroupRepo(self.db)
+        self.template_repo = TemplateRepo(self.db)
+        self.task_repo = TaskRepo(self.db)
+        self.settings_repo = SettingsRepo(self.db)
 
         self.title(APP_TITLE)
         self.geometry(theme.WINDOW_DEFAULT)
@@ -171,6 +180,9 @@ class App(ctk.CTk):
         view = self.views[key]
         view.tkraise()
         self.current_view = key
+        # Views share state through the database, so each one re-reads on
+        # arrival rather than trusting a cache from when it was built.
+        view.on_show()
 
         for nav_key, button in self.nav_buttons.items():
             active = nav_key == key
@@ -235,6 +247,10 @@ class App(ctk.CTk):
         toast = getattr(self, "toast", None)
         if toast is not None:
             toast.clear()
+
+        db = getattr(self, "db", None)
+        if db is not None:
+            db.close()
 
         super().destroy()
 

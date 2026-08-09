@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository Status
 
-**Phases 1 and 2 are done.** Phase 1: Chrome debug-profile launcher, CDP attach, session verification. Phase 2: CustomTkinter UI shell — sidebar navigation, Compose/Groups/Queue screens, and a live connection pill wired to the Phase 1 code. Phases 3-5 (SQLite, automation engine, scheduler) are not started; the UI holds no persistent state yet. `README.md` holds the full spec and roadmap.
+**Phases 1-3 are done.** Phase 1: Chrome debug-profile launcher, CDP attach, session verification. Phase 2: CustomTkinter UI shell with a live connection pill. Phase 3: SQLite persistence — groups, templates, tasks and the safety guards, all wired into the views. Phases 4-5 (automation engine, scheduler/worker) are not started, so **nothing posts to Facebook yet**; queued batches sit at `pending`. `README.md` holds the full spec and roadmap.
 
 ## What This Is
 
@@ -54,12 +54,22 @@ Modules that exist so far: `fbposter/config.py` (paths, port, flags), `fbposter/
 
 UI modules: `fbposter/ui/app.py` (window, sidebar, connection pill), `views/` (compose, groups, queue), `theme.py`, `toast.py`, `background.py`, `connection.py`. Plus `fbposter/groups.py` for group-URL parsing.
 
+Storage: `fbposter/db/` — `connection.py` (per-thread connections), `schema.py` (migrations), `models.py`, `repo.py`. Safety rules: `fbposter/guards.py`.
+
+### Database rules
+
+- **`Database.transaction()`, never `with connection:`.** Connections use `isolation_level=None` (autocommit), so `with connection:` commits a transaction that was never begun and a later failure leaves earlier statements written. This already produced an orphan task row once; `tests/test_db.py` guards it.
+- **One connection per thread.** The UI thread and the Phase 5 worker both use the database; `Database.connection` is thread-local and WAL is on so a read never blocks on a write.
+- **Safety decisions live in `guards.py` as pure functions**, never in a repository or a view. Repos supply the counts and timestamps; guards judge them. That keeps the whole safety table testable without a database or a browser.
+- The `UNIQUE(task_id, group_id)` index is load-bearing — do not drop it to "fix" an insert error.
+- The App takes an injectable `db=`; tests pass a temporary database and must never touch `C:\FBAutomation\fbposter.db`.
+
 ### UI rules that are easy to break
 
 - **Only the main thread touches widgets.** Blocking work goes through `BackgroundRunner` in `fbposter/ui/background.py` — worker thread → `queue.Queue` → `widget.after()` pump. The Phase 5 posting worker reports progress the same way.
 - **No modal dialogs for status, ever** — use `app.toast`. The single permitted OS dialog is the media file picker, because the user asked for it and it cannot fire during a batch.
 - **Colours are `(light, dark)` tuples in `theme.py`.** Never hardcode a hex value in a widget; a colour defined for only one mode is invisible in the other.
-- **`CTkFrame` defaults to 200x200.** Any frame used as a thin divider or spine must pass an explicit `height`, or it silently stretches its whole row. This produced 216px queue rows once already; `tests/test_ui.py` guards it.
+- **`CTkFrame` defaults to 200x200.** Any frame used as a thin divider, spine or spacer must pass explicit dimensions, or it silently stretches its row (216px queue rows) or draws as a stray 200px line (an "invisible" spacer frame). Both bugs happened; `tests/test_ui.py` guards both. Use `pady` for spacing rather than an empty frame.
 - **The expanding widget in a view must be packed last**, after the fixed controls are anchored with `side="bottom"`. Otherwise it claims the frame and pushes them off-window.
 - GUI tests share **one** Tk interpreter for the whole session (`ui_app` in `tests/conftest.py`). Creating a second root, or recreating one after a destroy, fails intermittently on Windows with "Can't find a usable init.tcl". Never call `mainloop()` in a test — pump with `pump_until`.
 
