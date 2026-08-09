@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository Status
 
-**Phase 1 is done** — Chrome debug-profile launcher, CDP attach, and session verification, with a CLI and unit tests. Phases 2-5 (UI, SQLite, automation engine, scheduler) are not started. `README.md` holds the full spec and roadmap.
+**Phases 1 and 2 are done.** Phase 1: Chrome debug-profile launcher, CDP attach, session verification. Phase 2: CustomTkinter UI shell — sidebar navigation, Compose/Groups/Queue screens, and a live connection pill wired to the Phase 1 code. Phases 3-5 (SQLite, automation engine, scheduler) are not started; the UI holds no persistent state yet. `README.md` holds the full spec and roadmap.
 
 ## What This Is
 
@@ -20,6 +20,7 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m pytest tests/test_session.py::TestClassifyUrl -q  # one class
 .\.venv\Scripts\python.exe -m pytest tests/test_session.py -q -k checkpoint     # one test
 
+.\.venv\Scripts\python.exe main.py gui      # open the desktop app
 .\.venv\Scripts\python.exe main.py setup    # Chrome on-screen, for the one-time manual login
 .\.venv\Scripts\python.exe main.py launch   # Chrome off-screen, ready for automation
 .\.venv\Scripts\python.exe main.py status   # attach over CDP, report the session state
@@ -50,6 +51,17 @@ Three layers that must stay separate:
 UI and worker communicate through a thread-safe queue. Schema sketch (groups, tags, group_tags, templates, tasks, task_targets, run_log) is in `README.md`.
 
 Modules that exist so far: `fbposter/config.py` (paths, port, flags), `fbposter/chrome.py` (find/launch Chrome, probe the debug port), `fbposter/session.py` (CDP attach, session verification), `fbposter/strings.py` (all Facebook URLs and English UI strings), `fbposter/errors.py`.
+
+UI modules: `fbposter/ui/app.py` (window, sidebar, connection pill), `views/` (compose, groups, queue), `theme.py`, `toast.py`, `background.py`, `connection.py`. Plus `fbposter/groups.py` for group-URL parsing.
+
+### UI rules that are easy to break
+
+- **Only the main thread touches widgets.** Blocking work goes through `BackgroundRunner` in `fbposter/ui/background.py` — worker thread → `queue.Queue` → `widget.after()` pump. The Phase 5 posting worker reports progress the same way.
+- **No modal dialogs for status, ever** — use `app.toast`. The single permitted OS dialog is the media file picker, because the user asked for it and it cannot fire during a batch.
+- **Colours are `(light, dark)` tuples in `theme.py`.** Never hardcode a hex value in a widget; a colour defined for only one mode is invisible in the other.
+- **`CTkFrame` defaults to 200x200.** Any frame used as a thin divider or spine must pass an explicit `height`, or it silently stretches its whole row. This produced 216px queue rows once already; `tests/test_ui.py` guards it.
+- **The expanding widget in a view must be packed last**, after the fixed controls are anchored with `side="bottom"`. Otherwise it claims the frame and pushes them off-window.
+- GUI tests share **one** Tk interpreter for the whole session (`ui_app` in `tests/conftest.py`). Creating a second root, or recreating one after a destroy, fails intermittently on Windows with "Can't find a usable init.tcl". Never call `mainloop()` in a test — pump with `pump_until`.
 
 **Never call `browser.close()` on a CDP-attached browser.** That Chrome belongs to the user and holds the Facebook login. `session.attach()` is a context manager that simply drops the connection on exit; closing would take the session with it. Login is checked via the `c_user` cookie rather than the DOM — no navigation, no selectors, no language dependency.
 

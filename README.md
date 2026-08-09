@@ -50,22 +50,25 @@ Requirements:
 *   **Sleep handling:** hold off system sleep while a batch is in flight (`SetThreadExecutionState` with `ES_CONTINUOUS | ES_SYSTEM_REQUIRED`; the display may still turn off). Schedules are stored as absolute timestamps and recomputed on wake, so suspend/resume never drifts. A slot missed while the machine was asleep is surfaced to the user, not fired late in a burst.
 
 ## 6. Core Features & UI Requirements
-Clean, tab-based navigation. The UI should stay uncluttered and readable.
+A left sidebar navigates between three screens; appearance follows the Windows theme. The UI stays uncluttered and readable, and never opens a modal dialog to tell the user something — status goes to a passive in-window toast.
 
-*   **Message Creation Tab**
-    *   Spacious free-text input.
-    *   Attach images or videos.
+The **connection indicator lives in the sidebar**, not in a screen of its own: it is the "Test Connection" action from §4, and nothing else in the app works without it, so it is visible from everywhere.
+
+*   **Compose**
+    *   Spacious free-text input with a live character count.
+    *   Attach images.
     *   "Save as Template" storing text + media paths for reuse.
     *   Templates are a starting point, not a lock — the user edits before sending.
-*   **Group Management Tab**
+*   **Groups**
     *   Add Facebook group URLs (only groups where the user can post).
-    *   "Groups of Groups" — custom tags/categories for one-click batch selection.
+    *   URLs are reduced to a canonical group identifier, so the same group pasted in two different forms cannot be added — or posted to — twice.
     *   Per-group record of the last successful post time, so the UI can warn about posting to the same group too soon.
-*   **Scheduling Tab**
-    *   "Post Now" for immediate execution.
-    *   One-time scheduled posts and recurring posts at set times.
-    *   **Live queue view:** what is pending, what is running, what succeeded or failed, and the countdown to the next group.
-    *   Ability to pause, skip a group, or cancel a run mid-batch.
+*   **Queue**
+    *   "Post Now" for immediate execution, and one-time scheduled posts.
+    *   **Live queue view:** what is pending, running, waiting, done or failed, and the countdown to the next group.
+    *   Cancel a run mid-batch.
+
+**Post-v1 (see §10):** "Groups of Groups" tags, recurring schedules, video attachments, and pause/skip-a-single-group mid-batch. They are listed here only so the shape of the finished app is clear; do not build them into v1.
 
 ## 7. Account Protection (CRITICAL)
 The user posts as an ordinary group member, not an admin, so everything happens through the normal UI. Avoiding automated-behavior signals is the top priority.

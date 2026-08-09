@@ -1,5 +1,6 @@
-"""Phase 1 command line entry point.
+"""Command line entry point.
 
+    python main.py gui       open the desktop app
     python main.py setup     launch Chrome on-screen for the one-time Facebook login
     python main.py launch    launch Chrome off-screen, ready for automation
     python main.py status    attach over CDP and report on the Facebook session
@@ -83,13 +84,22 @@ def cmd_status(_: argparse.Namespace) -> int:
     return 1
 
 
+def cmd_gui(_: argparse.Namespace) -> int:
+    # Imported here so the CLI commands stay usable on a machine where the GUI
+    # dependencies are missing or there is no display.
+    from fbposter.ui.app import run
+
+    return run()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="main.py",
-        description="Facebook Local Auto-Poster -- Chrome connection tools (Phase 1).",
+        description="Facebook Local Auto-Poster.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
+    subparsers.add_parser("gui", help="open the desktop app").set_defaults(func=cmd_gui)
     subparsers.add_parser(
         "setup", help="launch Chrome on-screen for the one-time Facebook login"
     ).set_defaults(func=cmd_setup)

@@ -2,3 +2,7 @@
 # attaches to the user's real Chrome and never launches one itself.
 playwright>=1.62
 pytest>=9.1
+
+# Pinned exactly: the UI is built against this version's widget behaviour and a
+# library that shifts underneath the app is not worth the flexibility.
+customtkinter==6.0.0
