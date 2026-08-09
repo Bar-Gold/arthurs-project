@@ -1,0 +1,4 @@
+# Only the Playwright driver is needed, not its bundled browsers: the app
+# attaches to the user's real Chrome and never launches one itself.
+playwright>=1.62
+pytest>=9.1

@@ -135,6 +135,6 @@ This makes v1 roughly: *compose → pick groups from a list → post now or at o
 Post-v1, in likely order of value: recurring schedules, video, per-group skip, tags.
 
 ## 12. Open Questions
-*   Is the Facebook UI language English or Hebrew? This determines every selector written in Phase 4.
+*   ~~Facebook UI language~~ — **English** (settled). All selectors target English UI strings. This determines every selector written in Phase 4.
 *   Should media be posted as a single attachment or multiple per post?
 *   Preferred posting window (e.g. 09:00-22:00)?

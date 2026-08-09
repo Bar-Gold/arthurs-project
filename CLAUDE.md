@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository Status
 
-**Greenfield — no source code exists yet.** The repo currently contains only `README.md`, which is the design spec. Work begins at Phase 1 of the roadmap in that file. There is no build tooling, no dependency manifest, and no test suite yet; this section should be replaced with real commands once they exist.
+**Phase 1 is done** — Chrome debug-profile launcher, CDP attach, and session verification, with a CLI and unit tests. Phases 2-5 (UI, SQLite, automation engine, scheduler) are not started. `README.md` holds the full spec and roadmap.
 
 ## What This Is
 
@@ -12,7 +12,22 @@ A local, single-user Windows desktop app (Python 3.10+, CustomTkinter) that post
 
 ## Commands
 
-None yet. When adding tooling, the two non-obvious ones to document here are the Playwright browser install step and the Chrome debug-profile launch (below).
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+
+.\.venv\Scripts\python.exe -m pytest tests/ -q                                 # full suite
+.\.venv\Scripts\python.exe -m pytest tests/test_session.py::TestClassifyUrl -q  # one class
+.\.venv\Scripts\python.exe -m pytest tests/test_session.py -q -k checkpoint     # one test
+
+.\.venv\Scripts\python.exe main.py setup    # Chrome on-screen, for the one-time manual login
+.\.venv\Scripts\python.exe main.py launch   # Chrome off-screen, ready for automation
+.\.venv\Scripts\python.exe main.py status   # attach over CDP, report the session state
+```
+
+`status` exits 0 when logged in, 1 when not, 2 on error (Chrome not running, etc.).
+
+**Do not add `playwright install`.** It is unnecessary and was verified so against Chrome 150: the app attaches to the user's real Chrome over CDP and never launches Playwright's bundled Chromium, so the driver shipped inside the pip package is all that is required.
 
 ## Critical Constraint: Chrome Debug Profile
 
@@ -33,6 +48,10 @@ Three layers that must stay separate:
 - **SQLite** — the source of truth for queue state, not just persistence. Each group's outcome is committed as it completes so a crash or restart resumes the batch instead of re-posting. Duplicate posts are the single worst failure mode here (strong spam signal), so idempotency belongs in the schema, not in memory.
 
 UI and worker communicate through a thread-safe queue. Schema sketch (groups, tags, group_tags, templates, tasks, task_targets, run_log) is in `README.md`.
+
+Modules that exist so far: `fbposter/config.py` (paths, port, flags), `fbposter/chrome.py` (find/launch Chrome, probe the debug port), `fbposter/session.py` (CDP attach, session verification), `fbposter/strings.py` (all Facebook URLs and English UI strings), `fbposter/errors.py`.
+
+**Never call `browser.close()` on a CDP-attached browser.** That Chrome belongs to the user and holds the Facebook login. `session.attach()` is a context manager that simply drops the connection on exit; closing would take the session with it. Login is checked via the `c_user` cookie rather than the DOM — no navigation, no selectors, no language dependency.
 
 ## Non-Interfering Operation
 
@@ -69,7 +88,7 @@ The workload is small, and the spec was trimmed accordingly. **Not in v1:** recu
 
 Facebook's DOM class names are obfuscated and change between builds. Use role- and `aria-label`-based selectors (`get_by_role`, `get_by_label`) and never CSS class selectors. Selectors are also language-dependent.
 
-**Open question blocking Phase 4: is the account's Facebook UI in English or Hebrew?** Do not write selectors until this is settled.
+**The account's Facebook UI is English.** Target English strings ("Write something...", "Post", "Photo/video"). If the account's language ever changes, every selector breaks — keep user-facing strings in one module rather than inlined across the automation code.
 
 ## Known Context
 

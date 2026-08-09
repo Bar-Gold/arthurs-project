@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Machine-local Claude Code permissions
+.claude/settings.local.json
+
+# Local database and any media staged for posting
+*.db
+*.db-journal
