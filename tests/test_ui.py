@@ -239,6 +239,28 @@ class TestLayoutOverflow:
         assert toast.winfo_reqheight() < 100
 
 
+class TestKeyBindings:
+    """Check the bindings are registered on the widgets that receive keys.
+
+    Calling a handler directly still passes when the bind() is missing or
+    attached to the wrong widget, so these assert the wiring instead. They
+    cannot press the key: event_generate does not dispatch to an unmapped
+    widget, and the test window is withdrawn. Live typing was verified against
+    a mapped window -- "hello" produced "5 characters", and Return in the URL
+    field added the group and cleared the entry.
+    """
+
+    def test_the_compose_box_listens_for_keys(self, app):
+        # CustomTkinter forwards bind() to the inner tk widget, so that is
+        # where the binding actually lives.
+        assert "<KeyRelease>" in app.views["compose"].textbox._textbox.bind()
+
+    def test_the_url_field_listens_for_return(self, app):
+        # Tk normalises "<Return>" to "<Key-Return>" when it stores the binding.
+        bindings = app.views["groups"].url_entry._entry.bind()
+        assert {"<Return>", "<Key-Return>"} & set(bindings)
+
+
 class TestComposeView:
     def test_text_round_trips(self, app):
         view = app.views["compose"]
