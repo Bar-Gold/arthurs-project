@@ -236,18 +236,19 @@ class GroupPoster:
         self.human.type_text(self.page.keyboard, body)
 
     def attach_media(self, dialog: Any, paths: Sequence[Path]) -> None:
-        """Attach images without ever opening the OS file dialog.
+        """Attach images by writing straight to the file input.
 
-        set_input_files puts the paths straight onto the input element, so no
-        modal appears and focus is never taken from whatever the user is doing.
-        All images go in one call.
+        **Do not click the Photo/video button.** Clicking it opens the native
+        Windows "Open" dialog, which is modal, steals focus, and was observed
+        being left on screen after a run -- breaking the one hard promise this
+        app makes, that the user can keep working while it posts.
+
+        The input element is already in the composer's DOM before that button
+        is touched, so setting files on it directly is both safer and simpler.
+        All images go in one call; the input carries `multiple`.
         """
         if not paths:
             return
-
-        photo_button = self._find_photo_button(dialog)
-        if photo_button is not None:
-            self.human.hover_then_click(photo_button)
 
         # An attribute selector on a standard element, not an obfuscated class
         # name -- this is the one place a CSS selector is the right tool.

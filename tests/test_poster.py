@@ -136,10 +136,14 @@ class TestMedia:
         assert len(uploads) == 1
         assert uploads[0][2] == ("a.png", "b.png", "c.png")
 
-    def test_the_photo_button_is_clicked_first(self):
+    def test_the_photo_button_is_never_clicked(self):
+        """Clicking it opens the native Windows file dialog -- modal, focus
+        stealing, and observed being left on screen after a live run. The file
+        input is already in the DOM, so the button is not needed at all.
+        """
         page = FakePage()
         make_poster(page).post(request(media_paths=(Path("a.png"),)))
-        assert page.clicked(PHOTO_BUTTON)
+        assert not page.clicked(PHOTO_BUTTON)
 
     def test_no_upload_happens_without_media(self):
         page = FakePage()
