@@ -148,6 +148,6 @@ This makes v1 roughly: *compose → pick groups from a list → post now or at o
 Post-v1, in likely order of value: recurring schedules, video, per-group skip, tags.
 
 ## 12. Open Questions
-*   ~~Facebook UI language~~ — **English** (settled). All selectors target English UI strings. This determines every selector written in Phase 4.
-*   Should media be posted as a single attachment or multiple per post?
-*   Preferred posting window (e.g. 09:00-22:00)?
+*   ~~Facebook UI language~~ — **Hebrew** (settled, and corrected in Phase 4). It was assumed to be English until a live probe showed otherwise; `?locale=en_US` does not override the account setting. Selectors match Hebrew first and fall back to English.
+*   ~~Media: single or multiple?~~ — **multiple images per post** (settled). `set_input_files` takes a list, so it costs nothing over single.
+*   ~~Posting window~~ — **08:00–23:00 Israel time** (settled). All window and daily-cap decisions are made in `Asia/Jerusalem`, never UTC; see `fbposter/clock.py`.

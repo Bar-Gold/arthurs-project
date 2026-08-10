@@ -47,6 +47,35 @@ class GuardViolation(FBPosterError):
         self.rule = rule
 
 
+class AutomationHalted(FBPosterError):
+    """The page was not what we expected, so the batch stopped.
+
+    Carries the verdict so the caller can tell a checkpoint from a rate limit.
+    There is deliberately no retry path: retrying through a block is how an
+    account gets restricted rather than warned.
+    """
+
+    def __init__(self, verdict, message: str) -> None:
+        super().__init__(message)
+        self.verdict = verdict
+
+
+class ComposerNotFound(FBPosterError):
+    """A required composer element could not be located.
+
+    Usually means Facebook changed its markup or the interface language is no
+    longer English. Never treated as something to work around.
+    """
+
+
+class PostNotVerified(FBPosterError):
+    """The post was submitted but could not be found afterwards.
+
+    Not assumed to be a failure -- it may well have gone out -- so the caller
+    must not simply retry it.
+    """
+
+
 class CheckpointError(FBPosterError):
     """Facebook served a checkpoint, challenge or verification screen.
 

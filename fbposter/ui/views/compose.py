@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from datetime import datetime, time, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 from tkinter import filedialog
 
 import customtkinter as ctk
 
+from fbposter import clock
 from fbposter.db.models import utcnow
 from fbposter.guards import PlannedTarget, evaluate_batch
 
@@ -15,28 +16,19 @@ from .. import theme
 from .base import View, card, phase_note
 
 IMAGE_TYPES = [("Images", "*.jpg *.jpeg *.png *.gif *.webp"), ("All files", "*.*")]
-SCHEDULE_FORMAT = "%Y-%m-%d %H:%M"
+SCHEDULE_FORMAT = clock.LOCAL_FORMAT
 RIGHT_COLUMN_WIDTH = 330
 
 POST_NOW = "Post now"
 SCHEDULE = "Schedule"
 
 
-def start_of_today_utc(now: datetime | None = None) -> datetime:
-    """Midnight local time, expressed in UTC.
-
-    The daily cap is a human "today", not a UTC one -- posts at 01:00 local
-    belong to the day the user thinks they do.
-    """
-    local_now = (now or utcnow()).astimezone()
-    midnight = datetime.combine(local_now.date(), time.min, tzinfo=local_now.tzinfo)
-    return midnight.astimezone(timezone.utc)
-
-
 def parse_schedule(raw: str) -> datetime:
-    """Read a local 'YYYY-MM-DD HH:MM' and return it as UTC."""
-    naive = datetime.strptime(raw.strip(), SCHEDULE_FORMAT)
-    return naive.astimezone().astimezone(timezone.utc)
+    """Read an Israel-time 'YYYY-MM-DD HH:MM' and return it as UTC.
+
+    The user types the time they mean locally; storage is always UTC.
+    """
+    return clock.parse_local(raw, SCHEDULE_FORMAT)
 
 
 class ComposeView(View):
@@ -175,7 +167,7 @@ class ComposeView(View):
         )
         self.schedule_entry.pack(fill="x", padx=theme.PAD_M, pady=(0, theme.PAD_M))
         self.schedule_entry.insert(
-            0, (datetime.now() + timedelta(hours=1)).strftime(SCHEDULE_FORMAT)
+            0, (clock.local_now() + timedelta(hours=1)).strftime(SCHEDULE_FORMAT)
         )
         self._sync_schedule_entry()
 
@@ -325,7 +317,7 @@ class ComposeView(View):
             now=now,
             when=when,
             daily_cap=settings.get_int("daily_cap", 25),
-            posted_today=self.app.task_repo.posted_count_since(start_of_today_utc(now)),
+            posted_today=self.app.task_repo.posted_count_since(clock.start_of_local_day(now)),
             window_start_hour=settings.get_int("posting_window_start_hour", 8),
             window_end_hour=settings.get_int("posting_window_end_hour", 23),
         )

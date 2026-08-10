@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from fbposter import guards
+from fbposter import clock, guards
 from fbposter.guards import PlannedTarget, evaluate_batch
 
 NOW = datetime(2026, 8, 9, 14, 0, tzinfo=timezone.utc)
@@ -67,20 +67,27 @@ class TestCooldown:
 
 
 class TestPostingWindow:
+    """Hours are Israel local time. See tests/test_clock.py for the timezone
+    behaviour itself; these cover the window logic."""
+
+    @staticmethod
+    def at_local(hour: int, minute: int = 0):
+        return clock.parse_local(f"2026-08-09 {hour:02d}:{minute:02d}")
+
     @pytest.mark.parametrize("hour", [8, 12, 22])
     def test_inside_the_window(self, hour):
-        assert guards.check_posting_window(NOW.replace(hour=hour), 8, 23) is None
+        assert guards.check_posting_window(self.at_local(hour), 8, 23) is None
 
     @pytest.mark.parametrize("hour", [7, 23, 3, 0])
     def test_outside_the_window(self, hour):
-        violation = guards.check_posting_window(NOW.replace(hour=hour), 8, 23)
+        violation = guards.check_posting_window(self.at_local(hour), 8, 23)
         assert violation is not None
         assert violation.rule == "posting_window"
 
     def test_the_start_hour_is_inclusive_and_the_end_hour_is_not(self):
-        assert guards.check_posting_window(NOW.replace(hour=8, minute=0), 8, 23) is None
-        assert guards.check_posting_window(NOW.replace(hour=22, minute=59), 8, 23) is None
-        assert guards.check_posting_window(NOW.replace(hour=23, minute=0), 8, 23) is not None
+        assert guards.check_posting_window(self.at_local(8, 0), 8, 23) is None
+        assert guards.check_posting_window(self.at_local(22, 59), 8, 23) is None
+        assert guards.check_posting_window(self.at_local(23, 0), 8, 23) is not None
 
 
 class TestRepeatText:

@@ -16,6 +16,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Sequence
 
+from . import clock
+
 # Sending byte-identical text to more than this many groups earns a warning.
 IDENTICAL_TEXT_WARN_THRESHOLD = 2
 
@@ -94,19 +96,26 @@ def check_cooldown(
 
 
 def check_posting_window(when: datetime, start_hour: int, end_hour: int) -> Violation | None:
-    """Keep activity inside waking hours.
+    """Keep activity inside waking hours, judged in Israel time.
+
+    The hour is taken from the local clock, never from the stored UTC value.
+    Reading it off UTC put the window three hours out: it allowed 01:00 local
+    and refused 09:00. Posting at 4am is a strong automation signal, so this
+    has to be right.
 
     end_hour is exclusive, so 08:00-23:00 means the last post may start at
-    22:59. Posting at 4am is a strong automation signal.
+    22:59 local.
     """
     if start_hour == end_hour:
         return None
-    if start_hour <= when.hour < end_hour:
+
+    local = clock.to_local(when)
+    if start_hour <= local.hour < end_hour:
         return None
     return Violation(
         "posting_window",
-        f"{when.strftime('%H:%M')} is outside the {start_hour:02d}:00-{end_hour:02d}:00 "
-        "posting window.",
+        f"{local.strftime('%H:%M')} Israel time is outside the "
+        f"{start_hour:02d}:00-{end_hour:02d}:00 posting window.",
     )
 
 

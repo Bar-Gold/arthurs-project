@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import timezone
-
 import customtkinter as ctk
 
+from fbposter import clock
 from fbposter.db.models import Group
 from fbposter.errors import DuplicateGroup, InvalidGroupURL
 
@@ -16,8 +15,7 @@ from .base import View, card, phase_note
 def format_last_posted(group: Group) -> str:
     if group.last_posted_at is None:
         return "Last posted: never"
-    local = group.last_posted_at.astimezone()
-    return f"Last posted: {local:%Y-%m-%d %H:%M}"
+    return f"Last posted: {clock.format_local(group.last_posted_at)}"
 
 
 class GroupsView(View):

@@ -4,7 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository Status
 
-**Phases 1-3 are done.** Phase 1: Chrome debug-profile launcher, CDP attach, session verification. Phase 2: CustomTkinter UI shell with a live connection pill. Phase 3: SQLite persistence — groups, templates, tasks and the safety guards, all wired into the views. Phases 4-5 (automation engine, scheduler/worker) are not started, so **nothing posts to Facebook yet**; queued batches sit at `pending`. `README.md` holds the full spec and roadmap.
+**Phases 1-4 are done.** Phase 1: Chrome debug-profile launcher, CDP attach, session verification. Phase 2: CustomTkinter UI shell with a live connection pill. Phase 3: SQLite persistence — groups, templates, tasks and the safety guards. Phase 4: the automation engine (`fbposter/automation/`) — navigate, compose, type, attach, publish, verify, with anomaly halting.
+
+Phase 5 (scheduler and worker thread) is not started, so **the app still posts nothing on its own**: queued batches sit at `pending` and the engine is only reachable from the `probe` and `dry-run` commands. `README.md` holds the full spec and roadmap.
 
 ## What This Is
 
@@ -24,7 +26,13 @@ python -m venv .venv
 .\.venv\Scripts\python.exe main.py setup    # Chrome on-screen, for the one-time manual login
 .\.venv\Scripts\python.exe main.py launch   # Chrome off-screen, ready for automation
 .\.venv\Scripts\python.exe main.py status   # attach over CDP, report the session state
+
+# Phase 4, both safe to run against a real group:
+.\.venv\Scripts\python.exe main.py probe   <group-url>              # resolve selectors; types nothing
+.\.venv\Scripts\python.exe main.py dry-run <group-url> --text "..." # full rehearsal, never clicks Post
 ```
+
+`probe` and `dry-run` are the tools for re-checking selectors whenever Facebook changes its markup. Reach for them before touching `poster.py`.
 
 `status` exits 0 when logged in, 1 when not, 2 on error (Chrome not running, etc.).
 
@@ -110,7 +118,18 @@ The workload is small, and the spec was trimmed accordingly. **Not in v1:** recu
 
 Facebook's DOM class names are obfuscated and change between builds. Use role- and `aria-label`-based selectors (`get_by_role`, `get_by_label`) and never CSS class selectors. Selectors are also language-dependent.
 
-**The account's Facebook UI is English.** Target English strings ("Write something...", "Post", "Photo/video"). If the account's language ever changes, every selector breaks — keep user-facing strings in one module rather than inlined across the automation code.
+**The account's Facebook UI is Hebrew, not English.** This was assumed to be English through Phase 3 and the assumption was wrong — probing a real group showed every accessible name coming back in Hebrew, in gendered forms, and `?locale=en_US` on the URL does **not** override the account setting.
+
+`strings.py` therefore lists Hebrew candidates first with English as a fallback, and every lookup tries a list rather than one exact string. Verified live:
+
+| Element | Name |
+| --- | --- |
+| Composer trigger | `כאן כותבים…` — **no aria-label**, matched on visible text |
+| Text field | no accessible name; found as the dialog's only `textbox` |
+| Photo/video | `תמונה או סרטון` |
+| Post | `פרסום` |
+
+Never hardcode a UI string outside `strings.py`, and never assert on one in a test — reference the constants so a language change is a one-file fix.
 
 ## Known Context
 

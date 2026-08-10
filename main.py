@@ -4,14 +4,19 @@
     python main.py setup     launch Chrome on-screen for the one-time Facebook login
     python main.py launch    launch Chrome off-screen, ready for automation
     python main.py status    attach over CDP and report on the Facebook session
+    python main.py probe     check the composer selectors resolve (types nothing)
+    python main.py dry-run   full rehearsal that never clicks Post
 """
 
 from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 
 from fbposter import chrome, config, session
+from fbposter.automation import GroupPoster
+from fbposter.automation.poster import PostRequest
 from fbposter.errors import ChromeNotRunningError, FBPosterError
 
 SETUP_INSTRUCTIONS = """
@@ -92,6 +97,78 @@ def cmd_gui(_: argparse.Namespace) -> int:
     return run()
 
 
+def _require_chrome() -> None:
+    if chrome.probe() is None:
+        raise ChromeNotRunningError(
+            f"Nothing is listening on port {config.DEBUG_PORT}.\n"
+            "Run 'python main.py launch' first."
+        )
+
+
+def _new_page(context):
+    """A page of our own.
+
+    Never reuses contexts[0].pages[0] -- that is very likely a tab the user has
+    open, and this one gets navigated and closed.
+    """
+    return context.new_page()
+
+
+def cmd_probe(args: argparse.Namespace) -> int:
+    """Read-only: confirm the composer selectors resolve. Types nothing."""
+    _require_chrome()
+    print(f"Probing {args.group_url}\nRead-only — nothing will be typed or posted.\n")
+
+    with session.attach() as context:
+        page = _new_page(context)
+        try:
+            report = GroupPoster(page).probe(args.group_url)
+        finally:
+            page.close()
+
+    checks = [
+        ("page loaded cleanly", report.page_ok),
+        ("composer trigger", report.composer_trigger),
+        ("composer dialog", report.dialog),
+        ("text field", report.textbox),
+        ("Photo/video button", report.photo_button),
+        ("Post button", report.post_button),
+    ]
+    for label, found in checks:
+        print(f"  [{'ok' if found else 'MISSING'}] {label}")
+
+    for note in report.notes:
+        print(f"\n  {note}")
+
+    print("\nAll selectors resolved." if report.ok else "\nSome selectors did not resolve.")
+    return 0 if report.ok else 1
+
+
+def cmd_dry_run(args: argparse.Namespace) -> int:
+    """Full rehearsal against a real group that never clicks Post."""
+    _require_chrome()
+    media = tuple(Path(p) for p in (args.image or []))
+    for path in media:
+        if not path.is_file():
+            raise FBPosterError(f"No such image: {path}")
+
+    print(
+        f"Dry run against {args.group_url}\n"
+        "Everything except the Post click. The draft is discarded afterwards.\n"
+    )
+
+    request = PostRequest(group_url=args.group_url, body=args.text, media_paths=media)
+    with session.attach() as context:
+        page = _new_page(context)
+        try:
+            outcome = GroupPoster(page, dry_run=True).post(request)
+        finally:
+            page.close()
+
+    print(outcome.detail)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="main.py",
@@ -109,6 +186,22 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser(
         "status", help="attach over CDP and report on the Facebook session"
     ).set_defaults(func=cmd_status)
+
+    probe = subparsers.add_parser(
+        "probe", help="check the composer selectors resolve (read-only, types nothing)"
+    )
+    probe.add_argument("group_url", help="a Facebook group URL")
+    probe.set_defaults(func=cmd_probe)
+
+    dry_run = subparsers.add_parser(
+        "dry-run", help="full rehearsal against a real group that never clicks Post"
+    )
+    dry_run.add_argument("group_url", help="a Facebook group URL")
+    dry_run.add_argument("--text", required=True, help="the post body to rehearse")
+    dry_run.add_argument(
+        "--image", action="append", help="image to attach; repeat for several"
+    )
+    dry_run.set_defaults(func=cmd_dry_run)
 
     return parser
 

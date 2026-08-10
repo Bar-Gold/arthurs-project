@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import customtkinter as ctk
 
+from fbposter import clock
 from fbposter.db.models import (
     TASK_CANCELLED,
     TASK_DONE,
@@ -47,7 +48,7 @@ STATE_LABELS = {
 def summarise(task: Task) -> str:
     """One line describing when a batch runs and what it says."""
     if task.scheduled_for is not None:
-        when = f"Scheduled {task.scheduled_for.astimezone():%Y-%m-%d %H:%M}"
+        when = f"Scheduled {clock.format_local(task.scheduled_for)}"
     else:
         when = "Post now"
 

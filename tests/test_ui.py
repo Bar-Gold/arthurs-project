@@ -358,6 +358,21 @@ class TestTemplates:
 
 
 class TestAddToQueue:
+    @pytest.fixture(autouse=True)
+    def any_hour(self, app):
+        """Take the clock out of these tests.
+
+        They are about the cap, the cooldown and repeated text. Left on the
+        real 08:00-23:00 window they pass all day and fail at night, which is
+        the worst kind of flake -- it looks like the code broke.
+        The window itself is covered by its own test below.
+        """
+        app.settings_repo.set("posting_window_start_hour", 0)
+        app.settings_repo.set("posting_window_end_hour", 24)
+        yield
+        app.settings_repo.set("posting_window_start_hour", 8)
+        app.settings_repo.set("posting_window_end_hour", 23)
+
     def select(self, app, *group_ids):
         view = app.views["compose"]
         view.refresh_groups()
@@ -434,6 +449,26 @@ class TestAddToQueue:
         view._sync_schedule_entry()
         view.schedule_entry.delete(0, "end")
         view.schedule_entry.insert(0, "next tuesday")
+
+        assert view.add_to_queue() is False
+        assert app.task_repo.list_recent() == []
+
+    def test_a_post_outside_the_window_is_refused(self, app):
+        """A window that excludes every hour must block whatever the clock says."""
+        app.settings_repo.set("posting_window_start_hour", 3)
+        app.settings_repo.set("posting_window_end_hour", 3)
+        group = add_group(app)
+        view = self.select(app, group.id)
+        view.textbox.insert("1.0", "body")
+
+        # start == end is treated as "no restriction", so use a real 1h window
+        # that the current hour cannot be inside.
+        from datetime import datetime
+
+        hour = datetime.now().hour
+        closed = (hour + 5) % 24
+        app.settings_repo.set("posting_window_start_hour", closed)
+        app.settings_repo.set("posting_window_end_hour", (closed + 1) % 24 or 24)
 
         assert view.add_to_queue() is False
         assert app.task_repo.list_recent() == []

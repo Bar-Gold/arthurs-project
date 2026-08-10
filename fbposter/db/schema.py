@@ -16,9 +16,11 @@ from typing import Callable
 # Defaults seeded on first run; confirmed with the user (see README section 7).
 DEFAULT_SETTINGS = {
     "daily_cap": "25",
+    # Hours are Israel local time, never UTC -- see fbposter/clock.py.
     "posting_window_start_hour": "8",
     "posting_window_end_hour": "23",
     "default_cooldown_hours": "24",
+    "posting_timezone": "Asia/Jerusalem",
 }
 
 _MIGRATION_001 = """
@@ -91,8 +93,21 @@ def _migration_001(connection: sqlite3.Connection) -> None:
     )
 
 
+def _migration_002(connection: sqlite3.Connection) -> None:
+    """Record the posting time zone.
+
+    The window hours were always meant as Israel local time, but the guard read
+    them against UTC -- three hours out. Storing the zone makes the intent
+    explicit for databases created before the fix.
+    """
+    connection.execute(
+        "INSERT OR IGNORE INTO settings (key, value) VALUES ('posting_timezone', ?)",
+        (DEFAULT_SETTINGS["posting_timezone"],),
+    )
+
+
 # Index i applies when user_version == i, and bumps it to i + 1.
-MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [_migration_001]
+MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [_migration_001, _migration_002]
 
 LATEST_VERSION = len(MIGRATIONS)
 

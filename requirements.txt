@@ -6,3 +6,8 @@ pytest>=9.1
 # Pinned exactly: the UI is built against this version's widget behaviour and a
 # library that shifts underneath the app is not worth the flexibility.
 customtkinter==6.0.0
+
+# Windows ships no IANA time zone database, so Asia/Jerusalem is unavailable
+# without this. The posting window is judged in Israel local time, so it is a
+# hard requirement rather than a nicety.
+tzdata
