@@ -7,11 +7,14 @@ user left it.
 
 from __future__ import annotations
 
+import queue
+
 import customtkinter as ctk
 
 from .. import config
 from ..db import Database
 from ..db.repo import GroupRepo, SettingsRepo, TaskRepo, TemplateRepo
+from ..worker import PostingWorker
 from . import theme
 from .background import BackgroundRunner
 from .connection import ConnectionResult, ConnectionState, check_connection
@@ -22,6 +25,10 @@ from .views.groups import GroupsView
 from .views.queue import QueueView
 
 APP_TITLE = "Facebook Local Auto-Poster"
+
+# How often the main thread drains the worker's event queue. Fast enough that
+# the queue view feels live, slow enough to be free.
+WORKER_POLL_MS = 700
 
 NAV_ITEMS = (
     ("compose", "Compose", ComposeView),
@@ -47,6 +54,10 @@ class App(ctk.CTk):
         # Both injectable so tests can drive every pill state without a browser
         # and run against a throwaway database instead of the user's real one.
         self._check_fn = check_fn
+        # The one posting worker. Created lazily by start_worker() so tests can
+        # build an App without a thread quietly posting to Facebook.
+        self.worker: PostingWorker | None = None
+        self._worker_after_id: str | None = None
         self.db = db if db is not None else Database(config.database_path())
         self.group_repo = GroupRepo(self.db)
         self.template_repo = TemplateRepo(self.db)
@@ -117,7 +128,44 @@ class App(ctk.CTk):
             button.pack(fill="x", pady=(0, theme.PAD_XS))
             self.nav_buttons[key] = button
 
+        self._build_worker_row(sidebar)
         self._build_pill(sidebar)
+
+    def _build_worker_row(self, sidebar: ctk.CTkFrame) -> None:
+        """Whether the scheduler is running, and a way to stop it.
+
+        The worker starts automatically -- a scheduler you have to remember to
+        switch on is one that misses slots -- so its state has to be visible
+        from every screen rather than hidden in a menu.
+        """
+        box = card(sidebar)
+        box.grid(row=2, column=0, sticky="ew", padx=theme.PAD_S)
+
+        self.worker_label = ctk.CTkLabel(
+            box,
+            text="Scheduler: starting…",
+            font=ctk.CTkFont(family=theme.FONT_FAMILY, size=theme.SIZE_SMALL),
+            text_color=theme.TEXT,
+            anchor="w",
+            justify="left",
+            wraplength=140,
+        )
+        self.worker_label.pack(fill="x", padx=theme.PAD_M, pady=(theme.PAD_M, theme.PAD_XS))
+
+        self.worker_button = ctk.CTkButton(
+            box,
+            text="Pause",
+            height=28,
+            corner_radius=theme.RADIUS,
+            fg_color="transparent",
+            border_width=1,
+            border_color=theme.BORDER,
+            text_color=theme.TEXT,
+            hover_color=theme.NAV_ACTIVE_BG,
+            font=ctk.CTkFont(family=theme.FONT_FAMILY, size=theme.SIZE_SMALL),
+            command=self.toggle_worker,
+        )
+        self.worker_button.pack(fill="x", padx=theme.PAD_M, pady=(0, theme.PAD_M))
 
     def _build_pill(self, sidebar: ctk.CTkFrame) -> None:
         """The 'Test Connection' action from README section 4.
@@ -126,7 +174,7 @@ class App(ctk.CTk):
         every screen -- nothing else in the app works without it.
         """
         pill = card(sidebar)
-        pill.grid(row=2, column=0, sticky="ew", padx=theme.PAD_S, pady=theme.PAD_M)
+        pill.grid(row=3, column=0, sticky="ew", padx=theme.PAD_S, pady=theme.PAD_M)
 
         row = ctk.CTkFrame(pill, fg_color="transparent")
         row.pack(fill="x", padx=theme.PAD_M, pady=(theme.PAD_M, theme.PAD_XS))
@@ -229,6 +277,80 @@ class App(ctk.CTk):
         if announce and detail:
             self.toast.show(detail, level)
 
+    # -- the posting worker ------------------------------------------------
+    def start_worker(self) -> None:
+        """Start the one worker and begin draining its events.
+
+        Started here rather than in __init__ so tests can construct an App
+        without a background thread quietly posting to Facebook.
+        """
+        if self.worker is None:
+            self.worker = PostingWorker(self.db)
+        self.worker.start()
+        self._pump_worker_events()
+        self._refresh_worker_row()
+
+    def toggle_worker(self) -> None:
+        if self.worker is None:
+            return
+        if self.worker.paused:
+            self.worker.resume()
+            self.toast.show("Scheduler resumed.", "info")
+        else:
+            self.worker.pause()
+            self.toast.show("Scheduler paused. Nothing will be posted.", "warning")
+        self._refresh_worker_row()
+
+    def _refresh_worker_row(self) -> None:
+        label = getattr(self, "worker_label", None)
+        if label is None:
+            return
+
+        if self.worker is None or not self.worker.running:
+            text, colour, button = "Scheduler: off", theme.NEUTRAL, "Start"
+        elif self.worker.paused:
+            text, colour, button = "Scheduler: paused", theme.WARNING, "Resume"
+        elif self.worker.state == "posting":
+            text, colour, button = "Scheduler: posting…", theme.ACCENT, "Pause"
+        else:
+            text, colour, button = "Scheduler: running", theme.SUCCESS, "Pause"
+
+        label.configure(text=text, text_color=colour)
+        self.worker_button.configure(text=button)
+
+    def _pump_worker_events(self) -> None:
+        """Drain the worker's queue on the main thread.
+
+        Same shape as BackgroundRunner: the worker never touches a widget, it
+        only puts events on a queue that this after() loop reads.
+        """
+        if self.worker is not None:
+            while True:
+                try:
+                    event = self.worker.events.get_nowait()
+                except queue.Empty:
+                    break
+                self._handle_worker_event(event)
+
+        self._refresh_worker_row()
+        try:
+            self._worker_after_id = self.after(WORKER_POLL_MS, self._pump_worker_events)
+        except Exception:
+            self._worker_after_id = None  # window is going away
+
+    def _handle_worker_event(self, event) -> None:
+        if event.kind in ("halted", "missed", "error"):
+            self.toast.show(event.message, "error", duration_ms=15000)
+        elif event.kind in ("skipped", "deferred", "recovered"):
+            self.toast.show(event.message, "warning", duration_ms=9000)
+        elif event.kind in ("posted", "batch_done"):
+            self.toast.show(event.message, "success")
+
+        # The queue view is the log of what happened, so keep it current.
+        queue_view = self.views.get("queue")
+        if queue_view is not None:
+            queue_view.refresh()
+
     # -- lifecycle ---------------------------------------------------------
     def _on_close(self) -> None:
         self.destroy()
@@ -243,6 +365,21 @@ class App(ctk.CTk):
         runner = getattr(self, "runner", None)
         if runner is not None:
             runner.stop()
+
+        # Stop the worker before the database closes under it. A batch in
+        # flight finishes its current group first; its outcome is already
+        # committed either way.
+        worker = getattr(self, "worker", None)
+        if worker is not None:
+            worker.stop()
+
+        after_id = getattr(self, "_worker_after_id", None)
+        if after_id is not None:
+            try:
+                self.after_cancel(after_id)
+            except Exception:
+                pass
+            self._worker_after_id = None
 
         toast = getattr(self, "toast", None)
         if toast is not None:
@@ -262,5 +399,7 @@ def run() -> int:
     ctk.set_default_color_theme("blue")
 
     app = App()
+    # Only the real GUI starts the scheduler; constructing an App does not.
+    app.after(500, app.start_worker)
     app.mainloop()
     return 0

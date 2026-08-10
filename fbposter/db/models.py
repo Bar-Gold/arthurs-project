@@ -19,6 +19,9 @@ TASK_DONE = "done"
 TASK_FAILED = "failed"
 TASK_CANCELLED = "cancelled"
 TASK_HALTED = "halted"
+# Its scheduled moment passed while nothing was running -- typically the
+# machine was asleep. Reported, never fired late in a burst.
+TASK_MISSED = "missed"
 
 # States one group within a batch can be in.
 TARGET_PENDING = "pending"
@@ -127,9 +130,13 @@ class Task:
     started_at: datetime | None = None
     finished_at: datetime | None = None
     error: str = ""
+    # The instant the worker may next act on this task: the inter-group gap,
+    # or a deferral until the posting window reopens.
+    resume_at: datetime | None = None
 
     @classmethod
     def from_row(cls, row: Mapping[str, Any]) -> "Task":
+        keys = row.keys()
         return cls(
             id=row["id"],
             body=row["body"],
@@ -140,6 +147,7 @@ class Task:
             started_at=from_iso(row["started_at"]),
             finished_at=from_iso(row["finished_at"]),
             error=row["error"] or "",
+            resume_at=from_iso(row["resume_at"]) if "resume_at" in keys else None,
         )
 
     @property

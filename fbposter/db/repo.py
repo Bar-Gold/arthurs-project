@@ -9,15 +9,18 @@ from __future__ import annotations
 
 import sqlite3
 from datetime import datetime
-from typing import Sequence
+from typing import Any, Sequence
 
 from ..errors import DuplicateGroup, InvalidGroupURL
 from ..groups import parse_group_url
 from .connection import Database
 from .models import (
     TARGET_DONE,
+    TARGET_PENDING,
+    TARGET_RUNNING,
     TASK_CANCELLED,
     TASK_PENDING,
+    TASK_RUNNING,
     Group,
     Task,
     TaskTarget,
@@ -241,6 +244,118 @@ class TaskRepo:
             "UPDATE tasks SET state = ?, finished_at = ? WHERE id = ?",
             (TASK_CANCELLED, to_iso(utcnow()), task_id),
         )
+
+    # -- worker queries ----------------------------------------------------
+    def claimable(self, now: datetime) -> list[Task]:
+        """Tasks the worker may act on now.
+
+        A batch already under way sorts ahead of everything else, so batches
+        never interleave -- a "post now" raised mid-batch waits its turn rather
+        than running alongside.
+        """
+        stamp = to_iso(now)
+        rows = self.db.query(
+            "SELECT * FROM tasks WHERE state IN (?, ?) "
+            "  AND (scheduled_for IS NULL OR scheduled_for <= ?) "
+            "  AND (resume_at IS NULL OR resume_at <= ?) "
+            "ORDER BY CASE WHEN state = ? THEN 0 ELSE 1 END, "
+            "         COALESCE(started_at, scheduled_for, created_at), id",
+            (TASK_PENDING, TASK_RUNNING, stamp, stamp, TASK_RUNNING),
+        )
+        return [Task.from_row(row) for row in rows]
+
+    def active_batches(self) -> int:
+        """Batches under way. Drives the keep-awake request."""
+        row = self.db.query_one(
+            "SELECT COUNT(*) AS n FROM tasks WHERE state = ?", (TASK_RUNNING,)
+        )
+        return int(row["n"]) if row else 0
+
+    def next_pending_target(self, task_id: int) -> TaskTarget | None:
+        row = self.db.query_one(
+            "SELECT t.*, g.identifier AS group_identifier "
+            "FROM task_targets t JOIN groups g ON g.id = t.group_id "
+            "WHERE t.task_id = ? AND t.state = ? ORDER BY t.position LIMIT 1",
+            (task_id, TARGET_PENDING),
+        )
+        return TaskTarget.from_row(row) if row else None
+
+    def running_targets(self) -> list[TaskTarget]:
+        """Targets left mid-flight by a crash.
+
+        Whether these actually posted is unknown, which is why the worker
+        verifies rather than assuming either way.
+        """
+        rows = self.db.query(
+            "SELECT t.*, g.identifier AS group_identifier "
+            "FROM task_targets t JOIN groups g ON g.id = t.group_id "
+            "WHERE t.state = ? ORDER BY t.id",
+            (TARGET_RUNNING,),
+        )
+        return [TaskTarget.from_row(row) for row in rows]
+
+    def set_resume_at(self, task_id: int, when: datetime | None) -> None:
+        self.db.write(
+            "UPDATE tasks SET resume_at = ? WHERE id = ?", (to_iso(when), task_id)
+        )
+
+    def mark_task(
+        self,
+        task_id: int,
+        state: str,
+        *,
+        error: str = "",
+        started: bool = False,
+        finished: bool = False,
+    ) -> None:
+        sets = ["state = ?", "error = ?"]
+        params: list[Any] = [state, error]
+        if started:
+            sets.append("started_at = COALESCE(started_at, ?)")
+            params.append(to_iso(utcnow()))
+        if finished:
+            sets.append("finished_at = ?")
+            params.append(to_iso(utcnow()))
+        params.append(task_id)
+        self.db.write(f"UPDATE tasks SET {', '.join(sets)} WHERE id = ?", tuple(params))
+
+    def mark_target(
+        self,
+        target_id: int,
+        state: str,
+        *,
+        error: str = "",
+        attempted: bool = False,
+        posted: bool = False,
+        post_url: str = "",
+    ) -> None:
+        """Record one group's outcome.
+
+        Committed the moment it happens: that is what lets a crash resume a
+        batch rather than start it again.
+        """
+        sets = ["state = ?", "error = ?"]
+        params: list[Any] = [state, error]
+        if attempted:
+            sets.append("attempted_at = ?")
+            params.append(to_iso(utcnow()))
+        if posted:
+            sets.append("posted_at = ?")
+            params.append(to_iso(utcnow()))
+        if post_url:
+            sets.append("post_url = ?")
+            params.append(post_url)
+        params.append(target_id)
+        self.db.write(
+            f"UPDATE task_targets SET {', '.join(sets)} WHERE id = ?", tuple(params)
+        )
+
+    def remaining_targets(self, task_id: int) -> int:
+        row = self.db.query_one(
+            "SELECT COUNT(*) AS n FROM task_targets WHERE task_id = ? AND state = ?",
+            (task_id, TARGET_PENDING),
+        )
+        return int(row["n"]) if row else 0
 
     def posted_count_since(self, since: datetime) -> int:
         """Group-posts completed since a moment. Feeds the daily cap."""

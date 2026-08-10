@@ -50,6 +50,7 @@ CREATE TABLE tasks (
     body           TEXT NOT NULL,
     media_paths    TEXT NOT NULL DEFAULT '[]',
     scheduled_for  TEXT,
+    -- Added by migration 003 for databases that predate it.
     state          TEXT NOT NULL DEFAULT 'pending',
     created_at     TEXT NOT NULL,
     started_at     TEXT,
@@ -106,8 +107,24 @@ def _migration_002(connection: sqlite3.Connection) -> None:
     )
 
 
+def _migration_003(connection: sqlite3.Connection) -> None:
+    """Give a task somewhere to record when the worker may next touch it.
+
+    This is where the 10-25 minute gap between groups lives. Keeping it in the
+    database rather than in a sleep() is what makes a batch survive closing the
+    app or the machine suspending: on restart the worker re-reads an absolute
+    instant instead of resuming a countdown that stopped ticking.
+    """
+    connection.execute("ALTER TABLE tasks ADD COLUMN resume_at TEXT")
+    connection.execute("CREATE INDEX idx_tasks_resume ON tasks(resume_at)")
+
+
 # Index i applies when user_version == i, and bumps it to i + 1.
-MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [_migration_001, _migration_002]
+MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
+    _migration_001,
+    _migration_002,
+    _migration_003,
+]
 
 LATEST_VERSION = len(MIGRATIONS)
 

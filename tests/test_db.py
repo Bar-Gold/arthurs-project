@@ -58,6 +58,37 @@ class TestSchema:
         assert len(GroupRepo(second).list()) == 1
         second.close()
 
+    def test_an_older_database_upgrades_without_losing_data(self, tmp_path):
+        """The entire justification for having migrations at all.
+
+        Builds a database at version 1, puts a group in it, then opens it
+        normally and checks that 002 and 003 applied and the group survived.
+        """
+        import sqlite3
+
+        from fbposter.db import schema
+
+        path = tmp_path / "old.db"
+        raw = sqlite3.connect(path, isolation_level=None)
+        # No explicit transaction: _migration_001 uses executescript, which
+        # implicitly commits, so wrapping it would leave nothing to commit.
+        schema._migration_001(raw)
+        raw.execute("PRAGMA user_version = 1")
+        raw.execute(
+            "INSERT INTO groups (identifier, url, created_at) VALUES ('old', 'u', '2026-01-01')"
+        )
+        raw.close()
+
+        upgraded = Database(path)
+        try:
+            assert current_version(upgraded.connection) == LATEST_VERSION
+            columns = [r["name"] for r in upgraded.query("PRAGMA table_info(tasks)")]
+            assert "resume_at" in columns  # 003
+            assert SettingsRepo(upgraded).get("posting_timezone") == "Asia/Jerusalem"  # 002
+            assert [g.identifier for g in GroupRepo(upgraded).list()] == ["old"]
+        finally:
+            upgraded.close()
+
     def test_foreign_keys_are_enforced(self, db):
         with pytest.raises(sqlite3.IntegrityError):
             db.write(

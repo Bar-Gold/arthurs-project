@@ -15,7 +15,7 @@ dependency here, not an optional one.
 
 from __future__ import annotations
 
-from datetime import datetime, time, timezone, tzinfo
+from datetime import datetime, time, timedelta, timezone, tzinfo
 from functools import lru_cache
 
 POSTING_TIMEZONE = "Asia/Jerusalem"
@@ -70,6 +70,25 @@ def start_of_local_day(moment: datetime | None = None) -> datetime:
     local = to_local(moment or utcnow())
     midnight = datetime.combine(local.date(), time.min, tzinfo=local.tzinfo)
     return midnight.astimezone(timezone.utc)
+
+
+def next_window_open(moment: datetime, start_hour: int, end_hour: int) -> datetime:
+    """When the posting window next opens, in UTC.
+
+    Used to defer rather than drop: a batch still running when the window
+    closes at 23:00 waits for 08:00 tomorrow instead of posting through the
+    night, which is the single loudest automation signal there is.
+    """
+    local = to_local(moment)
+    if start_hour == end_hour:
+        return moment  # no restriction configured
+
+    today_open = local.replace(hour=start_hour, minute=0, second=0, microsecond=0)
+    if local < today_open:
+        return today_open.astimezone(timezone.utc)
+    if local.hour < end_hour:
+        return moment  # already inside the window
+    return (today_open + timedelta(days=1)).astimezone(timezone.utc)
 
 
 def parse_local(text: str, fmt: str = LOCAL_FORMAT) -> datetime:

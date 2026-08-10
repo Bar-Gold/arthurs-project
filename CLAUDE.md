@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository Status
 
-**Phases 1-4 are done.** Phase 1: Chrome debug-profile launcher, CDP attach, session verification. Phase 2: CustomTkinter UI shell with a live connection pill. Phase 3: SQLite persistence — groups, templates, tasks and the safety guards. Phase 4: the automation engine (`fbposter/automation/`) — navigate, compose, type, attach, publish, verify, with anomaly halting.
+**All five phases are done; v1 is feature-complete.** Chrome debug-profile launcher and CDP session (1), CustomTkinter UI (2), SQLite persistence and the safety guards (3), the automation engine in `fbposter/automation/` (4), and the scheduler/worker in `fbposter/worker.py` (5).
 
-Phase 5 (scheduler and worker thread) is not started, so **the app still posts nothing on its own**: queued batches sit at `pending` and the engine is only reachable from the `probe` and `dry-run` commands. `README.md` holds the full spec and roadmap.
+**The app now posts on its own.** Opening the GUI starts the worker, and any due batch will go out. `README.md` holds the full spec; the remaining known gap is per-group text editing, which is why the content-variation warning fires on most batches.
 
 ## What This Is
 
@@ -95,6 +95,18 @@ It is achievable because Playwright dispatches input through the DevTools protoc
 - The app's own UI must not raise itself or open modal dialogs; status goes to the queue view or a passive toast.
 - Headless is not an option — different fingerprint, defeats the real-session premise.
 - Schedules are absolute timestamps recomputed on wake, never `sleep()` countdowns. Hold off system sleep during an active batch via `SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)`; a slot missed during suspend is reported, never fired late in a burst.
+
+## Rules for the Worker (`fbposter/worker.py`)
+
+One `PostingWorker`, one thread, started by `App.start_worker()` and by nothing else. Constructing an `App` deliberately does **not** start it, which is the only reason the GUI test suite can exist.
+
+- **Every wait is an absolute instant, never a countdown.** The inter-group gap lives in `tasks.resume_at` and is compared against the wall clock each tick. Never replace it with `sleep()` — a countdown does not survive the app closing or the machine suspending.
+- **Guards are re-checked at posting time**, not just at enqueue. The window may have closed, the cap may have filled, the cooldown may have started since. Outside the window the batch defers to `clock.next_window_open` rather than posting late.
+- **Believe the `PostOutcome`.** `outcome.posted` being False (a dry run) must not be recorded as a real post — that would start a real cooldown and consume real daily cap. This was a live bug.
+- **Never retry.** `PostNotVerified` halts the batch; it does not re-post. A duplicate is worse than a missing post.
+- **Crash recovery verifies, it does not guess.** A target left `running` is checked against the group with `GroupPoster.verify`: found → done, missing → requeued, uncheckable → escalated to the user.
+- A missed slot older than `MISSED_GRACE` (2h) is marked `missed`, never fired late in a burst.
+- The worker never touches a widget. It puts `WorkerEvent`s on a `queue.Queue` that `App._pump_worker_events` drains via `after()`.
 
 ## Rules for the Automation Engine
 

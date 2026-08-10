@@ -145,7 +145,9 @@ This makes v1 roughly: *compose → pick groups from a list → post now or at o
 4.  **Phase 4 — Automation Engine.** Navigate to a group, locate the composer, type text, attach media, publish, verify the post actually appeared.
 5.  **Phase 5 — Scheduler & Safety.** Background worker, persistent queue, jitter, daily cap, anomaly detection, live queue UI.
 
-Post-v1, in likely order of value: recurring schedules, video, per-group skip, tags.
+**All five phases are complete.** The app runs a batch end to end on its own: the worker starts with the GUI, drains the queue one group at a time, waits a randomised 10–25 minutes between groups, defers past the posting window rather than posting late, holds off system sleep while a batch is in flight, and resumes rather than repeats after a crash.
+
+Post-v1, in likely order of value: **per-group text editing** (the content-variation warning currently fires on most batches with no easy way to act on it), recurring schedules, video, per-group skip, tags.
 
 ## 12. Open Questions
 *   ~~Facebook UI language~~ — **Hebrew** (settled, and corrected in Phase 4). It was assumed to be English until a live probe showed otherwise; `?locale=en_US` does not override the account setting. Selectors match Hebrew first and fall back to English.

@@ -481,6 +481,58 @@ class TestAddToQueue:
         assert view.selected_group_ids() == [one.id]
 
 
+class TestWorkerRow:
+    def test_constructing_the_app_does_not_start_posting(self, app):
+        """The safety property that lets the whole GUI suite exist: building an
+        App must never spin up a thread that posts to Facebook. Only run()
+        starts the scheduler."""
+        assert app.worker is None
+
+    def test_the_row_reports_that_the_scheduler_is_off(self, app):
+        app._refresh_worker_row()
+        app.update()
+        assert "off" in app.worker_label.cget("text")
+        assert app.worker_button.cget("text") == "Start"
+
+    def test_toggling_pauses_and_resumes(self, app):
+        from fbposter.worker import PostingWorker
+
+        # Started for real: pausing a thread that was never running would
+        # report "off", which is not the state being tested. The queue is empty,
+        # so the worker has nothing to post.
+        app.worker = PostingWorker(app.db, poster=object(), tick_seconds=0.05)
+        app.worker.start()
+        try:
+            app.toggle_worker()
+            assert app.worker.paused
+            assert app.worker_button.cget("text") == "Resume"
+            assert "paused" in app.worker_label.cget("text")
+
+            app.toggle_worker()
+            assert not app.worker.paused
+            assert app.worker_button.cget("text") == "Pause"
+        finally:
+            app.worker.stop()
+            app.worker = None
+            app._refresh_worker_row()
+
+    def test_a_halt_event_is_surfaced_loudly(self, app):
+        from fbposter.worker import WorkerEvent
+
+        app._handle_worker_event(WorkerEvent("halted", "temporarily blocked", 1, 1))
+        app.update()
+        assert app.toast.visible
+
+    def test_worker_events_refresh_the_queue_view(self, app):
+        from fbposter.worker import WorkerEvent
+
+        group = add_group(app)
+        app.task_repo.create("body", [(group.id, "body")])
+        app._handle_worker_event(WorkerEvent("posted", "Posted.", 1, 1))
+        app.update()
+        assert app.views["queue"].rows_frame.winfo_children()
+
+
 class TestQueueView:
     def test_the_empty_state_renders(self, app):
         app.show_view("queue")
