@@ -270,6 +270,41 @@ class TestVerification:
 
         assert "twice" in str(caught.value)
 
+    def test_it_reloads_the_feed_before_giving_up(self):
+        """The first live post published and still failed verification: the
+        feed we were already on had not picked it up. Reloading is what a
+        person would do, and a false negative here is expensive -- a caller
+        that retried on it would post twice.
+        """
+        page = FakePage()
+        snippet = distinctive_snippet(BODY)
+        appears_after_reload = {"done": False}
+
+        original_resolve = page._resolve
+
+        def resolve(description: str):
+            if f"text={snippet}" in description and not appears_after_reload["done"]:
+                located = original_resolve(description)
+                located.matches = 0
+                return located
+            return original_resolve(description)
+
+        original_goto = page.goto
+
+        def goto(url, timeout=0, wait_until=""):
+            # Anything after the first navigation is the verification reload.
+            if page.keyboard.typed:
+                appears_after_reload["done"] = True
+            original_goto(url, timeout, wait_until)
+
+        page._resolve = resolve
+        page.goto = goto
+
+        outcome = make_poster(page).post(request())
+
+        assert outcome.verified
+        assert len([c for c in page.calls if c[0] == "goto"]) == 2
+
     def test_verification_happens_after_the_post_click(self):
         page = FakePage()
         make_poster(page).post(request())

@@ -23,6 +23,10 @@ from .humanize import Humanizer
 NAV_TIMEOUT_MS = 45_000
 ACTION_TIMEOUT_MS = 15_000
 VERIFY_TIMEOUT_MS = 20_000
+# A brief look at the feed we are already on before bothering to reload it.
+FIRST_LOOK_TIMEOUT_MS = 8_000
+# Time for the reloaded feed to render before searching it.
+FEED_SETTLE_MS = 6_000
 # How often to re-check while waiting for the single-page app to render.
 RENDER_POLL_MS = 500
 
@@ -260,18 +264,40 @@ class GroupPoster:
         dialog.wait_for(state="detached", timeout=ACTION_TIMEOUT_MS)
         self.guard()
 
-    def verify(self, body: str) -> bool:
-        """Confirm the post actually appeared rather than trusting the click."""
-        snippet = distinctive_snippet(body)
-        if not snippet:
-            return False
+    def _snippet_visible(self, snippet: str, timeout_ms: int) -> bool:
         try:
             self.page.get_by_text(snippet, exact=False).first.wait_for(
-                state="visible", timeout=VERIFY_TIMEOUT_MS
+                state="visible", timeout=timeout_ms
             )
             return True
         except Exception:
             return False
+
+    def verify(self, body: str, group_url: str = "") -> bool:
+        """Confirm the post actually appeared rather than trusting the click.
+
+        Facebook does not reliably drop a new post into the feed you are
+        already looking at -- the first live run published successfully and
+        still failed this check, because the feed had not updated. So if the
+        post is not visible, reload the group and look again, which is what a
+        person would do.
+
+        A false negative here is expensive: it raises PostNotVerified, and a
+        caller that retried on that would post twice.
+        """
+        snippet = distinctive_snippet(body)
+        if not snippet:
+            return False
+
+        if self._snippet_visible(snippet, FIRST_LOOK_TIMEOUT_MS):
+            return True
+
+        if not group_url:
+            return False
+
+        self.page.goto(group_url, timeout=NAV_TIMEOUT_MS, wait_until="domcontentloaded")
+        self.page.wait_for_timeout(FEED_SETTLE_MS)
+        return self._snippet_visible(snippet, VERIFY_TIMEOUT_MS)
 
     def discard(self) -> None:
         """Close the composer and throw away the draft.
@@ -325,7 +351,7 @@ class GroupPoster:
             self.discard()
             raise
 
-        verified = self.verify(request.body)
+        verified = self.verify(request.body, request.group_url)
         if not verified:
             raise PostNotVerified(
                 "Clicked Post but could not find the post in the group afterwards. "
