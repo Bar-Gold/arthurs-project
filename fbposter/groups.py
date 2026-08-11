@@ -7,6 +7,7 @@ detectable regardless of how the user pasted it.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
@@ -67,3 +68,31 @@ def parse_group_url(raw: str) -> GroupRef | None:
 
 def is_group_url(raw: str) -> bool:
     return parse_group_url(raw) is not None
+
+
+# Facebook prefixes the tab title with the unread-notification count, e.g.
+# "(20+) bar-test | Facebook".
+_UNREAD_PREFIX = re.compile(r"^\(\d+\+?\)\s*")
+_SITE_SUFFIX = " | Facebook"
+
+
+def clean_group_title(title: str) -> str:
+    """Pull the group's name out of a page title.
+
+    A logged-in group page carries no og:title, so the tab title is the
+    fallback source for a name -- but only after the unread count and the site
+    suffix are stripped off it.
+
+    Returns "" when nothing usable is left, which callers treat as "keep
+    showing the identifier" rather than as an error.
+    """
+    if not title:
+        return ""
+
+    cleaned = _UNREAD_PREFIX.sub("", title.strip())
+    if cleaned.endswith(_SITE_SUFFIX):
+        cleaned = cleaned[: -len(_SITE_SUFFIX)]
+
+    cleaned = " ".join(cleaned.split())
+    # A bare "Facebook" is the site, not a group.
+    return "" if cleaned.casefold() == "facebook" else cleaned

@@ -342,6 +342,7 @@ class PostingWorker:
         self._busy = True
         self.emit("posting", f"Posting to {group.display_name}…", task.id, target.id)
 
+
         request = PostRequest(
             group_url=group.url,
             body=target.body,

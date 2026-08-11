@@ -159,6 +159,36 @@ class TestGroups:
         group = groups.add_from_url("https://www.facebook.com/groups/123")
         assert group.display_name == "123"
 
+    def test_a_stored_name_replaces_the_identifier(self, groups):
+        group = groups.add_from_url("https://www.facebook.com/groups/2509198906266893")
+        assert group.display_name == "2509198906266893"
+
+        groups.set_name(group.id, "bar-test")
+        assert groups.get(group.id).display_name == "bar-test"
+
+    def test_a_hebrew_name_round_trips(self, groups):
+        """Group names are not ASCII; this is the likeliest thing to break."""
+        group = groups.add_from_url("https://www.facebook.com/groups/464241678849975")
+        groups.set_name(group.id, "מוכרים-קונים כרטיסים להופעות")
+        assert groups.get(group.id).display_name == "מוכרים-קונים כרטיסים להופעות"
+
+    def test_missing_names_lists_only_the_unnamed(self, groups):
+        first = groups.add_from_url("https://www.facebook.com/groups/111")
+        groups.add_from_url("https://www.facebook.com/groups/222")
+        groups.set_name(first.id, "Named")
+
+        assert [g.identifier for g in groups.missing_names()] == ["222"]
+
+    def test_missing_names_is_empty_once_all_are_named(self, groups):
+        group = groups.add_from_url("https://www.facebook.com/groups/111")
+        groups.set_name(group.id, "Named")
+        assert groups.missing_names() == []
+
+    def test_a_blank_name_still_counts_as_missing(self, groups):
+        group = groups.add_from_url("https://www.facebook.com/groups/111")
+        groups.set_name(group.id, "   ")
+        assert [g.id for g in groups.missing_names()] == [group.id]
+
 
 class TestTemplates:
     def test_save_and_list(self, db):

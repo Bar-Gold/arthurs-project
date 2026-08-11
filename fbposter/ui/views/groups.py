@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import customtkinter as ctk
 
-from fbposter import clock
+from fbposter import chrome, clock
 from fbposter.db.models import Group
 from fbposter.errors import DuplicateGroup, InvalidGroupURL
 
@@ -24,6 +24,9 @@ class GroupsView(View):
 
     def build(self) -> None:
         self.groups: list[Group] = []
+        # Guards a sweep already in flight: navigating back to this screen must
+        # not start a second one loading the same pages again.
+        self._naming = False
 
         entry_row = ctk.CTkFrame(self.body, fg_color="transparent")
         entry_row.pack(fill="x")
@@ -69,6 +72,7 @@ class GroupsView(View):
 
     def on_show(self) -> None:
         self.refresh()
+        self.fetch_missing_names()
 
     # -- data --------------------------------------------------------------
     @property
@@ -94,6 +98,54 @@ class GroupsView(View):
         self.url_entry.delete(0, "end")
         self.refresh()
         self.notify(f"Added {group.identifier}.", "success")
+        # Its real name is only on Facebook, so go and read it.
+        self.fetch_missing_names()
+        return True
+
+    # -- names -------------------------------------------------------------
+    def fetch_missing_names(self) -> bool:
+        """Fill in the display names of any groups still showing an identifier.
+
+        Runs as one background job for all of them rather than one per group:
+        a sweep opens a single browser session and walks the list, instead of a
+        burst of tabs the moment this screen is opened.
+
+        Returns True if a sweep was started.
+        """
+        if self._naming:
+            return False
+
+        pending = self.repo.missing_names()
+        if not pending:
+            return False
+
+        # No browser means no names. That is not worth an error toast -- the
+        # identifiers stay, and the next visit tries again.
+        if chrome.probe() is None:
+            return False
+
+        namer = self.app.group_namer
+        wanted = {group.url: group.id for group in pending}
+        self._naming = True
+
+        def work() -> dict[int, str]:
+            found = namer.names_for(list(wanted))
+            return {
+                wanted[url]: name for url, name in found.items() if name and url in wanted
+            }
+
+        def store(named: dict[int, str]) -> None:
+            self._naming = False
+            for group_id, name in named.items():
+                self.repo.set_name(group_id, name)
+            if named:
+                self.refresh()
+
+        def give_up(_exc: Exception) -> None:
+            # Cosmetic work: leave the identifiers and say nothing.
+            self._naming = False
+
+        self.app.runner.submit(work, on_success=store, on_error=give_up)
         return True
 
     def remove_group(self, group: Group) -> None:

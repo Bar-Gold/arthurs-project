@@ -147,7 +147,9 @@ This makes v1 roughly: *compose → pick groups from a list → post now or at o
 
 **All five phases are complete.** The app runs a batch end to end on its own: the worker starts with the GUI, drains the queue one group at a time, waits a randomised 10–25 minutes between groups, defers past the posting window rather than posting late, holds off system sleep while a batch is in flight, and resumes rather than repeats after a crash.
 
-Post-v1, in likely order of value: **per-group text editing** (the content-variation warning currently fires on most batches with no easy way to act on it), recurring schedules, video, per-group skip, tags.
+Post-v1, in likely order of value: **per-group text editing** (the content-variation warning currently fires on most batches with no easy way to act on it), **Russian selectors**, recurring schedules, video, per-group skip, tags.
+
+**Russian is deferred rather than dropped.** It was asked for and started, then held back because it cannot be verified: this account's interface is Hebrew and `?locale=` does not override it, so Russian strings could only be added researched-but-untested — exactly the situation that made the original "the UI is English" assumption wrong for four phases. Do it when there is a Russian-language account whose group can be probed the way the Hebrew one was.
 
 ## 12. Open Questions
 *   ~~Facebook UI language~~ — **Hebrew** (settled, and corrected in Phase 4). It was assumed to be English until a live probe showed otherwise; `?locale=en_US` does not override the account setting. Selectors match Hebrew first and fall back to English.

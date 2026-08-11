@@ -169,6 +169,12 @@ class TaskTarget:
     post_url: str = ""
     error: str = ""
     group_identifier: str = ""
+    group_name: str = ""
+
+    @property
+    def group_label(self) -> str:
+        """What to show a human: the group's name, or its id if we lack one."""
+        return self.group_name or self.group_identifier
 
     @classmethod
     def from_row(cls, row: Mapping[str, Any]) -> "TaskTarget":
@@ -186,4 +192,5 @@ class TaskTarget:
             error=row["error"] or "",
             # Present only when the query joined groups.
             group_identifier=(row["group_identifier"] if "group_identifier" in keys else "") or "",
+            group_name=(row["group_name"] if "group_name" in keys else "") or "",
         )

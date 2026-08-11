@@ -111,6 +111,17 @@ class GroupRepo:
     def remove(self, group_id: int) -> None:
         self.db.write("DELETE FROM groups WHERE id = ?", (group_id,))
 
+    def set_name(self, group_id: int, name: str) -> None:
+        """Store the human-readable name read off the group's page."""
+        self.db.write("UPDATE groups SET name = ? WHERE id = ?", (name, group_id))
+
+    def missing_names(self) -> list[Group]:
+        """Groups still showing an identifier because no name was ever fetched."""
+        rows = self.db.query(
+            "SELECT * FROM groups WHERE archived = 0 AND TRIM(name) = '' ORDER BY id"
+        )
+        return [Group.from_row(row) for row in rows]
+
     def set_cooldown(self, group_id: int, hours: int) -> None:
         self.db.write("UPDATE groups SET cooldown_hours = ? WHERE id = ?", (hours, group_id))
 
@@ -232,7 +243,7 @@ class TaskRepo:
 
     def targets_for(self, task_id: int) -> list[TaskTarget]:
         rows = self.db.query(
-            "SELECT t.*, g.identifier AS group_identifier "
+            "SELECT t.*, g.identifier AS group_identifier, g.name AS group_name "
             "FROM task_targets t JOIN groups g ON g.id = t.group_id "
             "WHERE t.task_id = ? ORDER BY t.position",
             (task_id,),
@@ -273,7 +284,7 @@ class TaskRepo:
 
     def next_pending_target(self, task_id: int) -> TaskTarget | None:
         row = self.db.query_one(
-            "SELECT t.*, g.identifier AS group_identifier "
+            "SELECT t.*, g.identifier AS group_identifier, g.name AS group_name "
             "FROM task_targets t JOIN groups g ON g.id = t.group_id "
             "WHERE t.task_id = ? AND t.state = ? ORDER BY t.position LIMIT 1",
             (task_id, TARGET_PENDING),
@@ -287,7 +298,7 @@ class TaskRepo:
         verifies rather than assuming either way.
         """
         rows = self.db.query(
-            "SELECT t.*, g.identifier AS group_identifier "
+            "SELECT t.*, g.identifier AS group_identifier, g.name AS group_name "
             "FROM task_targets t JOIN groups g ON g.id = t.group_id "
             "WHERE t.state = ? ORDER BY t.id",
             (TARGET_RUNNING,),

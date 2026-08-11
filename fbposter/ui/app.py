@@ -12,6 +12,7 @@ import queue
 import customtkinter as ctk
 
 from .. import config
+from ..automation.groupinfo import LiveGroupNamer
 from ..db import Database
 from ..db.repo import GroupRepo, SettingsRepo, TaskRepo, TemplateRepo
 from ..worker import PostingWorker
@@ -49,7 +50,12 @@ PILL_STATES: dict[ConnectionState, tuple[theme.Color, str, str]] = {
 
 
 class App(ctk.CTk):
-    def __init__(self, check_fn=check_connection, db: Database | None = None) -> None:
+    def __init__(
+        self,
+        check_fn=check_connection,
+        db: Database | None = None,
+        group_namer=None,
+    ) -> None:
         super().__init__()
         # Both injectable so tests can drive every pill state without a browser
         # and run against a throwaway database instead of the user's real one.
@@ -58,6 +64,9 @@ class App(ctk.CTk):
         # build an App without a thread quietly posting to Facebook.
         self.worker: PostingWorker | None = None
         self._worker_after_id: str | None = None
+        # Injectable for the same reason as check_fn: the GUI tests must never
+        # open a browser to look up a group's name.
+        self.group_namer = group_namer if group_namer is not None else LiveGroupNamer()
         self.db = db if db is not None else Database(config.database_path())
         self.group_repo = GroupRepo(self.db)
         self.template_repo = TemplateRepo(self.db)

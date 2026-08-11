@@ -20,7 +20,7 @@ from fbposter.db.models import TARGET_DONE, utcnow
 from fbposter.ui.app import NAV_ITEMS, PILL_STATES
 from fbposter.ui.connection import ConnectionResult, ConnectionState
 
-from .conftest import pump_until
+from .conftest import SilentNamer, pump_until
 
 GROUP_A = "https://www.facebook.com/groups/123456789"
 GROUP_B = "https://www.facebook.com/groups/gardening.tlv"
@@ -48,6 +48,10 @@ def reset_app(app):
 
     for table in ("task_targets", "tasks", "templates", "groups"):
         app.db.write(f"DELETE FROM {table}")
+
+    # Put the browser-free namer back, in case a test swapped in its own.
+    app.group_namer = SilentNamer()
+    app.views["groups"]._naming = False
 
     compose = app.views["compose"]
     compose.textbox.delete("1.0", "end")
@@ -304,6 +308,112 @@ class TestGroupsView:
         view.add_group(GROUP_A)
         view.set_cooldown(view.groups[0], "-5")
         assert app.group_repo.list()[0].cooldown_hours == 24
+
+
+class TestGroupNames:
+    """Names are read off Facebook, so this all runs against a fake namer."""
+
+    @pytest.fixture
+    def chrome_up(self, monkeypatch):
+        from fbposter.ui.views import groups as groups_view
+
+        monkeypatch.setattr(groups_view.chrome, "probe", lambda *a, **k: {"Browser": "x"})
+
+    def namer(self, app, mapping, raises=False):
+        class Fake:
+            calls = []
+
+            def names_for(self, urls):
+                Fake.calls.append(list(urls))
+                if raises:
+                    raise RuntimeError("browser died")
+                return {url: mapping.get(url, "") for url in urls}
+
+        fake = Fake()
+        app.group_namer = fake
+        return fake
+
+    def test_a_group_shows_its_name_once_fetched(self, app, chrome_up):
+        view = app.views["groups"]
+        url = "https://www.facebook.com/groups/2509198906266893/"
+        self.namer(app, {url: "bar-test"})
+
+        view.add_group(GROUP_A.replace("123456789", "2509198906266893"))
+        assert pump_until(app, lambda: app.group_repo.list()[0].name == "bar-test")
+        assert app.group_repo.list()[0].display_name == "bar-test"
+
+    def test_a_hebrew_name_survives_the_round_trip(self, app, chrome_up):
+        """Page to database to widget, none of it ASCII."""
+        view = app.views["groups"]
+        url = "https://www.facebook.com/groups/464241678849975/"
+        hebrew = "מוכרים-קונים כרטיסים להופעות"
+        self.namer(app, {url: hebrew})
+
+        view.add_group(url)
+        assert pump_until(app, lambda: app.group_repo.list()[0].name == hebrew)
+
+        view.refresh()
+        app.update()
+        assert view.groups[0].display_name == hebrew
+
+    def test_a_failed_lookup_leaves_the_identifier(self, app, chrome_up):
+        view = app.views["groups"]
+        self.namer(app, {}, raises=True)
+
+        view.add_group(GROUP_A)
+        pump_until(app, lambda: app.runner.pending == 0, timeout=4.0)
+
+        assert app.group_repo.list()[0].display_name == "123456789"
+        assert view._naming is False, "the guard was left stuck on"
+
+    def test_an_empty_name_is_not_stored(self, app, chrome_up):
+        view = app.views["groups"]
+        self.namer(app, {})  # every lookup returns ""
+
+        view.add_group(GROUP_A)
+        pump_until(app, lambda: app.runner.pending == 0, timeout=4.0)
+        assert app.group_repo.list()[0].name == ""
+
+    def test_no_sweep_starts_when_chrome_is_down(self, app, monkeypatch):
+        """No browser is not an error, it is just no names."""
+        from fbposter.ui.views import groups as groups_view
+
+        monkeypatch.setattr(groups_view.chrome, "probe", lambda *a, **k: None)
+        fake = self.namer(app, {})
+        type(fake).calls = []
+
+        add_group(app)
+        assert app.views["groups"].fetch_missing_names() is False
+        assert type(fake).calls == []
+
+    def test_a_second_sweep_cannot_start_while_one_is_running(self, app, chrome_up):
+        view = app.views["groups"]
+        self.namer(app, {})
+        add_group(app)
+
+        assert view.fetch_missing_names() is True
+        assert view.fetch_missing_names() is False, "started a duplicate sweep"
+        pump_until(app, lambda: app.runner.pending == 0, timeout=4.0)
+
+    def test_nothing_happens_when_every_group_is_named(self, app, chrome_up):
+        group = add_group(app)
+        app.group_repo.set_name(group.id, "Already Named")
+        self.namer(app, {})
+        assert app.views["groups"].fetch_missing_names() is False
+
+    def test_the_queue_shows_the_name_not_the_id(self, app):
+        group = add_group(app)
+        app.group_repo.set_name(group.id, "bar-test")
+        task = app.task_repo.create("body", [(group.id, "body")])
+
+        target = app.task_repo.targets_for(task.id)[0]
+        assert target.group_name == "bar-test"
+        assert target.group_label == "bar-test"
+
+    def test_the_queue_falls_back_to_the_id(self, app):
+        group = add_group(app)
+        task = app.task_repo.create("body", [(group.id, "body")])
+        assert app.task_repo.targets_for(task.id)[0].group_label == "123456789"
 
 
 class TestComposeView:

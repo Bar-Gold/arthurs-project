@@ -160,7 +160,7 @@ class QueueView(View):
 
             ctk.CTkLabel(
                 row,
-                text=target.group_identifier,
+                text=target.group_label,
                 font=ctk.CTkFont(family=theme.FONT_FAMILY, size=theme.SIZE_SMALL),
                 text_color=theme.TEXT,
                 anchor="w",
