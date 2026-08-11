@@ -7,6 +7,11 @@ pytest>=9.1
 # library that shifts underneath the app is not worth the flexibility.
 customtkinter==6.0.0
 
+# Read only by the Compose preview, to scale attached images down to thumbnails.
+# CustomTkinter treats it as optional and so does the app: without it the
+# preview draws a placeholder tile per image instead of crashing.
+Pillow>=10.0
+
 # Windows ships no IANA time zone database, so Asia/Jerusalem is unavailable
 # without this. The posting window is judged in Israel local time, so it is a
 # hard requirement rather than a nicety.

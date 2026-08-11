@@ -17,6 +17,7 @@ This is a low-volume, human-paced workload. The system should be tuned for *look
 *   **UI Framework:** **CustomTkinter** (decided). Gives a modern, polished look with far less code than PyQt6. Since Playwright runs on a background worker thread feeding a queue, the async integration that PyQt6 offers is not needed here.
 *   **Browser Automation:** Playwright (Python, **sync API**) connecting to a running Chrome over CDP via `connect_over_cdp`.
 *   **Database:** SQLite (local `.db` file) for groups, tags, templates, scheduled tasks, and queue/run history.
+*   **Images:** Pillow, read only by the Compose preview to scale attachments down to thumbnails. Optional at runtime — without it the preview draws a tile per image and nothing else changes.
 *   **Threading model:** Tkinter mainloop on the main thread; one single worker thread owns Playwright and processes the queue serially. UI and worker communicate through a thread-safe queue — Playwright objects never touch the UI thread.
 
 ## 4. Chrome Session Setup (read before Phase 1)
@@ -58,6 +59,7 @@ The **connection indicator lives in the sidebar**, not in a screen of its own: i
     *   Spacious free-text input with a live character count.
     *   **Per-group wording.** Tabs above the editor — "All groups" plus one per selected group — switch the editor between the shared base text and a version written for that group. This is what makes the content-variation rule in §7 actionable rather than a warning with no remedy. Editing the base text resets the per-group versions, and says so.
     *   Attach images.
+    *   **Preview.** A `Write | Preview` toggle above the editor shows the post as the group will receive it — the wording of the active tab, wrapped as it will wrap, with the attached images scaled down. Deliberately generic: no imitation of Facebook's chrome and no profile picture, because the question it answers is whether the text and the image look right. It matters most alongside per-group wording, where each group gets different words and reading one back is the only way to check it. An image that cannot be read is drawn as a named tile rather than dropped — it is still going to be uploaded.
     *   "Save as Template" storing text + media paths for reuse.
     *   Templates are a starting point, not a lock — the user edits before sending.
 *   **Groups**

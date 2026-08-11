@@ -17,8 +17,10 @@ from pathlib import Path
 import pytest
 
 from fbposter.db.models import TARGET_DONE, utcnow
+from fbposter.ui import preview as preview_module
 from fbposter.ui.app import NAV_ITEMS, PILL_STATES
 from fbposter.ui.connection import ConnectionResult, ConnectionState
+from fbposter.ui.views.compose import ALL_GROUPS_TAB, PREVIEW, REWORDED, SHARED_WORDING, WRITE
 
 from .conftest import SilentNamer, pump_until
 
@@ -80,6 +82,9 @@ def reset_app(app):
     compose.template_name.delete(0, "end")
     compose.schedule_mode.set("Post now")
     compose._sync_schedule_entry()
+    # A test left in Preview would leave the editor unpacked for the next one.
+    compose.view_mode.set(WRITE)
+    compose.sync_mode()
 
     for view in app.views.values():
         view.on_show()
@@ -669,6 +674,201 @@ class TestQueueingPerGroupText:
 
         assert view.add_to_queue() is False
         assert app.task_repo.list_recent() == []
+
+
+class TestPreview:
+    """Seeing the post before it goes out.
+
+    Worth more than it looks with per-group wording: five groups get five
+    different posts, and reading one back is the only way to check it. So the
+    preview must show the *committed* text for the *active tab* -- a preview of
+    the wrong group's words would be worse than no preview at all.
+    """
+
+    def setup_compose(self, app, count=2):
+        return TestPerGroupText().setup_compose(app, count)
+
+    def write(self, view, text):
+        TestPerGroupText().write(view, text)
+
+    def show_preview(self, view):
+        view.view_mode.set(PREVIEW)
+        view.sync_mode()
+
+    def test_the_toggle_swaps_the_editor_for_the_preview(self, app):
+        view = app.views["compose"]
+        assert view.editor.winfo_manager() == "pack"
+
+        self.show_preview(view)
+        assert view.editor.winfo_manager() == ""
+        assert view.preview.winfo_manager() == "pack"
+
+        view.view_mode.set(WRITE)
+        view.sync_mode()
+        assert view.editor.winfo_manager() == "pack"
+        assert view.preview.winfo_manager() == ""
+
+    def test_it_starts_on_the_write_side(self, app):
+        assert app.views["compose"].view_mode.get() == WRITE
+
+    def test_the_base_text_is_previewed(self, app):
+        view = app.views["compose"]
+        self.write(view, "the shared wording")
+        self.show_preview(view)
+        assert view.preview.text_shown() == "the shared wording"
+
+    def test_each_group_previews_its_own_wording(self, app):
+        """The whole reason this is worth building."""
+        view, groups = self.setup_compose(app)
+        self.write(view, "base")
+        view.select_tab(groups[0].id)
+        self.write(view, "wording for the first group")
+        view.select_tab(groups[1].id)
+        self.write(view, "wording for the second group")
+
+        self.show_preview(view)
+        assert view.preview.text_shown() == "wording for the second group"
+
+        view.select_tab(groups[0].id)
+        assert view.preview.text_shown() == "wording for the first group"
+
+        view.select_tab(None)
+        assert view.preview.text_shown() == "base"
+
+    def test_a_group_without_a_rewrite_previews_the_base(self, app):
+        view, groups = self.setup_compose(app)
+        self.write(view, "shared")
+        self.show_preview(view)
+        view.select_tab(groups[0].id)
+        assert view.preview.text_shown() == "shared"
+
+    def test_the_heading_names_the_group_being_previewed(self, app):
+        view, groups = self.setup_compose(app)
+        self.write(view, "base")
+        view.select_tab(groups[0].id)
+        self.write(view, "custom")
+        self.show_preview(view)
+
+        heading, subheading = view.preview_heading()
+        assert heading == app.group_repo.get(groups[0].id).display_name
+        assert subheading == REWORDED
+
+    def test_a_group_on_the_shared_wording_says_so(self, app):
+        view, groups = self.setup_compose(app)
+        self.write(view, "base")
+        self.show_preview(view)
+        view.select_tab(groups[0].id)
+        assert view.preview_heading()[1] == SHARED_WORDING
+
+    def test_the_base_tab_heading_counts_the_groups(self, app):
+        view, groups = self.setup_compose(app)
+        heading, subheading = view.preview_heading()
+        assert heading == ALL_GROUPS_TAB
+        assert "2 groups" in subheading
+
+    def test_an_empty_post_says_there_is_nothing_to_see(self, app):
+        view = app.views["compose"]
+        self.show_preview(view)
+        assert view.preview.text_shown() == ""
+        assert view.preview.images == []
+
+    def test_an_attached_image_is_shown(self, app, tmp_path):
+        Image = pytest.importorskip("PIL.Image")
+        path = tmp_path / "photo.png"
+        Image.new("RGB", (800, 600), (46, 125, 74)).save(path)
+
+        view = app.views["compose"]
+        self.write(view, "with a picture")
+        view.attachments = [path]
+        view._render_attachments()
+        self.show_preview(view)
+
+        assert len(view.preview.images) == 1
+        assert view.preview.images[0].cget("size")[0] <= preview_module.IMAGE_MAX_WIDTH
+
+    def test_an_unreadable_image_still_shows_that_it_is_attached(self, app, tmp_path):
+        """It is still going to be uploaded, so it must not vanish from the
+        preview -- the user would think the attachment had been dropped."""
+        view = app.views["compose"]
+        self.write(view, "with a broken picture")
+        view.attachments = [tmp_path / "deleted.png"]
+        view._render_attachments()
+        self.show_preview(view)
+
+        assert view.preview.images == []
+        assert view.preview.placeholders == [tmp_path / "deleted.png"]
+
+    def test_images_with_no_text_are_still_a_post(self, app, tmp_path):
+        Image = pytest.importorskip("PIL.Image")
+        path = tmp_path / "only.png"
+        Image.new("RGB", (200, 200), (30, 90, 200)).save(path)
+
+        view = app.views["compose"]
+        view.attachments = [path]
+        view._render_attachments()
+        self.show_preview(view)
+
+        assert view.preview.text_shown() == preview_module.NO_TEXT
+        assert len(view.preview.images) == 1
+
+    def test_removing_an_attachment_updates_a_visible_preview(self, app, tmp_path):
+        Image = pytest.importorskip("PIL.Image")
+        path = tmp_path / "photo.png"
+        Image.new("RGB", (400, 300), (46, 125, 74)).save(path)
+
+        view = app.views["compose"]
+        self.write(view, "text")
+        view.attachments = [path]
+        view._render_attachments()
+        self.show_preview(view)
+        assert len(view.preview.images) == 1
+
+        view._remove_attachment(path)
+        assert view.preview.images == []
+
+    def test_deselecting_the_previewed_group_falls_back_to_the_base(self, app):
+        view, groups = self.setup_compose(app)
+        self.write(view, "base")
+        view.select_tab(groups[0].id)
+        self.write(view, "custom")
+        self.show_preview(view)
+
+        view._group_vars[groups[0].id].set(False)
+        view.refresh_tabs()
+
+        assert view.preview_heading()[0] == ALL_GROUPS_TAB
+        assert view.preview.text_shown() == "base"
+
+    def test_previewing_does_not_change_what_gets_posted(self, app):
+        """Looking at a post must never edit it."""
+        view, groups = self.setup_compose(app)
+        self.write(view, "base")
+        view.select_tab(groups[0].id)
+        self.write(view, "custom")
+
+        self.show_preview(view)
+        view.select_tab(None)
+        view.select_tab(groups[1].id)
+        view.view_mode.set(WRITE)
+        view.sync_mode()
+
+        assert view.body_for(groups[0].id) == "custom"
+        assert view.body_for(groups[1].id) == "base"
+        assert view._base_body == "base"
+
+    def test_rendering_is_skipped_while_writing(self, app):
+        """refresh_preview() is called from everywhere, so it has to be free
+        when the preview is not on screen."""
+        view = app.views["compose"]
+        calls = []
+        original = view.preview.render
+        view.preview.render = lambda **kwargs: calls.append(kwargs)
+        try:
+            view.refresh_preview()
+            view.refresh_tabs()
+            assert calls == []
+        finally:
+            view.preview.render = original
 
 
 class TestAddToQueue:

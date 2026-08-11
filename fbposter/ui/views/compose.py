@@ -13,6 +13,7 @@ from fbposter.db.models import utcnow
 from fbposter.guards import PlannedTarget, evaluate_batch
 
 from .. import theme
+from ..preview import PostPreview
 from .base import View, card, phase_note
 
 IMAGE_TYPES = [("Images", "*.jpg *.jpeg *.png *.gif *.webp"), ("All files", "*.*")]
@@ -24,6 +25,13 @@ TAB_LABEL_CHARS = 16
 
 POST_NOW = "Post now"
 SCHEDULE = "Schedule"
+
+WRITE = "Write"
+PREVIEW = "Preview"
+
+ALL_GROUPS_TAB = "All groups"
+REWORDED = "Just now · reworded for this group"
+SHARED_WORDING = "Just now · the shared wording"
 
 
 def parse_schedule(raw: str) -> datetime:
@@ -70,13 +78,28 @@ class ComposeView(View):
 
     # -- left column -------------------------------------------------------
     def _build_editor(self, parent: ctk.CTkFrame) -> None:
+        top_row = ctk.CTkFrame(parent, fg_color="transparent", height=TAB_STRIP_HEIGHT)
+
+        # Packed before the tab strip so the strip, which expands, cannot push
+        # it off the row.
+        self.view_mode = ctk.CTkSegmentedButton(
+            top_row,
+            values=[WRITE, PREVIEW],
+            width=150,
+            height=26,
+            font=ctk.CTkFont(family=theme.FONT_FAMILY, size=theme.SIZE_SMALL),
+            command=lambda _choice: self.sync_mode(),
+        )
+        self.view_mode.set(WRITE)
+        self.view_mode.pack(side="right", padx=(theme.PAD_S, 0))
+
         # Fixed height: the tab strip must never grow and squeeze the editor,
         # and CTkFrame would happily default to 200px if left alone.
         # Scrollable because 5-7 groups' tabs do not fit across the editor, but
         # the scrollbar is muted -- it is a rarely-used affordance and a heavy
         # grey bar under the tabs dominated the screen.
         self.tab_strip = ctk.CTkScrollableFrame(
-            parent,
+            top_row,
             orientation="horizontal",
             height=TAB_STRIP_HEIGHT,
             fg_color="transparent",
@@ -84,8 +107,12 @@ class ComposeView(View):
             scrollbar_button_color=theme.BORDER,
             scrollbar_button_hover_color=theme.TEXT_MUTED,
         )
+        self.tab_strip.pack(side="left", fill="x", expand=True)
 
         editor = card(parent)
+        self.editor = editor
+        # Shares the editor's slot: exactly one of the two is packed.
+        self.preview = PostPreview(parent)
 
         self.textbox = ctk.CTkTextbox(
             editor,
@@ -148,7 +175,7 @@ class ComposeView(View):
         attach_row.pack(side="bottom", fill="x", pady=(theme.PAD_M, 0))
         # Tabs first, then the editor -- the expanding widget is packed last so
         # it cannot shove the fixed controls off the window.
-        self.tab_strip.pack(side="top", fill="x", pady=(0, theme.PAD_XS))
+        top_row.pack(side="top", fill="x", pady=(0, theme.PAD_XS))
         editor.pack(side="top", fill="both", expand=True)
         self.refresh_tabs()
 
@@ -433,6 +460,8 @@ class ComposeView(View):
         for child in self.attachment_list.winfo_children():
             child.destroy()
 
+        self.refresh_preview()
+
         if not self.attachments:
             phase_note(self.attachment_list, "No images attached.").pack(anchor="w")
             return
@@ -521,6 +550,50 @@ class ComposeView(View):
         self.textbox.insert("1.0", text)
         self._update_counter()
 
+    # -- preview -----------------------------------------------------------
+    def sync_mode(self) -> None:
+        """Swap the editor and the preview in and out of the same slot."""
+        if self.view_mode.get() == PREVIEW:
+            # The preview must show what would be sent, so commit the editor
+            # first -- exactly as switching tabs does.
+            self.capture()
+            self.editor.pack_forget()
+            self.preview.pack(side="top", fill="both", expand=True)
+            # Marks a rewrite that was typed a moment ago, and redraws the
+            # preview on its way through.
+            self.refresh_tabs()
+        else:
+            self.preview.pack_forget()
+            self.editor.pack(side="top", fill="both", expand=True)
+
+    def preview_heading(self) -> tuple[str, str]:
+        """The name and meta line above the previewed post."""
+        if self._editing is None:
+            count = len(self.selected_group_ids())
+            if count == 0:
+                return ALL_GROUPS_TAB, "Just now · no groups selected yet"
+            return ALL_GROUPS_TAB, f"Just now · {count} group{'s' if count != 1 else ''}"
+
+        group = self.app.group_repo.get(self._editing)
+        name = group.display_name if group else ALL_GROUPS_TAB
+        return name, REWORDED if self.has_rewrite(self._editing) else SHARED_WORDING
+
+    def refresh_preview(self) -> None:
+        """Redraw the preview, if it is the pane on screen.
+
+        Cheap to call from anywhere: in Write mode it does nothing at all,
+        which is why every path that changes the post can just call it.
+        """
+        if getattr(self, "view_mode", None) is None or self.view_mode.get() != PREVIEW:
+            return
+
+        heading, subheading = self.preview_heading()
+        # Committed state, never the live editor -- same rule as body_for().
+        text = self._base_body if self._editing is None else self.body_for(self._editing)
+        self.preview.render(
+            heading=heading, subheading=subheading, text=text, media=list(self.attachments)
+        )
+
     def refresh_tabs(self) -> None:
         """Rebuild the tab strip from the current selection."""
         strip = getattr(self, "tab_strip", None)
@@ -532,6 +605,11 @@ class ComposeView(View):
         if self._editing is not None and self._editing not in self.selected_group_ids():
             self._editing = None
             self._show(self._base_body)
+
+        # Every path that changes the post ends up here, so this is the one
+        # place the preview has to be kept in step. It is a no-op in Write
+        # mode, which is the mode it is called in almost every time.
+        self.refresh_preview()
 
         # Destroying and recreating buttons inside a CTkScrollableFrame is
         # surprisingly expensive -- doing it unconditionally on every refresh
@@ -551,7 +629,7 @@ class ComposeView(View):
             child.destroy()
 
         self._tab_buttons: dict[int | None, ctk.CTkButton] = {}
-        self._add_tab(None, "All groups")
+        self._add_tab(None, ALL_GROUPS_TAB)
 
         for group_id in self.selected_group_ids():
             group = self.app.group_repo.get(group_id)
@@ -574,7 +652,12 @@ class ComposeView(View):
         active = target == self._editing
         button = ctk.CTkButton(
             self.tab_strip,
-            text=label,
+            # A CTkButton is 140px wide unless told otherwise, which fits about
+            # two tabs before the strip starts scrolling. width=10 makes it
+            # shrink to its text instead; the spaces are the breathing room
+            # that a fixed width used to provide.
+            text=f" {label} ",
+            width=10,
             height=26,
             corner_radius=theme.RADIUS,
             fg_color=theme.ACCENT if active else "transparent",

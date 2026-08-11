@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **All five phases are done; v1 is feature-complete.** Chrome debug-profile launcher and CDP session (1), CustomTkinter UI (2), SQLite persistence and the safety guards (3), the automation engine in `fbposter/automation/` (4), and the scheduler/worker in `fbposter/worker.py` (5).
 
-**The app now posts on its own.** Opening the GUI starts the worker, and any due batch will go out. `README.md` holds the full spec; the remaining known gap is per-group text editing, which is why the content-variation warning fires on most batches.
+**The app now posts on its own.** Opening the GUI starts the worker, and any due batch will go out. `README.md` holds the full spec. Per-group text editing and the Compose preview shipped after v1; the content-variation warning is now actionable, so it should be rare rather than constant.
 
 ## What This Is
 
@@ -61,7 +61,7 @@ UI and worker communicate through a thread-safe queue. Schema sketch (groups, ta
 
 Modules that exist so far: `fbposter/config.py` (paths, port, flags), `fbposter/chrome.py` (find/launch Chrome, probe the debug port), `fbposter/session.py` (CDP attach, session verification), `fbposter/strings.py` (all Facebook URLs and English UI strings), `fbposter/errors.py`.
 
-UI modules: `fbposter/ui/app.py` (window, sidebar, connection pill), `views/` (compose, groups, queue), `theme.py`, `toast.py`, `background.py`, `connection.py`. Plus `fbposter/groups.py` for group-URL parsing.
+UI modules: `fbposter/ui/app.py` (window, sidebar, connection pill), `views/` (compose, groups, queue), `theme.py`, `toast.py`, `background.py`, `connection.py`, `preview.py` (the Compose preview card). Plus `fbposter/groups.py` for group-URL parsing.
 
 Storage: `fbposter/db/` — `connection.py` (per-thread connections), `schema.py` (migrations), `models.py`, `repo.py`. Safety rules: `fbposter/guards.py`.
 
@@ -79,6 +79,9 @@ Storage: `fbposter/db/` — `connection.py` (per-thread connections), `schema.py
 - **No modal dialogs for status, ever** — use `app.toast`. The single permitted OS dialog is the media file picker, because the user asked for it and it cannot fire during a batch.
 - **Compose owns per-group wording, and `body_for()` is the only way to read it.** `_base_body` is the shared text, `_bodies` holds per-group rewrites, `_editing` is the active tab. `body_for()` reads committed state only, so `capture()` must run first — it once returned the live editor contents when that group was active, which handed back the wrong text as soon as `_editing` was assigned before the read. Editing the base clears the rewrites (the user's choice) and toasts, and only when the text genuinely changed — a tab switch must never cost someone their wording.
 - **Rebuilding a `CTkScrollableFrame`'s children is expensive.** The Compose tab strip skips the rebuild when nothing visible changed; doing it unconditionally on every refresh was measurable across the suite.
+- **The Compose preview reads committed state, never the editor.** `Write | Preview` swaps `self.editor` and `self.preview` in and out of one slot; `sync_mode()` captures first, and `refresh_preview()` renders `body_for(active tab)`. It is a no-op in Write mode, which is why `refresh_tabs()` can call it unconditionally. A preview showing another group's words would be worse than no preview. `fbposter/ui/preview.py` owns the drawing and must never raise on a bad attachment — a missing or corrupt image draws a named tile, because the file is still going to be uploaded.
+- **Pillow is optional at runtime, required in `requirements.txt`.** CustomTkinter treats it that way and so does the preview: without it every image falls back to a tile. Nothing else in the app reads it.
+- **`CTkButton` is 140px wide unless told otherwise.** About two Compose tabs fit before the strip starts scrolling; `width=10` makes a button shrink to its text instead.
 - **Colours are `(light, dark)` tuples in `theme.py`.** Never hardcode a hex value in a widget; a colour defined for only one mode is invisible in the other.
 - **`CTkFrame` defaults to 200x200.** Any frame used as a thin divider, spine or spacer must pass explicit dimensions, or it silently stretches its row (216px queue rows) or draws as a stray 200px line (an "invisible" spacer frame). Both bugs happened; `tests/test_ui.py` guards both. Use `pady` for spacing rather than an empty frame.
 - **The expanding widget in a view must be packed last**, after the fixed controls are anchored with `side="bottom"`. Otherwise it claims the frame and pushes them off-window.
