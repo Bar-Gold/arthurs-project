@@ -9,3 +9,6 @@ __pycache__/
 # Local database and any media staged for posting
 *.db
 *.db-journal
+
+# Costume
+notes and bugs.txt

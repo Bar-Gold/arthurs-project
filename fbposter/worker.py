@@ -64,6 +64,23 @@ TICK_SECONDS = 5.0
 FINISHED_STATES = {TASK_DONE, TASK_HALTED, TASK_CANCELLED, TASK_MISSED}
 
 
+def _readable(exc: Exception) -> str:
+    """Turn a raw Playwright failure into something worth reading.
+
+    A locator timeout stringifies into a wall of obfuscated Facebook class
+    names, which told the user nothing and buried the one useful fact: it timed
+    out waiting for the page.
+    """
+    text = str(exc)
+    if "Timeout" in text and "exceeded" in text:
+        return (
+            "Timed out waiting for Facebook to respond. Usually a slow or dropped "
+            "connection. Nothing was posted; the batch stopped rather than guessing."
+        )
+    first_line = text.strip().splitlines()[0] if text.strip() else exc.__class__.__name__
+    return f"Unexpected failure: {first_line[:300]}"
+
+
 @dataclass(frozen=True)
 class WorkerEvent:
     kind: str
@@ -341,7 +358,7 @@ class PostingWorker:
             self._halt(task, target, str(exc))
             return True
         except Exception as exc:
-            self._halt(task, target, f"Unexpected failure: {exc}")
+            self._halt(task, target, _readable(exc))
             return True
         finally:
             self._busy = False

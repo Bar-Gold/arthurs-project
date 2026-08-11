@@ -166,9 +166,18 @@ class QueueView(View):
                 anchor="w",
             ).pack(side="left")
 
+            # Raw Playwright errors run to hundreds of characters of obfuscated
+            # class names and swamped the row. Show a readable amount.
+            detail = target.error or STATE_LABELS.get(target.state, target.state)
+            if len(detail) > 160:
+                detail = detail[:157].rstrip() + "…"
+
             ctk.CTkLabel(
                 row,
-                text=target.error or STATE_LABELS.get(target.state, target.state),
+                text=detail,
                 font=ctk.CTkFont(family=theme.FONT_FAMILY, size=theme.SIZE_SMALL),
                 text_color=STATE_COLORS.get(target.state, theme.NEUTRAL),
+                anchor="e",
+                justify="right",
+                wraplength=430,
             ).pack(side="right")

@@ -21,7 +21,12 @@ from .detect import PageVerdict, classify, halt_message
 from .humanize import Humanizer
 
 NAV_TIMEOUT_MS = 45_000
-ACTION_TIMEOUT_MS = 15_000
+# Generous on purpose. These were 15s and a slow connection blew straight
+# through them on a post that was otherwise fine.
+ACTION_TIMEOUT_MS = 30_000
+# Publishing is the slowest step: Facebook has to accept the text and any
+# uploads before it closes the composer.
+PUBLISH_TIMEOUT_MS = 60_000
 VERIFY_TIMEOUT_MS = 20_000
 # A brief look at the feed we are already on before bothering to reload it.
 FIRST_LOOK_TIMEOUT_MS = 8_000
@@ -256,14 +261,27 @@ class GroupPoster:
         file_input.set_input_files([str(path) for path in paths])
         self.human.settle()
 
-    def publish(self, dialog: Any) -> None:
+    def publish(self, dialog: Any) -> bool:
+        """Click Post. Returns whether the composer actually closed.
+
+        A composer that has not closed is a hint, not a verdict. On a slow
+        connection it can linger after a post that went out perfectly well, so
+        this reports what it saw and lets verification decide. Treating the
+        timeout as failure is what turned a slow moment into a halted batch.
+        """
         button = self._find_post_button(dialog)
         if button is None:
             raise ComposerNotFound("The composer has no Post button.")
 
         self.human.hover_then_click(button)
-        dialog.wait_for(state="detached", timeout=ACTION_TIMEOUT_MS)
+        try:
+            dialog.wait_for(state="detached", timeout=PUBLISH_TIMEOUT_MS)
+            closed = True
+        except Exception:
+            closed = False
+
         self.guard()
+        return closed
 
     def _snippet_visible(self, snippet: str, timeout_ms: int) -> bool:
         try:
@@ -344,7 +362,7 @@ class GroupPoster:
                     ),
                 )
 
-            self.publish(dialog)
+            closed = self.publish(dialog)
         except AutomationHalted:
             self.discard()
             raise
@@ -352,18 +370,30 @@ class GroupPoster:
             self.discard()
             raise
 
-        verified = self.verify(request.body, request.group_url)
-        if not verified:
-            raise PostNotVerified(
-                "Clicked Post but could not find the post in the group afterwards. "
-                "It may still have gone out -- check the group before retrying, "
-                "because posting it twice is worse than not posting it at all."
+        # Verification is the source of truth, not whether the dialog closed.
+        if self.verify(request.body, request.group_url):
+            return PostOutcome(
+                posted=True,
+                verified=True,
+                detail="Posted and confirmed visible in the group.",
             )
 
-        return PostOutcome(
-            posted=True,
-            verified=True,
-            detail="Posted and confirmed visible in the group.",
+        if not closed:
+            # Still sitting in an open composer, so nothing was published --
+            # clear it rather than leaving a draft for the next run.
+            self.discard()
+            raise PostNotVerified(
+                "Clicked Post but the composer never closed and the post is not in "
+                "the group, so it almost certainly did not go out. Often a slow or "
+                "dropped connection. Nothing was posted and the draft was cleared, "
+                "so it is safe to try again."
+            )
+
+        raise PostNotVerified(
+            "Clicked Post, the composer closed, but the post could not be found in "
+            "the group afterwards. It may well have gone out -- check the group "
+            "before queueing it again, because posting it twice is worse than not "
+            "posting it at all."
         )
 
     # -- read-only ---------------------------------------------------------

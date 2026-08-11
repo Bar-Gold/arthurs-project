@@ -259,9 +259,58 @@ class TestMissingElements:
         assert ("press", "Escape") in page.calls
 
     def test_a_dialog_that_never_opens_is_an_error(self):
+        # Distinct from never_detaches: this composer never appears at all,
+        # which is a real failure rather than a slow publish.
         page = FakePage(wait_fails_for=("role=dialog:None",))
         with pytest.raises(TimeoutError):
             make_poster(page).post(request())
+
+
+class TestSlowPublish:
+    """The composer not closing is a hint, not a verdict.
+
+    A hard 15s timeout on 'the dialog must detach' turned one slow moment into a
+    halted batch, so the composer's state no longer decides the outcome --
+    verification does.
+    """
+
+    def test_a_slow_post_that_did_go_out_still_succeeds(self):
+        page = FakePage(never_detaches=True)
+        # The dialog never detaches, but the text is findable in the feed.
+        outcome = make_poster(page).post(request())
+
+        assert outcome.posted
+        assert outcome.verified
+
+    def test_a_lingering_composer_with_no_post_says_it_is_safe_to_retry(self):
+        snippet = distinctive_snippet(BODY)
+        page = FakePage(never_detaches=True, missing=(f"text={snippet}",))
+
+        with pytest.raises(PostNotVerified) as caught:
+            make_poster(page).post(request())
+
+        message = str(caught.value)
+        assert "did not go out" in message
+        assert "safe to try again" in message
+
+    def test_a_lingering_composer_is_cleared_rather_than_left_as_a_draft(self):
+        snippet = distinctive_snippet(BODY)
+        page = FakePage(never_detaches=True, missing=(f"text={snippet}",))
+
+        with pytest.raises(PostNotVerified):
+            make_poster(page).post(request())
+
+        assert ("press", "Escape") in page.calls
+
+    def test_a_closed_composer_with_no_post_warns_against_reposting(self):
+        """The genuinely ambiguous case: it may have gone out."""
+        snippet = distinctive_snippet(BODY)
+        page = FakePage(missing=(f"text={snippet}",))
+
+        with pytest.raises(PostNotVerified) as caught:
+            make_poster(page).post(request())
+
+        assert "twice" in str(caught.value)
 
 
 class TestVerification:

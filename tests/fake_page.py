@@ -22,11 +22,13 @@ class FakeLocator:
         *,
         matches: int = 1,
         wait_fails_for: tuple[str, ...] = (),
+        never_detaches: bool = False,
     ) -> None:
         self.page = page
         self.description = description
         self.matches = matches
         self._wait_fails_for = wait_fails_for
+        self._never_detaches = never_detaches
 
     # -- chaining ----------------------------------------------------------
     @property
@@ -60,6 +62,10 @@ class FakeLocator:
         self.page.calls.append(("wait_for", self.description, state))
         if self.description in self._wait_fails_for:
             raise TimeoutError(f"{self.description} never reached {state}")
+        # A composer that opens fine but never closes -- what a slow connection
+        # looks like. Only the detach wait fails.
+        if self._never_detaches and state == "detached":
+            raise TimeoutError(f"{self.description} never detached")
         # Waiting for something that is not there times out in Playwright too;
         # without this the fake would let verification pass on a missing post.
         if self.matches == 0 and state != "detached":
@@ -101,6 +107,8 @@ class FakePage:
     body_text: str = "A normal looking group feed"
     missing: tuple[str, ...] = ()
     wait_fails_for: tuple[str, ...] = ()
+    # The composer opens but never closes after Post is clicked.
+    never_detaches: bool = False
     calls: list[tuple] = field(default_factory=list)
     on_click: dict[str, Any] = field(default_factory=dict)
 
@@ -116,6 +124,7 @@ class FakePage:
             description,
             matches=0 if absent else 1,
             wait_fails_for=self.wait_fails_for,
+            never_detaches=self.never_detaches,
         )
 
     @property
