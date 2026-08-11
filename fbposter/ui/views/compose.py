@@ -18,6 +18,9 @@ from .base import View, card, phase_note
 IMAGE_TYPES = [("Images", "*.jpg *.jpeg *.png *.gif *.webp"), ("All files", "*.*")]
 SCHEDULE_FORMAT = clock.LOCAL_FORMAT
 RIGHT_COLUMN_WIDTH = 330
+TAB_STRIP_HEIGHT = 42
+# Group names can be long Hebrew or Russian strings; tabs stay readable.
+TAB_LABEL_CHARS = 16
 
 POST_NOW = "Post now"
 SCHEDULE = "Schedule"
@@ -39,6 +42,14 @@ class ComposeView(View):
         self.attachments: list[Path] = []
         self._group_vars: dict[int, ctk.BooleanVar] = {}
 
+        # The shared wording, and the per-group rewrites that override it.
+        # Sending the same words to every group is the main ban vector at this
+        # volume, so this is what the warning in guards.py exists to push
+        # towards -- and until now there was no way to act on it.
+        self._base_body = ""
+        self._bodies: dict[int, str] = {}
+        self._editing: int | None = None  # None == the "All groups" tab
+
         self.body.grid_columnconfigure(0, weight=1)
         self.body.grid_columnconfigure(1, minsize=RIGHT_COLUMN_WIDTH)
         self.body.grid_rowconfigure(0, weight=1)
@@ -59,6 +70,21 @@ class ComposeView(View):
 
     # -- left column -------------------------------------------------------
     def _build_editor(self, parent: ctk.CTkFrame) -> None:
+        # Fixed height: the tab strip must never grow and squeeze the editor,
+        # and CTkFrame would happily default to 200px if left alone.
+        # Scrollable because 5-7 groups' tabs do not fit across the editor, but
+        # the scrollbar is muted -- it is a rarely-used affordance and a heavy
+        # grey bar under the tabs dominated the screen.
+        self.tab_strip = ctk.CTkScrollableFrame(
+            parent,
+            orientation="horizontal",
+            height=TAB_STRIP_HEIGHT,
+            fg_color="transparent",
+            scrollbar_fg_color="transparent",
+            scrollbar_button_color=theme.BORDER,
+            scrollbar_button_hover_color=theme.TEXT_MUTED,
+        )
+
         editor = card(parent)
 
         self.textbox = ctk.CTkTextbox(
@@ -83,9 +109,24 @@ class ComposeView(View):
         )
         self.counter.pack(side="left")
 
+        self.reset_button = ctk.CTkButton(
+            footer,
+            text="Reset to base text",
+            width=140,
+            height=24,
+            fg_color="transparent",
+            border_width=1,
+            border_color=theme.BORDER,
+            text_color=theme.TEXT_MUTED,
+            hover_color=theme.NAV_ACTIVE_BG,
+            font=ctk.CTkFont(family=theme.FONT_FAMILY, size=theme.SIZE_SMALL),
+            command=self.reset_current,
+        )
+
         # Content variation is the highest-value protection in the app
         # (README section 7), so the reminder sits beside the text.
-        phase_note(footer, "Vary the wording between groups.").pack(side="right")
+        self.variation_note = phase_note(footer, "Vary the wording between groups.")
+        self.variation_note.pack(side="right")
 
         attach_row = ctk.CTkFrame(parent, fg_color="transparent")
         ctk.CTkButton(
@@ -105,7 +146,11 @@ class ComposeView(View):
         # off the bottom of the window.
         self.attachment_list.pack(side="bottom", fill="x", pady=(theme.PAD_S, 0))
         attach_row.pack(side="bottom", fill="x", pady=(theme.PAD_M, 0))
+        # Tabs first, then the editor -- the expanding widget is packed last so
+        # it cannot shove the fixed controls off the window.
+        self.tab_strip.pack(side="top", fill="x", pady=(0, theme.PAD_XS))
         editor.pack(side="top", fill="both", expand=True)
+        self.refresh_tabs()
 
     # -- right column ------------------------------------------------------
     def _build_sidebar(self, parent: ctk.CTkFrame) -> None:
@@ -213,7 +258,10 @@ class ComposeView(View):
             self.notify("Give the template a name first.", "error")
             return False
 
-        body = self.get_text().strip()
+        # A template is the shared starting point, so it stores the base text
+        # rather than whichever group happens to be open.
+        self.capture()
+        body = self._base_body.strip()
         if not body:
             self.notify("Nothing to save — the post is empty.", "error")
             return False
@@ -230,11 +278,16 @@ class ComposeView(View):
             self.notify("No template selected.", "warning")
             return False
 
-        self.textbox.delete("1.0", "end")
-        self.textbox.insert("1.0", template.body)
+        # A template replaces the shared wording, so any per-group rewrites of
+        # the previous text no longer belong to anything.
+        self._editing = None
+        self._bodies.clear()
+        self._base_body = template.body
+        self._show(template.body)
+        self.refresh_tabs()
+
         self.attachments = [Path(p) for p in template.media_paths]
         self._render_attachments()
-        self._update_counter()
         self.notify(f"Loaded {template.name!r}. Edit it before sending.", "info")
         return True
 
@@ -265,7 +318,11 @@ class ComposeView(View):
                 text_color=theme.TEXT,
                 fg_color=theme.ACCENT,
                 hover_color=theme.ACCENT_HOVER,
+                # Ticking a group gives it a tab; unticking takes it away.
+                command=self.refresh_tabs,
             ).pack(anchor="w", padx=theme.PAD_XS, pady=2)
+
+        self.refresh_tabs()
 
     def selected_group_ids(self) -> list[int]:
         return [group_id for group_id, var in self._group_vars.items() if var.get()]
@@ -278,15 +335,19 @@ class ComposeView(View):
         return parse_schedule(self.schedule_entry.get())
 
     def add_to_queue(self) -> bool:
-        body = self.get_text().strip()
-        if not body:
-            self.notify("Write something first.", "error")
-            return False
+        # Whatever is on screen belongs to a tab; commit it before reading.
+        self.capture()
 
         selected = self.selected_group_ids()
         if not selected:
             self.notify("Pick at least one group.", "error")
             return False
+
+        if any(not self.body_for(group_id).strip() for group_id in selected):
+            self.notify("Every selected group needs some text.", "error")
+            return False
+
+        body = self._base_body.strip()
 
         try:
             when = self.scheduled_for()
@@ -305,7 +366,10 @@ class ComposeView(View):
                 PlannedTarget(
                     group_id=group.id,
                     group_name=group.display_name,
-                    body=body,
+                    # This group's own wording, which is the whole point: the
+                    # variation warning counts distinct bodies, so rewriting
+                    # them silences it honestly rather than by ignoring it.
+                    body=self.body_for(group.id).strip(),
                     last_posted_at=group.last_posted_at,
                     cooldown_hours=group.cooldown_hours,
                     recent_bodies=tuple(self.app.group_repo.recent_bodies(group.id)),
@@ -396,6 +460,133 @@ class ComposeView(View):
                 font=ctk.CTkFont(family=theme.FONT_FAMILY, size=theme.SIZE_SMALL),
                 command=lambda p=path: self._remove_attachment(p),
             ).pack(side="right", padx=theme.PAD_S)
+
+    # -- per-group text ----------------------------------------------------
+    def body_for(self, group_id: int) -> str:
+        """The wording this group will actually receive.
+
+        Reads committed state only, so callers must `capture()` first if the
+        editor might hold unsaved text. An earlier version returned the live
+        editor contents when that group was the active tab, which quietly
+        handed back the wrong text the moment `_editing` was assigned before
+        the read.
+        """
+        return self._bodies.get(group_id, self._base_body)
+
+    def capture(self) -> None:
+        """Save what is in the editor into whichever tab is showing.
+
+        Editing the base wipes the per-group rewrites, which is what the user
+        asked for. It is announced rather than silent, and only fires when the
+        base text genuinely changed -- switching tabs must never cost someone
+        their wording.
+        """
+        text = self.get_text()
+        if self._editing is None:
+            if text != self._base_body:
+                had_rewrites = bool(self._bodies)
+                self._base_body = text
+                if had_rewrites:
+                    self._bodies.clear()
+                    self.notify(
+                        "Base text changed, so the per-group versions were reset.",
+                        "warning",
+                    )
+        else:
+            self._bodies[self._editing] = text
+
+    def select_tab(self, target: int | None) -> None:
+        """Switch the editor between the base text and a group's version."""
+        self.capture()
+        # Read the target's text before reassigning _editing: the two are
+        # independent and mixing the order is what broke this once already.
+        text = self._base_body if target is None else self.body_for(target)
+        self._editing = target
+        self._show(text)
+        self.refresh_tabs()
+
+    def reset_current(self) -> None:
+        """Drop this group's rewrite and go back to the shared wording."""
+        if self._editing is None:
+            return
+        self._bodies.pop(self._editing, None)
+        self._show(self._base_body)
+        self.refresh_tabs()
+
+    def has_rewrite(self, group_id: int) -> bool:
+        return group_id in self._bodies and self._bodies[group_id] != self._base_body
+
+    def _show(self, text: str) -> None:
+        self.textbox.delete("1.0", "end")
+        self.textbox.insert("1.0", text)
+        self._update_counter()
+
+    def refresh_tabs(self) -> None:
+        """Rebuild the tab strip from the current selection."""
+        strip = getattr(self, "tab_strip", None)
+        if strip is None:
+            return
+
+        # An edited group that is no longer selected must not stay on screen --
+        # the editor would be showing text nobody is going to receive.
+        if self._editing is not None and self._editing not in self.selected_group_ids():
+            self._editing = None
+            self._show(self._base_body)
+
+        # Destroying and recreating buttons inside a CTkScrollableFrame is
+        # surprisingly expensive -- doing it unconditionally on every refresh
+        # doubled the test suite's runtime. Skip when nothing visible changed.
+        signature = (
+            self._editing,
+            tuple(
+                (group_id, self.has_rewrite(group_id))
+                for group_id in self.selected_group_ids()
+            ),
+        )
+        if signature == getattr(self, "_tab_signature", None):
+            return
+        self._tab_signature = signature
+
+        for child in strip.winfo_children():
+            child.destroy()
+
+        self._tab_buttons: dict[int | None, ctk.CTkButton] = {}
+        self._add_tab(None, "All groups")
+
+        for group_id in self.selected_group_ids():
+            group = self.app.group_repo.get(group_id)
+            if group is None:
+                continue
+            label = group.display_name
+            if len(label) > TAB_LABEL_CHARS:
+                label = label[: TAB_LABEL_CHARS - 1] + "…"
+            if self.has_rewrite(group_id):
+                label = f"● {label}"
+            self._add_tab(group_id, label)
+
+        showing_group = self._editing is not None
+        if showing_group and self.has_rewrite(self._editing):
+            self.reset_button.pack(side="right", padx=(0, theme.PAD_S))
+        else:
+            self.reset_button.pack_forget()
+
+    def _add_tab(self, target: int | None, label: str) -> None:
+        active = target == self._editing
+        button = ctk.CTkButton(
+            self.tab_strip,
+            text=label,
+            height=26,
+            corner_radius=theme.RADIUS,
+            fg_color=theme.ACCENT if active else "transparent",
+            text_color=theme.TEXT_ON_ACCENT if active else theme.TEXT,
+            border_width=0 if active else 1,
+            border_color=theme.BORDER,
+            hover_color=theme.ACCENT_HOVER if active else theme.NAV_ACTIVE_BG,
+            font=ctk.CTkFont(family=theme.FONT_FAMILY, size=theme.SIZE_SMALL),
+            command=lambda t=target: self.select_tab(t),
+        )
+        button.pack(side="left", padx=(0, theme.PAD_XS))
+        self._tab_buttons[target] = button
 
     # -- text --------------------------------------------------------------
     def get_text(self) -> str:

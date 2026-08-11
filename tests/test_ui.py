@@ -36,6 +36,21 @@ def app(ui_app):
 
 
 @pytest.fixture(autouse=True)
+def no_real_chrome_probe(monkeypatch):
+    """Keep the UI tests off the network.
+
+    The Groups view probes the debug port before looking up group names. Left
+    unpatched that is a real socket call: instant when Chrome happens to be
+    running, and a 1.16s timeout when it is not -- which made the suite take
+    22s or 44s depending on nothing but the developer's browser. Tests that
+    care about the browser being up patch this themselves.
+    """
+    from fbposter.ui.views import groups as groups_view
+
+    monkeypatch.setattr(groups_view.chrome, "probe", lambda *a, **k: None)
+
+
+@pytest.fixture(autouse=True)
 def reset_app(app):
     """Return the shared window and its database to a known state."""
     yield
@@ -54,6 +69,10 @@ def reset_app(app):
     app.views["groups"]._naming = False
 
     compose = app.views["compose"]
+    compose._bodies.clear()
+    compose._editing = None
+    compose._base_body = ""
+    compose._tab_signature = None
     compose.textbox.delete("1.0", "end")
     compose.attachments.clear()
     compose._render_attachments()
@@ -465,6 +484,191 @@ class TestTemplates:
         view.template_name.insert(0, "Empty")
         assert view.save_template() is False
         assert app.template_repo.list() == []
+
+
+class TestPerGroupText:
+    """Rewording per group is what makes the variation warning actionable.
+
+    Without it the warning fires on nearly every batch with nothing the user
+    can do, which is how a safeguard becomes noise people ignore.
+    """
+
+    def setup_compose(self, app, count=2):
+        groups = [add_group(app, url) for url in (GROUP_A, GROUP_B)[:count]]
+        view = app.views["compose"]
+        view.refresh_groups()
+        for group in groups:
+            view._group_vars[group.id].set(True)
+        view.refresh_tabs()
+        return view, groups
+
+    def write(self, view, text):
+        view.textbox.delete("1.0", "end")
+        view.textbox.insert("1.0", text)
+
+    def test_a_group_with_no_rewrite_uses_the_base_text(self, app):
+        view, groups = self.setup_compose(app)
+        self.write(view, "shared wording")
+        view.capture()
+        assert view.body_for(groups[0].id) == "shared wording"
+        assert view.body_for(groups[1].id) == "shared wording"
+
+    def test_each_tab_keeps_its_own_version(self, app):
+        view, groups = self.setup_compose(app)
+        self.write(view, "base text")
+
+        view.select_tab(groups[0].id)
+        self.write(view, "wording for the first group")
+        view.select_tab(groups[1].id)
+        self.write(view, "different wording for the second")
+
+        view.select_tab(None)
+        assert view.get_text() == "base text"
+        view.select_tab(groups[0].id)
+        assert view.get_text() == "wording for the first group"
+        view.select_tab(groups[1].id)
+        assert view.get_text() == "different wording for the second"
+
+    def test_switching_tabs_alone_does_not_reset_anything(self, app):
+        """Only a genuine base edit clears rewrites; browsing must be free."""
+        view, groups = self.setup_compose(app)
+        self.write(view, "base")
+        view.select_tab(groups[0].id)
+        self.write(view, "custom")
+
+        view.select_tab(None)
+        view.select_tab(groups[0].id)
+        assert view.get_text() == "custom"
+
+    def test_editing_the_base_resets_rewrites_and_says_so(self, app):
+        """The user chose this behaviour; it must not happen silently."""
+        view, groups = self.setup_compose(app)
+        self.write(view, "base")
+        view.select_tab(groups[0].id)
+        self.write(view, "custom")
+        view.select_tab(None)
+
+        self.write(view, "a different base")
+        view.capture()
+        app.update()
+
+        assert view.body_for(groups[0].id) == "a different base"
+        assert app.toast.visible, "reset the user's wording without telling them"
+
+    def test_reset_puts_a_group_back_on_the_base_text(self, app):
+        view, groups = self.setup_compose(app)
+        self.write(view, "base")
+        view.select_tab(groups[0].id)
+        self.write(view, "custom")
+
+        view.reset_current()
+        assert view.get_text() == "base"
+        assert not view.has_rewrite(groups[0].id)
+
+    def test_deselecting_the_edited_group_returns_to_the_base(self, app):
+        view, groups = self.setup_compose(app)
+        self.write(view, "base")
+        view.select_tab(groups[0].id)
+        self.write(view, "custom")
+
+        view._group_vars[groups[0].id].set(False)
+        view.refresh_tabs()
+
+        assert view._editing is None
+        assert view.get_text() == "base"
+
+    def test_the_tab_strip_follows_the_selection(self, app):
+        view, groups = self.setup_compose(app)
+        app.update()
+        # "All groups" plus one per selected group.
+        assert len(view.tab_strip.winfo_children()) == len(groups) + 1
+
+        view._group_vars[groups[1].id].set(False)
+        view.refresh_tabs()
+        app.update()
+        assert len(view.tab_strip.winfo_children()) == len(groups)
+
+    def test_a_reworded_group_is_marked(self, app):
+        view, groups = self.setup_compose(app)
+        self.write(view, "base")
+        view.select_tab(groups[0].id)
+        self.write(view, "custom")
+        view.select_tab(None)
+
+        assert view.has_rewrite(groups[0].id)
+        assert not view.has_rewrite(groups[1].id)
+
+
+class TestQueueingPerGroupText:
+    @pytest.fixture(autouse=True)
+    def any_hour(self, app):
+        app.settings_repo.set("posting_window_start_hour", 0)
+        app.settings_repo.set("posting_window_end_hour", 24)
+        yield
+        app.settings_repo.set("posting_window_start_hour", 8)
+        app.settings_repo.set("posting_window_end_hour", 23)
+
+    def test_each_group_is_stored_with_its_own_wording(self, app):
+        """The whole point: task_targets holds different text per group."""
+        helper = TestPerGroupText()
+        view, groups = helper.setup_compose(app)
+        helper.write(view, "base wording")
+        view.select_tab(groups[0].id)
+        helper.write(view, "wording one")
+        view.select_tab(groups[1].id)
+        helper.write(view, "wording two")
+
+        assert view.add_to_queue() is True
+
+        task = app.task_repo.list_recent()[0]
+        bodies = {t.group_id: t.body for t in app.task_repo.targets_for(task.id)}
+        assert bodies[groups[0].id] == "wording one"
+        assert bodies[groups[1].id] == "wording two"
+
+    def test_identical_text_still_warns(self, app):
+        helper = TestPerGroupText()
+        view, groups = helper.setup_compose(app)
+        for extra in ("https://www.facebook.com/groups/third-group",):
+            group = app.group_repo.add_from_url(extra)
+            view.refresh_groups()
+            view._group_vars[group.id].set(True)
+        helper.write(view, "exactly the same everywhere")
+
+        assert view.add_to_queue() is True
+        app.update()
+        assert app.toast.visible, "three identical bodies should warn"
+
+    def test_varied_text_does_not_warn(self, app):
+        """Rewording is the way out of the warning, and it must actually work."""
+        helper = TestPerGroupText()
+        view, groups = helper.setup_compose(app)
+        third = app.group_repo.add_from_url("https://www.facebook.com/groups/third-group")
+        view.refresh_groups()
+        for group in groups + [third]:
+            view._group_vars[group.id].set(True)
+
+        helper.write(view, "the shared base")
+        for index, group in enumerate(groups + [third]):
+            view.select_tab(group.id)
+            helper.write(view, f"a genuinely different message number {index}")
+
+        app.toast.clear()
+        assert view.add_to_queue() is True
+        app.update()
+
+        task = app.task_repo.list_recent()[0]
+        bodies = [t.body for t in app.task_repo.targets_for(task.id)]
+        assert len(set(bodies)) == 3, "bodies were not distinct"
+
+    def test_a_group_left_blank_is_refused(self, app):
+        helper = TestPerGroupText()
+        view, groups = helper.setup_compose(app)
+        helper.write(view, "base")
+        view.select_tab(groups[0].id)
+        helper.write(view, "   ")
+
+        assert view.add_to_queue() is False
+        assert app.task_repo.list_recent() == []
 
 
 class TestAddToQueue:

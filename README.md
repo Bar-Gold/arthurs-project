@@ -56,6 +56,7 @@ The **connection indicator lives in the sidebar**, not in a screen of its own: i
 
 *   **Compose**
     *   Spacious free-text input with a live character count.
+    *   **Per-group wording.** Tabs above the editor — "All groups" plus one per selected group — switch the editor between the shared base text and a version written for that group. This is what makes the content-variation rule in §7 actionable rather than a warning with no remedy. Editing the base text resets the per-group versions, and says so.
     *   Attach images.
     *   "Save as Template" storing text + media paths for reuse.
     *   Templates are a starting point, not a lock — the user edits before sending.
@@ -147,7 +148,7 @@ This makes v1 roughly: *compose → pick groups from a list → post now or at o
 
 **All five phases are complete.** The app runs a batch end to end on its own: the worker starts with the GUI, drains the queue one group at a time, waits a randomised 10–25 minutes between groups, defers past the posting window rather than posting late, holds off system sleep while a batch is in flight, and resumes rather than repeats after a crash.
 
-Post-v1, in likely order of value: **per-group text editing** (the content-variation warning currently fires on most batches with no easy way to act on it), recurring schedules, video, per-group skip, tags.
+Post-v1, in likely order of value: a variation-suggestion helper (generate light rewordings rather than typing each by hand), recurring schedules, video, per-group skip, tags.
 
 
 ## 12. Open Questions
