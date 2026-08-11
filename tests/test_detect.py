@@ -70,6 +70,28 @@ class TestRateLimits:
     def test_matching_ignores_case(self):
         assert classify(GROUP_URL, "YOU'RE TEMPORARILY BLOCKED") is PageVerdict.RATE_LIMIT
 
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "Вы временно заблокированы",
+            "Вы публикуете слишком часто",
+            "Повторите попытку позже",
+            "Эта функция сейчас недоступна",
+        ],
+    )
+    def test_russian_rate_limit_wording(self, text):
+        assert classify(GROUP_URL, text) is PageVerdict.RATE_LIMIT
+
+    @pytest.mark.parametrize(
+        "text",
+        ["נחסמת באופן זמני", "נסה שוב מאוחר יותר"],
+    )
+    def test_hebrew_rate_limit_wording(self, text):
+        assert classify(GROUP_URL, text) is PageVerdict.RATE_LIMIT
+
+    def test_russian_matching_ignores_case(self):
+        assert classify(GROUP_URL, "ВЫ ВРЕМЕННО ЗАБЛОКИРОВАНЫ") is PageVerdict.RATE_LIMIT
+
     def test_a_rate_limit_outranks_a_login_redirect(self):
         """What the account's standing is matters more than where we landed."""
         verdict = classify(
@@ -90,6 +112,46 @@ class TestOtherStates:
 
     def test_non_member(self):
         assert classify(GROUP_URL, "You must be a member to see this") is PageVerdict.UNAVAILABLE
+
+    def test_russian_unavailable(self):
+        assert classify(GROUP_URL, "Материал недоступен") is PageVerdict.UNAVAILABLE
+
+    def test_hebrew_unavailable(self):
+        assert classify(GROUP_URL, "התוכן הזה לא זמין") is PageVerdict.UNAVAILABLE
+
+
+class TestEveryLanguageIsCovered:
+    """Each supported language must contribute to each composer lookup.
+
+    The bug this guards against is subtle: a language can look supported
+    because the composer opens, then fail at the Post click -- which is the one
+    step that cannot be safely retried.
+    """
+
+    ALPHABETS = {
+        "english": lambda s: any(c.isascii() and c.isalpha() for c in s),
+        "hebrew": lambda s: any("֐" <= c <= "׿" for c in s),
+        "russian": lambda s: any("Ѐ" <= c <= "ӿ" for c in s),
+    }
+
+    @pytest.mark.parametrize("language", list(ALPHABETS))
+    @pytest.mark.parametrize(
+        "field", ["COMPOSER_TRIGGERS", "POST_BUTTONS", "PHOTO_VIDEO_BUTTONS"]
+    )
+    def test_the_lookup_has_a_candidate_in_each_language(self, language, field):
+        from fbposter import strings
+
+        has = self.ALPHABETS[language]
+        candidates = getattr(strings, field)
+        assert any(has(c) for c in candidates), f"{field} has no {language} candidate"
+
+    def test_the_russian_post_button_is_the_real_one(self):
+        """Read off the live composer. The plausible translation,
+        "Опубликовать", is not what Facebook uses -- it is "Отправить"."""
+        from fbposter import strings
+
+        assert "Отправить" in strings.POST_BUTTONS
+        assert "Опубликовать" not in strings.POST_BUTTONS
 
 
 class TestHaltMessages:

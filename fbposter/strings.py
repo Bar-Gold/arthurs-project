@@ -2,16 +2,23 @@
 
 Facebook's DOM class names are obfuscated and change between builds, so
 selectors are built from roles and accessible names instead. That makes them
-language-dependent.
+language-dependent, and this account's language has already been switched
+between Hebrew, English and Russian -- so every lookup tries a list of
+candidates and the order implies nothing but speed.
 
-**The account's interface is Hebrew.** This was confirmed by probing a real
-group: every accessible name comes back in Hebrew, and `?locale=en_US` on the
-URL does not override the account setting. Hebrew names are therefore listed
-first and English kept as a fallback, so the app survives the account language
-changing or Facebook serving English on some surface.
+**Every string below was read off the live site, not translated.** That matters
+more than it sounds. Russian's post button is "Отправить" (send), while the
+obvious translation of "Post" -- and what research suggested -- is
+"Опубликовать". Hardcoding the plausible word would have failed on the first
+real post. The composer trigger likewise carries no aria-label in any language
+and has to be matched on its visible text.
 
-Hebrew labels also come back in gendered forms for this account, which is
-another reason to match a list of candidates rather than one exact string.
+The exception is the anomaly markers at the bottom: a rate-limit warning cannot
+be summoned on demand, and deliberately provoking one is exactly what this
+project avoids. Those are researched and marked as such.
+
+To add a language: probe a real group with `main.py probe`, dump the composer,
+and paste what Facebook actually returns.
 """
 
 from __future__ import annotations
@@ -34,31 +41,50 @@ def group_url(identifier: str) -> str:
 
 
 # --- Composer ---------------------------------------------------------------
-# Tried in order. The group composer trigger carries no aria-label at all -- it
-# is matched on its visible text.
+# The group composer trigger carries no aria-label in any language, so it is
+# matched on its visible text.
 COMPOSER_TRIGGERS = (
-    "כאן כותבים",  # "write here"
-    "כתבי משהו",
-    "כתוב משהו",
+    # English (verified)
     "Write something...",
     "Write something to the group...",
     "Write something",
     "Create post",
+    # Hebrew (verified)
+    "כאן כותבים",  # "write here"
+    "כתבי משהו",
+    "כתוב משהו",
+    # Russian (verified)
+    "Напишите что-нибудь",  # "write something"
+    "Создайте публикацию",
 )
 
 # The composer text field exposes no accessible name, only an aria-placeholder,
 # so it is found as the dialog's only textbox. These are kept for the fallback
 # lookup and for recognising the field when several are present.
 COMPOSER_TEXTBOX = (
-    "יצירת פוסט ציבורי",  # "create public post"
-    "כתבי משהו",
     "Write something...",
     "Create post",
+    "יצירת פוסט ציבורי",  # "create public post"
+    "כתבי משהו",
+    "Создайте общедоступную публикацию",  # "create a public post"
 )
 
-POST_BUTTONS = ("פרסום", "Post")  # "publish"
-PHOTO_VIDEO_BUTTONS = ("תמונה או סרטון", "Photo/video", "Photo or video")
-CLOSE_BUTTONS = ("סגירת תיבת הדו-שיח של המחבר", "Close")
+# Russian is "Отправить" (send), NOT the literal "Опубликовать" (publish) -- see
+# the module docstring. Read off the live composer, not translated.
+POST_BUTTONS = ("Post", "פרסום", "Отправить")
+
+PHOTO_VIDEO_BUTTONS = (
+    "Photo/video",
+    "Photo or video",
+    "תמונה או סרטון",
+    "Фото/видео",
+)
+
+CLOSE_BUTTONS = (
+    "Close",
+    "סגירת תיבת הדו-שיח של המחבר",
+    "Закрыть диалог создания публикаций",
+)
 
 # Closing a composer that has text in it can make Facebook ask what to do with
 # the draft. Probing this account showed no prompt for a short post -- Escape
@@ -68,17 +94,26 @@ CLOSE_BUTTONS = ("סגירת תיבת הדו-שיח של המחבר", "Close")
 # These specific strings are UNVERIFIED against the live site; the flow does not
 # depend on them, because the composer is cleared before typing either way.
 DISCARD_PROMPT_BUTTONS = (
+    "Discard post",
+    "Discard",
     "מחיקה",  # "delete"
     "מחק",
     "השלכה",
-    "Discard post",
-    "Discard",
+    "Удалить",  # "delete"
+    "Отменить",
 )
 
 # --- Anomalies --------------------------------------------------------------
 # Matched case-insensitively against the page text. Any hit halts the batch:
 # the app never waits one out and never retries through it.
+#
+# UNVERIFIED, unlike everything above, and deliberately so: a rate-limit
+# warning cannot be summoned to order, and provoking one is precisely the
+# outcome this project is built to avoid. These are researched from Facebook's
+# own localised wording. Erring toward over-matching is the right bias here --
+# a false halt costs one delayed batch, a missed block costs the account.
 RATE_LIMIT_MARKERS = (
+    # English
     "you're temporarily blocked",
     "you are temporarily blocked",
     "temporarily blocked",
@@ -88,12 +123,34 @@ RATE_LIMIT_MARKERS = (
     "we limit how often",
     "this feature isn't available right now",
     "slow down",
+    # Hebrew
+    "נחסמת באופן זמני",
+    "אתה מפרסם מהר מדי",
+    "נסה שוב מאוחר יותר",
+    "התכונה הזו לא זמינה כרגע",
+    # Russian
+    "вы временно заблокированы",
+    "временно заблокирован",
+    "слишком часто",
+    "слишком быстро",
+    "попробуйте позже",
+    "повторите попытку позже",
+    "эта функция сейчас недоступна",
 )
 
 UNAVAILABLE_MARKERS = (
+    # English
     "this content isn't available",
     "content isn't available right now",
     "this group isn't available",
     "you must be a member",
     "isn't available at the moment",
+    # Hebrew
+    "התוכן הזה לא זמין",
+    "הקבוצה הזו לא זמינה",
+    # Russian
+    "материал недоступен",
+    "контент недоступен",
+    "эта группа недоступна",
+    "вы должны быть участником",
 )

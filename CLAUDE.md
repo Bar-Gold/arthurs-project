@@ -132,18 +132,23 @@ The workload is small, and the spec was trimmed accordingly. **Not in v1:** recu
 
 Facebook's DOM class names are obfuscated and change between builds. Use role- and `aria-label`-based selectors (`get_by_role`, `get_by_label`) and never CSS class selectors. Selectors are also language-dependent.
 
-**The account's Facebook UI is Hebrew, not English.** This was assumed to be English through Phase 3 and the assumption was wrong — probing a real group showed every accessible name coming back in Hebrew, in gendered forms, and `?locale=en_US` on the URL does **not** override the account setting.
+**English, Hebrew and Russian are all supported**, and the account has been switched between all three. Every lookup tries a list of candidates, so the order in `strings.py` implies nothing but speed. `?locale=` on the URL does **not** override the account's language setting — only the account setting matters.
 
-`strings.py` therefore lists Hebrew candidates first with English as a fallback, and every lookup tries a list rather than one exact string. Verified live:
+Verified live in each language:
 
-| Element | Name |
-| --- | --- |
-| Composer trigger | `כאן כותבים…` — **no aria-label**, matched on visible text |
-| Text field | no accessible name; found as the dialog's only `textbox` |
-| Photo/video | `תמונה או סרטון` |
-| Post | `פרסום` |
+| Element | English | Hebrew | Russian |
+| --- | --- | --- | --- |
+| Composer trigger | `Write something...` | `כאן כותבים…` | `Напишите что-нибудь...` |
+| Photo/video | `Photo/video` | `תמונה או סרטון` | `Фото/видео` |
+| **Post** | `Post` | `פרסום` | **`Отправить`** |
 
-Never hardcode a UI string outside `strings.py`, and never assert on one in a test — reference the constants so a language change is a one-file fix.
+The composer trigger carries **no aria-label in any language** and is matched on visible text; the text field has no accessible name and is found as the dialog's only `textbox`.
+
+**Read every string off the live site — never translate one.** Russian's post button is `Отправить` ("send"), while the obvious translation, and what research suggested, is `Опубликовать`. Shipping the plausible word would have failed at the Post click, which is the one step that cannot safely be retried. To add a language: `main.py probe` a real group, dump the composer, paste what Facebook returns.
+
+The anomaly markers are the deliberate exception — a rate-limit warning cannot be summoned on demand, so those are researched and marked unverified, and biased toward over-matching.
+
+Never hardcode a UI string outside `strings.py`, and never assert on a literal in a test — reference the constants.
 
 ## Known Context
 
