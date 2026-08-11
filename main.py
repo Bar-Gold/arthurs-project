@@ -1,6 +1,7 @@
 """Command line entry point.
 
-    python main.py gui       open the desktop app
+    python main.py start     launch Chrome if needed, then open the app  <- everyday use
+    python main.py gui       open the app without touching Chrome
     python main.py setup     launch Chrome on-screen for the one-time Facebook login
     python main.py launch    launch Chrome off-screen, ready for automation
     python main.py status    attach over CDP and report on the Facebook session
@@ -97,6 +98,34 @@ def cmd_gui(_: argparse.Namespace) -> int:
     return run()
 
 
+def cmd_start(args: argparse.Namespace) -> int:
+    """The everyday entry point: make sure Chrome is up, then open the app.
+
+    Chrome already running is the normal case, not an error -- chrome.launch()
+    reuses it. And a Chrome that cannot be started is not a reason to refuse to
+    open the window: groups and templates are still editable, and the
+    connection pill will say what is wrong. So this warns and carries on rather
+    than dying at the terminal.
+    """
+    try:
+        profile_dir = config.resolve_profile_dir()
+        if chrome.launch(profile_dir, visible=False):
+            print(f"Started Chrome off-screen on port {config.DEBUG_PORT}.")
+        else:
+            print(f"Chrome is already running on port {config.DEBUG_PORT}; reusing it.")
+    except FBPosterError as exc:
+        print(f"\nCould not start Chrome:\n{exc}\n", file=sys.stderr)
+        print(
+            "Opening the app anyway — you can still edit groups and templates, but "
+            "nothing will post until Chrome is up. Try 'main.py setup' if you have "
+            "never logged in.\n",
+            file=sys.stderr,
+        )
+
+    print("Opening the app…")
+    return cmd_gui(args)
+
+
 def _require_chrome() -> None:
     if chrome.probe() is None:
         raise ChromeNotRunningError(
@@ -176,7 +205,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    subparsers.add_parser("gui", help="open the desktop app").set_defaults(func=cmd_gui)
+    subparsers.add_parser(
+        "start", help="launch Chrome if it is not up, then open the app (use this one)"
+    ).set_defaults(func=cmd_start)
+    subparsers.add_parser(
+        "gui", help="open the app without touching Chrome"
+    ).set_defaults(func=cmd_gui)
     subparsers.add_parser(
         "setup", help="launch Chrome on-screen for the one-time Facebook login"
     ).set_defaults(func=cmd_setup)

@@ -22,7 +22,8 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m pytest tests/test_session.py::TestClassifyUrl -q  # one class
 .\.venv\Scripts\python.exe -m pytest tests/test_session.py -q -k checkpoint     # one test
 
-.\.venv\Scripts\python.exe main.py gui      # open the desktop app
+.\.venv\Scripts\python.exe main.py start    # everyday use: Chrome if needed, then the app
+.\.venv\Scripts\python.exe main.py gui      # the app alone, no Chrome handling
 .\.venv\Scripts\python.exe main.py setup    # Chrome on-screen, for the one-time manual login
 .\.venv\Scripts\python.exe main.py launch   # Chrome off-screen, ready for automation
 .\.venv\Scripts\python.exe main.py status   # attach over CDP, report the session state
