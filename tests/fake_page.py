@@ -143,6 +143,8 @@ class FakePage:
         self.url = self.redirect_to or url
 
     def inner_text(self, selector: str) -> str:
+        # Verification falls back to the page text, so anything "missing" as a
+        # locator must be missing here too or the fallback would find it.
         return self.body_text
 
     def wait_for_timeout(self, ms: float) -> None:

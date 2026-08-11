@@ -313,6 +313,43 @@ class TestSlowPublish:
         assert "twice" in str(caught.value)
 
 
+class TestVerificationIsPatient:
+    """Facebook virtualises the group feed, so a freshly published post is not
+    reliably in the DOM when first asked for. Two live posts were reported
+    unverified this way and had gone out perfectly well."""
+
+    def test_it_keeps_looking_and_scrolling(self):
+        page = FakePage(missing=(f"text={distinctive_snippet(BODY)}",))
+        appears = {"yet": False}
+
+        original = page.inner_text
+        page.inner_text = lambda s: (BODY if appears["yet"] else original(s))
+
+        # The post surfaces only once the feed has been nudged.
+        original_wheel = page.mouse.wheel
+
+        def wheel(x, y):
+            appears["yet"] = True
+            original_wheel(x, y)
+
+        page.mouse.wheel = wheel
+
+        outcome = make_poster(page).post(request())
+        assert outcome.verified
+
+    def test_it_finds_the_post_in_the_page_text_alone(self):
+        """Even when the locator never matches, the text being on the page is
+        proof enough that it published."""
+        page = FakePage(missing=(f"text={distinctive_snippet(BODY)}",), body_text=BODY)
+        outcome = make_poster(page).post(request())
+        assert outcome.verified
+
+    def test_it_still_gives_up_when_the_post_really_is_absent(self):
+        page = FakePage(missing=(f"text={distinctive_snippet(BODY)}",))
+        with pytest.raises(PostNotVerified):
+            make_poster(page).post(request())
+
+
 class TestVerification:
     def test_an_unverifiable_post_raises_rather_than_reporting_success(self):
         """Never silently claim success -- a retry would double-post."""

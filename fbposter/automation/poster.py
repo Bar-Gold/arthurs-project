@@ -32,6 +32,10 @@ VERIFY_TIMEOUT_MS = 20_000
 FIRST_LOOK_TIMEOUT_MS = 8_000
 # Time for the reloaded feed to render before searching it.
 FEED_SETTLE_MS = 6_000
+# The feed is virtualised, so look several times, scrolling between tries.
+VERIFY_ATTEMPTS = 5
+VERIFY_POLL_MS = 3_000
+VERIFY_SCROLL_PX = 700
 # How often to re-check while waiting for the single-page app to render.
 RENDER_POLL_MS = 500
 
@@ -290,7 +294,33 @@ class GroupPoster:
             )
             return True
         except Exception:
+            pass
+
+        # Fall back to the page's own text. The locator needs the post to be
+        # mounted as an element; this catches it wherever it sits.
+        try:
+            return snippet.casefold() in self.page.inner_text("body").casefold()
+        except Exception:
             return False
+
+    def _hunt_for_snippet(self, snippet: str) -> bool:
+        """Look for the post while nudging the feed into rendering more of it.
+
+        Facebook virtualises the group feed: which posts exist in the DOM at
+        any moment varies, and a freshly published one is not reliably among
+        them. Two live posts were reported unverified this way and turned out
+        to have gone out perfectly well, so this scrolls and re-checks instead
+        of asking once.
+        """
+        for attempt in range(VERIFY_ATTEMPTS):
+            if self._snippet_visible(snippet, VERIFY_POLL_MS):
+                return True
+            try:
+                self.page.mouse.wheel(0, VERIFY_SCROLL_PX)
+            except Exception:
+                pass
+            self.page.wait_for_timeout(VERIFY_POLL_MS)
+        return False
 
     def verify(self, body: str, group_url: str = "") -> bool:
         """Confirm the post actually appeared rather than trusting the click.
@@ -316,7 +346,7 @@ class GroupPoster:
 
         self.page.goto(group_url, timeout=NAV_TIMEOUT_MS, wait_until="domcontentloaded")
         self.page.wait_for_timeout(FEED_SETTLE_MS)
-        return self._snippet_visible(snippet, VERIFY_TIMEOUT_MS)
+        return self._hunt_for_snippet(snippet)
 
     def discard(self) -> None:
         """Close the composer and throw away the draft.
