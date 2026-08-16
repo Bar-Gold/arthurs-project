@@ -176,6 +176,30 @@ class TestSchema:
         finally:
             upgraded.close()
 
+    def test_settings_added_after_the_database_was_made_still_appear(self, tmp_path):
+        """Settings are seeded once; a key added later never showed up."""
+        import sqlite3
+
+        from fbposter.db import schema
+
+        path = tmp_path / "seeded.db"
+        raw = sqlite3.connect(path, isolation_level=None)
+        schema._migration_001(raw)
+        raw.execute("PRAGMA user_version = 1")
+        raw.execute("DELETE FROM settings WHERE key = 'daily_cap'")
+        raw.execute("UPDATE settings SET value = '99' WHERE key = 'posting_window_end_hour'")
+        raw.close()
+
+        upgraded = Database(path)
+        try:
+            stored = SettingsRepo(upgraded).all()
+            for key in DEFAULT_SETTINGS:
+                assert key in stored, f"{key} was never seeded"
+            # A value the user changed is not overwritten.
+            assert stored["posting_window_end_hour"] == "99"
+        finally:
+            upgraded.close()
+
     def test_foreign_keys_are_enforced(self, db):
         with pytest.raises(sqlite3.IntegrityError):
             db.write(

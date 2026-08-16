@@ -27,6 +27,10 @@ DEFAULT_SETTINGS = {
     # only -- the rows themselves are never deleted, because the repeated
     # -text guard and the daily cap both read them.
     "queue_retention_hours": "24",
+    # How long finished batches are kept at all. Unlike the setting above
+    # this one really deletes -- but never the newest posted bodies per
+    # group, which the repeated-text guard reads. 0 disables pruning.
+    "history_retention_days": "90",
 }
 
 _MIGRATION_001 = """
@@ -207,6 +211,24 @@ def _migration_005(connection: sqlite3.Connection) -> None:
     )
 
 
+def _migration_006(connection: sqlite3.Connection) -> None:
+    """Seed any default that was added after this database was created.
+
+    Settings are written once, on first run, so a key introduced later never
+    appears in an existing database. `get_int(key, default)` falls back
+    correctly, so nothing was broken -- but the row being absent means the
+    value cannot be seen or changed without knowing to INSERT rather than
+    UPDATE. The retention settings in particular are meant to be adjustable.
+
+    INSERT OR IGNORE, so a value the user has already chosen is never
+    overwritten.
+    """
+    connection.executemany(
+        "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
+        list(DEFAULT_SETTINGS.items()),
+    )
+
+
 # Index i applies when user_version == i, and bumps it to i + 1.
 MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _migration_001,
@@ -214,6 +236,7 @@ MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _migration_003,
     _migration_004,
     _migration_005,
+    _migration_006,
 ]
 
 LATEST_VERSION = len(MIGRATIONS)

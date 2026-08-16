@@ -33,6 +33,12 @@ from .models import (
 )
 
 
+# How far back the repeated-text guard looks, per group. The history prune
+# keeps at least this many posted bodies per group for ever -- the two numbers
+# must be the same one, or pruning quietly weakens the guard.
+RECENT_BODIES_LIMIT = 20
+
+
 class SettingsRepo:
     def __init__(self, db: Database) -> None:
         self.db = db
@@ -134,7 +140,7 @@ class GroupRepo:
             (to_iso(when or utcnow()), group_id),
         )
 
-    def recent_bodies(self, group_id: int, limit: int = 20) -> list[str]:
+    def recent_bodies(self, group_id: int, limit: int = RECENT_BODIES_LIMIT) -> list[str]:
         """Text already posted to this group, newest first.
 
         Feeds the repeated-text guard: posting to an active group often is fine,
@@ -415,6 +421,79 @@ class TaskRepo:
             (TARGET_DONE, to_iso(since)),
         )
         return int(row["n"]) if row else 0
+
+    def prune_history(
+        self,
+        now: datetime,
+        keep_days: int,
+        keep_per_group: int = RECENT_BODIES_LIMIT,
+    ) -> int:
+        """Delete finished batches older than `keep_days`. Returns how many.
+
+        Three things are never deleted, and each one is load-bearing:
+
+        * **Anything unfinished.** A batch still due to go out is not history.
+        * **The newest `keep_per_group` posted bodies for each group**, however
+          old. That is exactly what `GroupRepo.recent_bodies` reads, so the
+          repeated-text guard keeps refusing wording a group has already had --
+          which is the app's main protection and worth a few kilobytes for ever.
+        * **Everything inside the window**, which is far wider than the daily
+          cap's local-midnight lookback, so the cap is never miscounted.
+
+        `keep_days <= 0` disables pruning entirely.
+        """
+        if keep_days <= 0:
+            return 0
+
+        cutoff = to_iso(now - timedelta(days=keep_days))
+        # Selected first rather than deleted in one statement: sqlite3 reports
+        # rowcount as -1 for a DELETE that starts with a CTE, and a count of
+        # "batches removed" that silently means "unknown" is worse than none.
+        doomed = [
+            row["id"]
+            for row in self.db.query(
+                "WITH keep AS ("
+                "  SELECT task_id FROM ("
+                "    SELECT task_id, ROW_NUMBER() OVER ("
+                "      PARTITION BY group_id ORDER BY posted_at DESC, id DESC"
+                "    ) AS rank_in_group"
+                "    FROM task_targets WHERE state = ?"
+                "  ) WHERE rank_in_group <= ?"
+                ") "
+                "SELECT id FROM tasks "
+                "WHERE state NOT IN (?, ?) "
+                "  AND COALESCE(finished_at, created_at) < ? "
+                "  AND id NOT IN (SELECT task_id FROM keep)",
+                (TARGET_DONE, keep_per_group, TASK_PENDING, TASK_RUNNING, cutoff),
+            )
+        ]
+        if not doomed:
+            return 0
+
+        with self.db.transaction() as connection:
+            # task_targets go with them: the foreign key is ON DELETE CASCADE
+            # and connections run with PRAGMA foreign_keys = ON.
+            connection.executemany(
+                "DELETE FROM tasks WHERE id = ?", [(task_id,) for task_id in doomed]
+            )
+        return len(doomed)
+
+    def reclaim_space(self) -> bool:
+        """Hand freed pages back to the filesystem. Best effort.
+
+        Deleting rows leaves the file the same size; only VACUUM shrinks it.
+        It cannot run inside a transaction and needs no other writer, so a
+        failure here is not worth surfacing -- the rows are already gone.
+        """
+        try:
+            self.db.connection.execute("VACUUM")
+            # Under WAL the rewritten pages sit in the -wal file until a
+            # checkpoint, so without this the main database is no smaller on
+            # disk and the whole exercise achieves nothing visible.
+            self.db.connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            return True
+        except sqlite3.Error:
+            return False
 
     def unfinished_for_schedule(self, schedule_id: int) -> int:
         """Batches from this schedule that have not gone out yet.

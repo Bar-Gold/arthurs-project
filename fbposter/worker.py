@@ -50,6 +50,8 @@ from .db.models import (
     Schedule,
     Task,
     TaskTarget,
+    from_iso,
+    to_iso,
 )
 from .db.repo import GroupRepo, ScheduleRepo, SettingsRepo, TaskRepo
 from .errors import AutomationHalted, PostNotVerified
@@ -62,6 +64,9 @@ from .power import SleepBlocker
 MISSED_GRACE = timedelta(hours=2)
 
 TICK_SECONDS = 5.0
+
+# How often the finished-batch history is pruned. Housekeeping, not a deadline.
+PRUNE_EVERY = timedelta(days=1)
 
 FINISHED_STATES = {TASK_DONE, TASK_HALTED, TASK_CANCELLED, TASK_MISSED}
 
@@ -242,6 +247,7 @@ class PostingWorker:
     def run_once(self) -> bool:
         """Advance the queue by at most one step. Returns True if it did."""
         now = self._now()
+        self._maybe_prune(now)
         if self._materialise_schedules(now):
             return True
 
@@ -293,6 +299,40 @@ class PostingWorker:
         self.tasks.set_resume_at(task.id, None)
         self.tasks.mark_task(task.id, TASK_DONE, finished=True)
         self.emit("batch_done", "Batch finished.", task.id)
+
+    # -- housekeeping --------------------------------------------------------
+    def _maybe_prune(self, now) -> bool:
+        """Delete finished batches older than the retention window.
+
+        Once a day at most, tracked in the database rather than in memory so
+        that opening and closing the app repeatedly does not re-run it, and so
+        that an app left open for weeks still gets round to it.
+
+        Never lets a failure reach the queue: housekeeping must not be able to
+        stop posting.
+        """
+        keep_days = self.settings.get_int("history_retention_days", 90)
+        if keep_days <= 0:
+            return False
+
+        last = from_iso(self.settings.get("last_prune_at", ""))
+        if last is not None and now - last < PRUNE_EVERY:
+            return False
+
+        try:
+            removed = self.tasks.prune_history(now, keep_days)
+            self.settings.set("last_prune_at", to_iso(now) or "")
+            if removed:
+                self.tasks.reclaim_space()
+                self.emit(
+                    "pruned",
+                    f"Cleared {removed} finished batch{'es' if removed != 1 else ''} "
+                    f"older than {keep_days} days.",
+                )
+        except Exception as exc:  # tidying up is never worth a stalled queue
+            self.emit("error", f"History cleanup skipped: {exc}")
+            return False
+        return bool(removed)
 
     # -- repeating schedules -----------------------------------------------
     def _materialise_schedules(self, now) -> bool:
