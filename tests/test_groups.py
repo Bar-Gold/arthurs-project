@@ -47,6 +47,47 @@ class TestAccepted:
         assert not parse_group_url("https://www.facebook.com/groups/slug").is_numeric
 
 
+class TestTheLocaleIsNeverCarriedThrough:
+    """Facebook's ?locale= is dropped when a URL is pasted.
+
+    It matters because it decides what language the app has to cope with. The
+    canonical URL is rebuilt from the identifier alone, so the app always asks
+    for the group plainly and Facebook renders it in whatever language the
+    *account* is set to -- never a third thing the app chose by accident.
+
+    Every lookup tries English, Hebrew and Russian candidates at once (see
+    tests/test_detect.py), so whichever of the three comes back is matched.
+    """
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            "https://www.facebook.com/groups/123456789?locale=ru_RU",
+            "https://www.facebook.com/groups/123456789/?locale=he_IL",
+            "https://www.facebook.com/groups/123456789/?locale=en_US&ref=share",
+            "https://m.facebook.com/groups/123456789/posts/999/?locale=ru_RU",
+            "https://www.facebook.com/groups/123456789/?locale=ar_AR",
+        ],
+    )
+    def test_a_pasted_locale_is_stripped(self, raw):
+        parsed = parse_group_url(raw)
+        assert parsed is not None
+        assert "locale" not in parsed.url
+        assert parsed.url == "https://www.facebook.com/groups/123456789/"
+
+    def test_the_group_is_still_recognised_as_the_same_one(self):
+        """So adding it twice, once with a locale, is caught as a duplicate."""
+        plain = parse_group_url("https://www.facebook.com/groups/123456789/")
+        localised = parse_group_url(
+            "https://www.facebook.com/groups/123456789/?locale=ru_RU"
+        )
+        assert plain.identifier == localised.identifier
+
+    def test_a_canonical_url_never_carries_a_query_at_all(self):
+        parsed = parse_group_url("https://www.facebook.com/groups/bar-test/?a=1&b=2")
+        assert "?" not in parsed.url
+
+
 class TestRejected:
     @pytest.mark.parametrize(
         "url",

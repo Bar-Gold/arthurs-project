@@ -134,16 +134,77 @@ class TestEveryLanguageIsCovered:
         "russian": lambda s: any("Ѐ" <= c <= "ӿ" for c in s),
     }
 
+    # Every language-dependent table, not just the composer ones. The account
+    # language is the only thing that decides what Facebook renders -- the app
+    # never asks for a locale -- so each of these has to match whichever of the
+    # three it turns out to be.
+    LANGUAGE_DEPENDENT = [
+        "COMPOSER_TRIGGERS",
+        "COMPOSER_TEXTBOX",
+        "POST_BUTTONS",
+        "PHOTO_VIDEO_BUTTONS",
+        "CLOSE_BUTTONS",
+        "DISCARD_PROMPT_BUTTONS",
+        "RATE_LIMIT_MARKERS",
+        "UNAVAILABLE_MARKERS",
+    ]
+
     @pytest.mark.parametrize("language", list(ALPHABETS))
-    @pytest.mark.parametrize(
-        "field", ["COMPOSER_TRIGGERS", "POST_BUTTONS", "PHOTO_VIDEO_BUTTONS"]
-    )
+    @pytest.mark.parametrize("field", LANGUAGE_DEPENDENT)
     def test_the_lookup_has_a_candidate_in_each_language(self, language, field):
         from fbposter import strings
 
         has = self.ALPHABETS[language]
         candidates = getattr(strings, field)
         assert any(has(c) for c in candidates), f"{field} has no {language} candidate"
+
+    def test_no_language_dependent_table_is_left_unguarded(self):
+        """A new table added to strings.py must be listed above.
+
+        Otherwise it can ship covering one language, and nothing notices until
+        the account is switched.
+        """
+        from fbposter import strings
+
+        tables = {
+            name
+            for name in dir(strings)
+            if name.isupper() and isinstance(getattr(strings, name), tuple)
+        }
+        # URL fragments carry no language at all.
+        tables -= {"CHECKPOINT_MARKERS", "LOGIN_MARKERS"}
+        assert tables == set(self.LANGUAGE_DEPENDENT), (
+            "strings.py gained or lost a language-dependent table; "
+            f"unlisted: {sorted(tables - set(self.LANGUAGE_DEPENDENT))}, "
+            f"stale: {sorted(set(self.LANGUAGE_DEPENDENT) - tables)}"
+        )
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "You're temporarily blocked from posting",   # English
+            "נחסמת באופן זמני",                          # Hebrew
+            "Вы временно заблокированы",                 # Russian
+        ],
+    )
+    def test_a_block_is_recognised_whatever_language_it_arrives_in(self, text):
+        """The worst failure available: not noticing a block and posting on.
+
+        Data coverage is not enough on its own -- this drives classify(), so
+        case folding and substring matching are exercised in every script.
+        """
+        assert classify(GROUP_URL, text) is PageVerdict.RATE_LIMIT
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "This content isn't available right now",
+            "התוכן הזה לא זמין",
+            "Материал недоступен",
+        ],
+    )
+    def test_an_unavailable_group_is_recognised_in_each_language(self, text):
+        assert classify(GROUP_URL, text) is PageVerdict.UNAVAILABLE
 
     def test_the_russian_post_button_is_the_real_one(self):
         """Read off the live composer. The plausible translation,

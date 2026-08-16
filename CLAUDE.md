@@ -285,6 +285,10 @@ The composer trigger carries **no aria-label in any language** and is matched on
 
 **Read every string off the live site — never translate one.** Russian's post button is `Отправить` ("send"), while the obvious translation, and what research suggested, is `Опубликовать`. Shipping the plausible word would have failed at the Post click, which is the one step that cannot safely be retried. To add a language: `main.py probe` a real group, dump the composer, paste what Facebook returns.
 
+**The account's language is the only one that matters, and the app never asks for another.** `parse_group_url` rebuilds every URL as `https://www.facebook.com/groups/<id>/` from the identifier alone, so a pasted `?locale=` is discarded and never reaches Facebook. There is no configured or expected language anywhere in the codebase: every lookup tries the *whole* candidate list across all three at once, so whichever language the page comes back in is matched. All nine account-language x pasted-locale combinations therefore work, and they work for that reason rather than by enumeration.
+
+Two tests keep it that way, and both guard something that fails silently: `tests/test_detect.py::TestEveryLanguageIsCovered` checks all eight language-dependent tables have a candidate in each script — **including `RATE_LIMIT_MARKERS`, where losing a language means posting on through a block** — and `test_no_language_dependent_table_is_left_unguarded` fails if `strings.py` gains a table nobody added to that list.
+
 The anomaly markers are the deliberate exception — a rate-limit warning cannot be summoned on demand, so those are researched and marked unverified, and biased toward over-matching.
 
 Never hardcode a UI string outside `strings.py`, and never assert on a literal in a test — reference the constants.
