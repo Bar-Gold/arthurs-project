@@ -213,6 +213,18 @@ class PublishView(QWidget):
         header.addWidget(self.add_wording_button)
         extras.addLayout(header)
 
+        # The empty state carries the one thing about repeating posts that is
+        # not obvious: one wording works exactly once, because sending the same
+        # words to a group twice is refused.
+        self.wording_hint = QLabel(
+            "No alternates yet — the Compose text is the only wording, so this "
+            "can run once per group and then has nothing fresh to send. Add one "
+            "or two more."
+        )
+        self.wording_hint.setObjectName("Muted")
+        self.wording_hint.setWordWrap(True)
+        extras.addWidget(self.wording_hint)
+
         self.wording_area = QScrollArea()
         self.wording_area.setWidgetResizable(True)
         holder = QWidget()
@@ -572,6 +584,7 @@ class PublishView(QWidget):
             return
 
         wordings = self.wordings()
+        self.wording_hint.setVisible(not self._wordings)
         self.rotation_note.setText(
             f"{len(wordings)} wording{'s' if len(wordings) != 1 else ''} in rotation "
             "(the Compose text plus these). Each run picks a different one per "

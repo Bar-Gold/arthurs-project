@@ -26,7 +26,7 @@ STATE_COLOURS = {
     "cancelled": "TEXT_MUTED",
     "missed": "WARNING",
     "skipped": "WARNING",
-    "running": "ACCENT",
+    "running": "ACCENT_TEXT",
 }
 
 SNIPPET_CHARS = 60

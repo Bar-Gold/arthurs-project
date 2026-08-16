@@ -11,10 +11,14 @@ from __future__ import annotations
 FONT_FAMILY = "Segoe UI"
 FONT_MONO = "Consolas"
 
-SIZE_TITLE = 20
-SIZE_HEADING = 15
-SIZE_BODY = 13
-SIZE_SMALL = 12
+# Body was 13px, and run() then shrank the application font by another 2pt on
+# top of it -- small enough to squint at, and below the 12px floor that counts
+# as an anti-pattern for body text. Nothing here is decorative: this is the
+# single biggest thing that made the window feel approachable.
+SIZE_TITLE = 24
+SIZE_HEADING = 17
+SIZE_BODY = 15
+SIZE_SMALL = 13
 
 PAD_XS = 4
 PAD_S = 8
@@ -22,10 +26,15 @@ PAD_M = 12
 PAD_L = 16
 PAD_XL = 24
 
+# Hit targets. A 30px button is fine to click and mean to aim at; the primary
+# action on each screen gets the full 44.
+CONTROL_HEIGHT = 36
+PRIMARY_HEIGHT = 44
+
 RADIUS = 8
-SIDEBAR_WIDTH = 210
-WINDOW_MIN = (940, 620)
-WINDOW_DEFAULT = (1040, 700)
+SIDEBAR_WIDTH = 232
+WINDOW_MIN = (980, 660)
+WINDOW_DEFAULT = (1120, 760)
 
 LIGHT = {
     "WINDOW_BG": "#F0F2F5",
@@ -35,13 +44,20 @@ LIGHT = {
     "TEXT": "#1C1E21",
     "TEXT_MUTED": "#65676B",
     "TEXT_ON_ACCENT": "#FFFFFF",
-    "ACCENT": "#1877F2",
-    "ACCENT_HOVER": "#166FE5",
+    # Darker than Facebook's own #1877F2, which puts white text at 4.23:1 --
+    # under the 4.5:1 floor. This one clears it at 5.18:1 and still reads as
+    # the same blue.
+    "ACCENT": "#0C68DE",
+    "ACCENT_HOVER": "#0A57BA",
+    # Accent used *as text*. Separate from the fill because the two have
+    # opposite requirements in dark mode, where the fill must be dark enough
+    # for white text and the text must be light enough for a dark surface.
+    "ACCENT_TEXT": "#0C68DE",
     "NAV_ACTIVE_BG": "#E7F3FF",
     "SUCCESS": "#1B7F3B",
-    "WARNING": "#B26A00",
+    "WARNING": "#9E5E00",
     "DANGER": "#D32F45",
-    "NEUTRAL": "#8A8D91",
+    "NEUTRAL": "#6A6D71",
 }
 
 DARK = {
@@ -52,13 +68,19 @@ DARK = {
     "TEXT": "#E4E6EB",
     "TEXT_MUTED": "#B0B3B8",
     "TEXT_ON_ACCENT": "#FFFFFF",
-    "ACCENT": "#2D88FF",
-    "ACCENT_HOVER": "#4599FF",
+    # The fill has to be dark enough to carry white text (4.64:1); hover goes
+    # darker still rather than lighter, because lightening it drops white
+    # below the floor.
+    "ACCENT": "#006CFA",
+    "ACCENT_HOVER": "#0059CC",
+    # ...while accent-coloured *text* has to be light enough to sit on a dark
+    # surface. One value cannot do both jobs here.
+    "ACCENT_TEXT": "#5CA3FF",
     "NAV_ACTIVE_BG": "#263951",
     "SUCCESS": "#45BD62",
     "WARNING": "#FFC933",
     "DANGER": "#FF5C7C",
-    "NEUTRAL": "#77797C",
+    "NEUTRAL": "#8A8C8F",
 }
 
 # Filled in by activate(); the module is imported for its names, so this has to
@@ -112,6 +134,7 @@ def stylesheet() -> str:
         border: 1px solid {c["BORDER"]};
         border-radius: {RADIUS}px;
     }}
+    QFrame#Divider {{ background: {c["BORDER"]}; border: none; }}
     /* Without this a label inside a card paints the window colour behind
        itself and shows up as a grey band across the surface. */
     QLabel, QCheckBox, QWidget#Row {{ background: transparent; }}
@@ -124,7 +147,8 @@ def stylesheet() -> str:
         background: transparent;
         border: 1px solid {c["BORDER"]};
         border-radius: {RADIUS}px;
-        padding: 6px 12px;
+        padding: 7px 14px;
+        min-height: {CONTROL_HEIGHT - 16}px;
         color: {c["TEXT"]};
     }}
     QPushButton:hover {{ background: {c["NAV_ACTIVE_BG"]}; }}
@@ -134,35 +158,69 @@ def stylesheet() -> str:
         border: none;
         color: {c["TEXT_ON_ACCENT"]};
         font-weight: 600;
-        padding: 9px 14px;
+        padding: 11px 18px;
+        min-height: {PRIMARY_HEIGHT - 22}px;
     }}
     QPushButton#Primary:hover {{ background: {c["ACCENT_HOVER"]}; }}
+    QPushButton#Primary:disabled {{
+        background: {c["BORDER"]};
+        color: {c["TEXT_MUTED"]};
+    }}
     QPushButton#Nav {{
         border: none;
         text-align: left;
-        padding: 9px 12px;
+        padding: 10px 12px;
+        min-height: {CONTROL_HEIGHT - 14}px;
         color: {c["TEXT"]};
     }}
     QPushButton#Nav:checked {{
         background: {c["NAV_ACTIVE_BG"]};
-        color: {c["ACCENT"]};
+        color: {c["ACCENT_TEXT"]};
         font-weight: 600;
     }}
-    QPushButton#Tab {{ padding: 4px 10px; }}
+    QPushButton#Tab {{ padding: 6px 12px; }}
     QPushButton#Tab:checked {{
         background: {c["ACCENT"]};
         border-color: {c["ACCENT"]};
         color: {c["TEXT_ON_ACCENT"]};
     }}
-    QPushButton#Link {{ border: none; color: {c["DANGER"]}; }}
+    QPushButton#Link {{ border: none; color: {c["DANGER"]}; padding: 7px 10px; }}
+
+    /* Keyboard focus has to be visible. A custom stylesheet replaces the
+       platform focus rectangle, so without these rules tabbing through the
+       window moves an invisible cursor -- the first anti-pattern in the
+       accessibility list, and the easiest one to ship by accident. */
+    QPushButton:focus {{
+        border: 2px solid {c["ACCENT"]};
+        padding: 6px 13px;
+    }}
+    /* A white ring inside the fill clears 3:1 against the fill, but from the
+       outside it meets a near-white page and all but disappears. Darkening the
+       fill as well means focus is legible from either side. */
+    QPushButton#Primary:focus {{
+        background: {c["ACCENT_HOVER"]};
+        border: 2px solid {c["TEXT_ON_ACCENT"]};
+        padding: 10px 17px;
+    }}
+    QPushButton#Nav:focus {{
+        border: 2px solid {c["ACCENT"]};
+        padding: 9px 11px;
+    }}
+    QCheckBox:focus {{ color: {c["ACCENT_TEXT"]}; font-weight: 600; }}
 
     QTextEdit, QLineEdit, QDateTimeEdit, QComboBox, QSpinBox {{
         background: {c["SURFACE"]};
         border: 1px solid {c["BORDER"]};
         border-radius: {RADIUS}px;
-        padding: 6px;
+        padding: 8px;
+        min-height: {CONTROL_HEIGHT - 18}px;
         selection-background-color: {c["ACCENT"]};
         selection-color: {c["TEXT_ON_ACCENT"]};
+    }}
+    QTextEdit:focus, QLineEdit:focus, QDateTimeEdit:focus,
+    QComboBox:focus, QSpinBox:focus {{
+        border: 2px solid {c["ACCENT"]};
+        padding: 7px;
     }}
     QTextEdit#Editor {{ border: none; font-size: {SIZE_BODY + 1}px; }}
     QScrollArea, QScrollArea > QWidget > QWidget {{ background: transparent; border: none; }}

@@ -43,13 +43,26 @@ WORKER_POLL_MS = 700
 TOAST_MS = 4500
 
 # The order is the flow: what to say, who to say it to, when to say it, and
-# what happened. The sidebar is the sequence, so it reads top to bottom.
+# what happened. The sidebar is the sequence, so it reads top to bottom, and
+# the first three are numbered -- four equal-looking items gave no clue that
+# they are meant to be walked in order.
 NAV_ITEMS = (
     ("compose", "Compose", ComposeView),
     ("groups", "Groups", GroupsView),
     ("publish", "Publish", PublishView),
     ("queue", "Queue", QueueView),
 )
+
+# Keys that form the three-step path, in order. Queue is where you look
+# afterwards, not a step, so it sits below a divider and is not numbered.
+FLOW_STEPS = ("compose", "groups", "publish")
+
+NAV_HINTS = {
+    "compose": "Write the post",
+    "groups": "Choose the groups",
+    "publish": "Choose when",
+    "queue": "See what happened",
+}
 
 PILL_STATES: dict[ConnectionState, tuple[str, str, str]] = {
     ConnectionState.UNKNOWN: ("NEUTRAL", "Not checked", "info"),
@@ -145,10 +158,24 @@ class App(QMainWindow):
 
         group = QButtonGroup(self)
         for key, label, _view in NAV_ITEMS:
-            button = QPushButton(label)
+            if key == "queue":
+                # Queue is not a step -- it is where you look afterwards.
+                column.addSpacing(theme.PAD_S)
+                divider = QFrame()
+                divider.setObjectName("Divider")
+                divider.setFixedHeight(1)
+                column.addWidget(divider)
+                column.addSpacing(theme.PAD_S)
+
+            step = FLOW_STEPS.index(key) + 1 if key in FLOW_STEPS else None
+            button = QPushButton(f"{step}.  {label}" if step else label)
             button.setObjectName("Nav")
             button.setCheckable(True)
             button.setCursor(Qt.PointingHandCursor)
+            # Spoken by screen readers and shown on hover; the visible label
+            # stays short so the sidebar does not turn into prose.
+            button.setToolTip(NAV_HINTS.get(key, label))
+            button.setAccessibleName(f"{label} — {NAV_HINTS.get(key, '')}".strip(" —"))
             button.clicked.connect(lambda _checked, k=key: self.show_view(k))
             group.addButton(button)
             column.addWidget(button)
@@ -361,7 +388,9 @@ def run() -> int:
     application = QApplication(sys.argv)
     theme.activate()
     application.setStyleSheet(theme.stylesheet())
-    application.setFont(QFont(theme.FONT_FAMILY, theme.SIZE_BODY - 2))
+    # Family only. Sizes belong to the stylesheet -- setting a point size here
+    # as well meant two sources of truth, and the smaller one was winning.
+    application.setFont(QFont(theme.FONT_FAMILY))
 
     window = App()
     window.show()

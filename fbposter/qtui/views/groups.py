@@ -57,11 +57,16 @@ class GroupsView(QWidget):
         outer.addWidget(sub)
         outer.addSpacing(theme.PAD_S)
 
+        # A visible label, not just a placeholder: placeholder text vanishes the
+        # moment you type, taking the only explanation of the field with it.
+        add_label = QLabel("Add a group")
+        add_label.setObjectName("SectionHeading")
+        outer.addWidget(add_label)
+
         entry = QHBoxLayout()
         self.url_entry = QLineEdit()
-        self.url_entry.setPlaceholderText(
-            "Paste a group URL to add it — https://www.facebook.com/groups/…"
-        )
+        self.url_entry.setPlaceholderText("https://www.facebook.com/groups/…")
+        self.url_entry.setAccessibleName("Facebook group URL")
         self.url_entry.returnPressed.connect(self.add_group)
         entry.addWidget(self.url_entry, 1)
         add = QPushButton("Add group")
@@ -69,6 +74,7 @@ class GroupsView(QWidget):
         add.clicked.connect(self.add_group)
         entry.addWidget(add)
         outer.addLayout(entry)
+        outer.addSpacing(theme.PAD_M)
 
         tools = QHBoxLayout()
         self.count_label = QLabel("")

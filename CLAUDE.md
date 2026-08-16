@@ -38,7 +38,7 @@ python -m venv .venv
 
 `status` exits 0 when logged in, 1 when not, 2 on error (Chrome not running, etc.).
 
-There is no linter or formatter configured, and no pytest config file — the suite is the whole check. Baseline: **685 tests, ~54s**. A run that suddenly takes minutes means something is reaching the network; see the `SilentNamer` note below.
+There is no linter or formatter configured, and no pytest config file — the suite is the whole check. Baseline: **808 tests, ~65s**. A run that suddenly takes minutes means something is reaching the network; see the `SilentNamer` note below.
 
 **Do not add `playwright install`.** It is unnecessary and was verified so against Chrome 150: the app attaches to the user's real Chrome over CDP and never launches Playwright's bundled Chromium, so the driver shipped inside the pip package is all that is required.
 
@@ -92,6 +92,8 @@ Three screens, one step each, and the sidebar order *is* the sequence. The split
 - **In Repeat mode the Compose text is wording #1**, and the screen collects *alternates*. That is what stops "which one is the real post?" being a question the user has to answer.
 - The three mode panels live in one `QStackedWidget`, and `set_mode` marks every page but the current one `QSizePolicy.Ignored` — a stacked widget is otherwise as tall as its tallest page, which left a large void under the one-line Now panel.
 - Repeat-only widgets are grouped in `self.repeat_extras` and shown or hidden as one. Hiding them individually left their spacing behind and pushed the rest of the column down the screen.
+- **The sidebar is numbered.** `FLOW_STEPS` drives "1. Compose / 2. Groups / 3. Publish", with Queue below a divider because it is where you look afterwards, not a step. Four equal-looking items gave no clue they were meant to be walked in order.
+- **The wording tabs live on their own row in a horizontal scroll area.** Sharing a row with the Write/Preview toggle, the layout shrank them below their own text and clipped group names mid-word once the font grew. The strip uses `setAlignment(Qt.AlignLeft)` rather than a trailing stretch, because `refresh_tabs()` clears the layout by index and counts what is in it.
 - **A bare `QWidget` inside a card draws a grey band across it** — the global stylesheet gives every widget the window background. Use `widgets.row()` for any container inside a card; it is styled transparent in `theme.py`.
 
 ### Repeating posts
@@ -106,6 +108,53 @@ A `schedules` row is a **definition**, never a queue entry. When one comes due t
 - Resuming a paused schedule recomputes `next_run_at` rather than firing the slot that went by while it was paused.
 - **The per-group cooldown defaults to 8 hours**, lowered from 24 by the user so that two or three posts a day to one group is possible at all. Migration 005 carries that onto databases seeded with the old value, and moves groups still sitting on 24 — but leaves a group the user deliberately set to something else alone. `tests/test_db.py` reads the number off `DEFAULT_SETTINGS` rather than writing it out, so changing it again is a one-line job.
 - `recurrence.preview()` is what warns, before anything is written, that a chosen time sits outside the posting window, that the frequency is inside the per-group cooldown, or that there are too few wordings for the number of groups. Those are the three ways this feature quietly disappoints; none of them block.
+
+### The Compose preview is shaped like a real post
+
+`PostPreview` in `qtui/views/compose.py` is deliberately built to look like a feed post — monogram avatar, name, meta line, text, **full-bleed** media, then a Like/Comment/Share row. That is not decoration: a preview that looks nothing like the destination cannot answer "will this read well when it lands?", which is the only question it exists to answer.
+
+- **Pictures crop to fill their tile (`cover()`), they do not fit inside it.** Fitting leaves letterbox bars and makes a row of tiles look ragged; stretching distorts faces. The exception is a **single** picture, which keeps its natural aspect ratio — cropping the only photo in a post would misrepresent it — capped at `MAX_SINGLE_HEIGHT` so it cannot push the rest off screen.
+- **Layouts are 1 / 2 / 3 / 4 / "+N"**, matching what a feed does. Past `MAX_TILES` the fourth tile carries a `+N` scrim.
+- **A picture that will not open still gets a tile**, named, occupying its slot so the grid keeps its shape. The file is still going to be uploaded; showing nothing would suggest it had been dropped. Same rule as the Tk `preview.py`.
+- **Short text with no picture is set large**, as a feed does. It is most of why the thing reads as a post rather than a label.
+- **The post width is recomputed on resize** (`post_width()`, clamped to `MIN_POST_WIDTH..MAX_POST_WIDTH`) rather than fixed, so a narrow pane never produces a horizontal scrollbar. `resizeEvent` only redraws past `RESIZE_SLACK`.
+- **The footer has no counts.** Inventing "12 likes" on a post that has not been published would be showing the user something untrue.
+- **`text_shown()` still returns the logical post**, whatever the labels hold.
+
+**`takeAt()` does not unparent a widget.** Clearing a layout with `takeAt()` + `deleteLater()` leaves the old widgets as children until the event loop turns, still painting at their old geometry — a second, stale collage underneath the new one. Call `setParent(None)` as well. This is the same class of bug as the "duplicate row" and "giant blue rectangle" screenshot scares.
+
+**`QPixmap` cannot be constructed before a `QApplication` exists** — Qt aborts the process (`STATUS_STACK_BUFFER_OVERRUN`), so pytest reports nothing at all rather than a failure. Any test touching `QPixmap`, `cover()` or `avatar()` must depend on the `qt_application` fixture even if it never builds a widget.
+
+### Visual rules, and the tests that hold them
+
+`tests/test_qtui_theme.py` computes real WCAG ratios against both palettes rather than trusting that colours "look fine". It found five genuine failures in the inherited Facebook palette, so the values are no longer Facebook's:
+
+- **`ACCENT` is `#0C68DE`, not `#1877F2`.** Facebook's own blue puts white text at 4.23:1, under the 4.5:1 floor. `WARNING` and `NEUTRAL` were moved for the same reason — `NEUTRAL` was the connection pill at 3.3:1.
+- **`ACCENT_TEXT` is a separate token from `ACCENT`.** In dark mode the two have opposite requirements: the fill must be dark enough to carry white text, the text must be light enough to sit on a dark surface. One value cannot do both. Use `ACCENT` for fills and borders, `ACCENT_TEXT` anywhere the accent *is* the text.
+- **Focus must stay visible.** A custom stylesheet replaces the platform focus rectangle, so `:focus` rules are load-bearing rather than decoration — without them, tabbing moves an invisible cursor. Never add `outline: none`; a test greps for it.
+- **Body text is 15px and the application font sets family only.** It used to be 13px *and* shrunk another 2pt by `QFont(FONT_FAMILY, SIZE_BODY - 2)` in `run()` — two sources of truth for size, with the smaller one winning.
+
+**Verifying focus states is not possible through the normal render harness.** `WA_DontShowOnScreen` windows are never active, so `hasFocus()` is False and `:focus` never fires — an absent ring in such a screenshot proves nothing. Use the `offscreen` *platform plugin* instead (`QT_QPA_PLATFORM=offscreen`), where windows do activate; text renders as tofu there because the platform has no fonts, but borders draw correctly.
+
+### Two retentions, and only one of them deletes
+
+They are separate settings on purpose and are easy to confuse:
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| `queue_retention_hours` | 24 | **Hides** finished batches on the Queue screen. Nothing is deleted; the "All" toggle shows them again. |
+| `history_retention_days` | 90 | **Deletes** finished batches, permanently. 0 disables it. |
+
+`TaskRepo.prune_history` is the destructive one, and it is deliberately conservative. It never touches:
+
+- anything **unfinished** — a batch still due to go out is not history;
+- the newest **`RECENT_BODIES_LIMIT` posted bodies per group**, however old, because that is exactly the window `GroupRepo.recent_bodies` reads for `check_repeat_text`. Deleting them would let a wording a group has already had be sent again, which is the app's main protection against a restriction. `RECENT_BODIES_LIMIT` is one constant used by both — **if they ever drift apart, pruning silently weakens the guard**, and `tests/test_history_prune.py` pins that they match.
+
+A consequence worth knowing before "fixing" it: **with few posts to a group, nothing ages out at all**, because every post is still inside the guard's window. That is correct, and the storage involved is trivial — 20 bodies per group, for ever.
+
+`sqlite3` reports `rowcount` as **-1** for a `DELETE` that begins with a CTE, so the prune selects the doomed ids first and deletes by id; a count that silently means "unknown" is worse than no count. `reclaim_space()` runs `VACUUM` **and then `PRAGMA wal_checkpoint(TRUNCATE)`** — under WAL the rewritten pages sit in the `-wal` file and the main database does not shrink on disk without it.
+
+The worker calls this at most once a day (`PRUNE_EVERY`), tracked in the `last_prune_at` setting rather than in memory so that restarting the app does not re-run it and an app left open for weeks still gets round to it. A failure there is reported and swallowed: housekeeping must never be able to stall the queue.
 
 ### Queue retention is a view filter, never a purge
 

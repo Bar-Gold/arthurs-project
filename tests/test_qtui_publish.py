@@ -312,6 +312,19 @@ class TestSummaryAndWarnings:
         )
         assert "posting window" in publish.summary.text()
 
+    def test_the_empty_wordings_hint_shows_when_there_are_no_alternates(self, views):
+        """It carries the one non-obvious thing: one wording runs once."""
+        _compose, publish = views
+        publish.set_mode(REPEAT)
+        assert publish.wording_hint.isVisibleTo(publish)
+        assert "run once" in publish.wording_hint.text()
+
+    def test_the_hint_goes_away_once_an_alternate_exists(self, views):
+        _compose, publish = views
+        publish.set_mode(REPEAT)
+        publish.add_wording("Second wording")
+        assert not publish.wording_hint.isVisibleTo(publish)
+
     def test_the_rotation_note_counts_the_compose_text_too(self, views):
         _compose, publish = views
         publish.set_mode(REPEAT)
