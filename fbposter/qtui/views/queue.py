@@ -1,0 +1,198 @@
+"""Queue screen: what is pending, running, done or failed."""
+
+from __future__ import annotations
+
+from PySide6.QtWidgets import (
+    QButtonGroup,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QScrollArea,
+    QVBoxLayout,
+    QWidget,
+)
+
+from fbposter import clock
+from fbposter.db.models import TASK_PENDING, TASK_RUNNING, utcnow
+
+from .. import theme
+from ..widgets import card
+
+STATE_COLOURS = {
+    "done": "SUCCESS",
+    "posted": "SUCCESS",
+    "failed": "DANGER",
+    "halted": "DANGER",
+    "cancelled": "TEXT_MUTED",
+    "missed": "WARNING",
+    "skipped": "WARNING",
+    "running": "ACCENT",
+}
+
+SNIPPET_CHARS = 60
+
+
+class QueueView(QWidget):
+    title = "Queue"
+    subtitle = "One group at a time, with a randomised 10–25 minute gap between them."
+
+    def __init__(self, app) -> None:
+        super().__init__()
+        self.app = app
+        self.show_all = False
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(theme.PAD_XS)
+
+        heading = QLabel(self.title)
+        heading.setObjectName("Title")
+        outer.addWidget(heading)
+        sub = QLabel(self.subtitle)
+        sub.setObjectName("Subtitle")
+        outer.addWidget(sub)
+        outer.addSpacing(theme.PAD_S)
+
+        tools = QHBoxLayout()
+        self.hidden_label = QLabel("")
+        self.hidden_label.setObjectName("Muted")
+        tools.addWidget(self.hidden_label)
+        tools.addStretch(1)
+        self.recent_button = QPushButton("Recent")
+        self.all_button = QPushButton("All")
+        modes = QButtonGroup(self)
+        for index, button in enumerate((self.recent_button, self.all_button)):
+            button.setObjectName("Tab")
+            button.setCheckable(True)
+            modes.addButton(button, index)
+            tools.addWidget(button)
+        self.recent_button.setChecked(True)
+        self.recent_button.clicked.connect(lambda: self.set_scope(False))
+        self.all_button.clicked.connect(lambda: self.set_scope(True))
+        outer.addLayout(tools)
+
+        self.area = QScrollArea()
+        self.area.setWidgetResizable(True)
+        self.holder = QWidget()
+        self.rows = QVBoxLayout(self.holder)
+        self.rows.setContentsMargins(0, 0, 0, 0)
+        self.rows.setSpacing(theme.PAD_S)
+        self.area.setWidget(self.holder)
+        outer.addWidget(self.area, 1)
+
+    def on_show(self) -> None:
+        self.refresh()
+
+    def cancel(self, task_id: int) -> None:
+        self.app.task_repo.cancel(task_id)
+        self.refresh()
+        self.app.toast("Batch cancelled.", "info")
+
+    def set_scope(self, show_all: bool) -> None:
+        self.show_all = show_all
+        self.recent_button.setChecked(not show_all)
+        self.all_button.setChecked(show_all)
+        self.refresh()
+
+    def retention_hours(self) -> int:
+        return self.app.settings_repo.get_int("queue_retention_hours", 24)
+
+    def refresh(self) -> None:
+        while self.rows.count():
+            item = self.rows.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+
+        now = utcnow()
+        hours = self.retention_hours()
+        if self.show_all:
+            tasks = self.app.task_repo.list_recent()
+            hidden = 0
+        else:
+            tasks = self.app.task_repo.list_for_queue(now, hours)
+            hidden = self.app.task_repo.count_older_than(now, hours)
+
+        # Nothing is deleted -- this is a view filter. The bodies stay in the
+        # database because the repeated-text guard reads them to refuse sending
+        # the same words to a group twice.
+        self.hidden_label.setText(
+            f"{hidden} finished batch{'es' if hidden != 1 else ''} older than "
+            f"{hours}h hidden"
+            if hidden
+            else ""
+        )
+
+        if not tasks:
+            note = QLabel(
+                "Nothing recent. Older batches are under “All”."
+                if hidden
+                else "Nothing queued yet — write a post on the Compose screen."
+            )
+            note.setObjectName("Muted")
+            self.rows.addWidget(note)
+            self.rows.addStretch(1)
+            return
+
+        for task in tasks:
+            self.rows.addWidget(self._card(task))
+        self.rows.addStretch(1)
+
+    def _card(self, task) -> QWidget:
+        box = card()
+        layout = QVBoxLayout(box)
+        layout.setContentsMargins(theme.PAD_M, theme.PAD_S, theme.PAD_M, theme.PAD_S)
+        layout.setSpacing(theme.PAD_XS)
+
+        header = QHBoxLayout()
+        when = (
+            f"Scheduled {clock.format_local(task.scheduled_for)}"
+            if task.scheduled_for
+            else "Post now"
+        )
+        if task.schedule_id is not None:
+            schedule = self.app.schedule_repo.get(task.schedule_id)
+            when = f"{when} · {schedule.display_name if schedule else 'repeating post'}"
+        snippet = " ".join(task.body.split())[:SNIPPET_CHARS]
+        title = QLabel(f"{when} — {snippet}")
+        title.setStyleSheet("font-weight: 600;")
+        title.setWordWrap(True)
+        header.addWidget(title, 1)
+
+        state = QLabel(task.state.title())
+        state.setStyleSheet(
+            f"color: {theme.C[STATE_COLOURS.get(task.state, 'TEXT_MUTED')]};"
+        )
+        header.addWidget(state)
+
+        if task.state in (TASK_PENDING, TASK_RUNNING):
+            cancel = QPushButton("Cancel")
+            cancel.setObjectName("Link")
+            cancel.clicked.connect(lambda _c, tid=task.id: self.cancel(tid))
+            header.addWidget(cancel)
+        layout.addLayout(header)
+
+        for target in self.app.task_repo.targets_for(task.id):
+            group = self.app.group_repo.get(target.group_id)
+            name = group.display_name if group else str(target.group_id)
+            row = QHBoxLayout()
+            label = QLabel(name)
+            row.addWidget(label, 1)
+            outcome = QLabel(target.state.title())
+            outcome.setStyleSheet(
+                f"color: {theme.C[STATE_COLOURS.get(target.state, 'TEXT_MUTED')]};"
+            )
+            row.addWidget(outcome)
+            layout.addLayout(row)
+            if target.error:
+                error = QLabel(target.error)
+                error.setObjectName("Muted")
+                error.setWordWrap(True)
+                layout.addWidget(error)
+
+        if task.error:
+            error = QLabel(task.error)
+            error.setStyleSheet(f"color: {theme.C['DANGER']};")
+            error.setWordWrap(True)
+            layout.addWidget(error)
+        return box

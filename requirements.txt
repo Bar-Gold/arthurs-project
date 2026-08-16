@@ -3,8 +3,15 @@
 playwright>=1.62
 pytest>=9.1
 
-# Pinned exactly: the UI is built against this version's widget behaviour and a
-# library that shifts underneath the app is not worth the flexibility.
+# The UI. Qt rather than Tk because Tk 8.6 has no bidirectional text support:
+# it lays characters out in logical order and leaves reordering to Windows,
+# which only manages one run of one script at a time, so any line mixing Hebrew
+# with English or digits came out mirrored. Qt shapes text itself and needs no
+# help at all. LGPL, so PySide6 rather than PyQt6.
+PySide6>=6.6
+
+# The old Tkinter window, still runnable with "main.py gui --tk" while the Qt
+# one settles in. Pinned exactly: it is built against this version's behaviour.
 customtkinter==6.0.0
 
 # Read only by the Compose preview, to scale attached images down to thumbnails.
@@ -16,3 +23,10 @@ Pillow>=10.0
 # without this. The posting window is judged in Israel local time, so it is a
 # hard requirement rather than a nicety.
 tzdata
+
+# Reorders mixed Hebrew/English text for the Compose preview. Tk lays text out
+# in logical order and leaves reordering to Windows, which only manages it one
+# run at a time -- so a line mixing scripts comes out mirrored, and the preview
+# is the one place that can be put right. Optional at runtime like Pillow:
+# without it the preview shows what it always did rather than failing.
+python-bidi>=0.4

@@ -51,7 +51,7 @@ Requirements:
 *   **Sleep handling:** hold off system sleep while a batch is in flight (`SetThreadExecutionState` with `ES_CONTINUOUS | ES_SYSTEM_REQUIRED`; the display may still turn off). Schedules are stored as absolute timestamps and recomputed on wake, so suspend/resume never drifts. A slot missed while the machine was asleep is surfaced to the user, not fired late in a burst.
 
 ## 6. Core Features & UI Requirements
-A left sidebar navigates between three screens; appearance follows the Windows theme. The UI stays uncluttered and readable, and never opens a modal dialog to tell the user something — status goes to a passive in-window toast.
+A left sidebar navigates between four screens, in the order the work happens — **Compose (what) → Groups (where) → Publish (when) → Queue (what happened)**; appearance follows the Windows theme. The UI stays uncluttered and readable, and never opens a modal dialog to tell the user something — status goes to a passive in-window toast.
 
 The **connection indicator lives in the sidebar**, not in a screen of its own: it is the "Test Connection" action from §4, and nothing else in the app works without it, so it is visible from everywhere.
 
@@ -62,16 +62,26 @@ The **connection indicator lives in the sidebar**, not in a screen of its own: i
     *   **Preview.** A `Write | Preview` toggle above the editor shows the post as the group will receive it — the wording of the active tab, wrapped as it will wrap, with the attached images scaled down. Deliberately generic: no imitation of Facebook's chrome and no profile picture, because the question it answers is whether the text and the image look right. It matters most alongside per-group wording, where each group gets different words and reading one back is the only way to check it. An image that cannot be read is drawn as a named tile rather than dropped — it is still going to be uploaded.
     *   "Save as Template" storing text + media paths for reuse.
     *   Templates are a starting point, not a lock — the user edits before sending.
-*   **Groups**
-    *   Add Facebook group URLs (only groups where the user can post).
+*   **Groups** — both the recipient picker for this post and the list itself, deliberately one screen.
+    *   Tick the groups this post goes to; "Select all" / "Clear"; the count is always visible.
+    *   Add Facebook group URLs right here (only groups where the user can post). A group added this way starts ticked.
     *   URLs are reduced to a canonical group identifier, so the same group pasted in two different forms cannot be added — or posted to — twice.
     *   Per-group record of the last successful post time, so the UI can warn about posting to the same group too soon.
+    *   Cooldown defaults to **8 hours** (lowered from 24, so two or three posts a day to one group is possible).
+*   **Publish** — the one place that decides *when*. Compose owns the text and the groups and carries no timing controls at all.
+    *   **Now** — straight onto the queue.
+    *   **Once** — at a single chosen moment, up to a year ahead. Defaults to the current time; the field ignores the mouse wheel and starts on the minutes, so a stray scroll cannot move a post into a different year.
+    *   **Repeat** — daily, or on chosen days of the week, at up to three times of day (Israel local, DST-safe).
+        *   Several **wordings** per schedule, rotated so no group ever sees the same text twice. Without this the rule in §7 would refuse the second run, and a repeating post would work exactly once.
+        *   The Compose text is the first wording; this screen collects alternates.
+        *   Pause, resume and delete; the next run is shown before and after creating one.
+    *   Warns before creating anything that a time falls outside the posting window, that the frequency is inside the per-group cooldown, or that there are too few wordings for the number of groups.
 *   **Queue**
-    *   "Post Now" for immediate execution, and one-time scheduled posts.
-    *   **Live queue view:** what is pending, running, waiting, done or failed, and the countdown to the next group.
+    *   **Live queue view:** what is pending, running, waiting, done or failed, and the countdown to the next group. Batches from a repeating post are labelled with its name.
     *   Cancel a run mid-batch.
+    *   **Retention.** Anything unfinished is always shown; finished batches drop off after `queue_retention_hours` (24 by default), with an "All" toggle for the rest. This hides rows, it never deletes them — the per-group post history is what stops the same wording going to a group twice (§7).
 
-**Post-v1 (see §10):** "Groups of Groups" tags, recurring schedules, video attachments, and pause/skip-a-single-group mid-batch. They are listed here only so the shape of the finished app is clear; do not build them into v1.
+**Post-v1 (see §10):** "Groups of Groups" tags, video attachments, and pause/skip-a-single-group mid-batch. They are listed here only so the shape of the finished app is clear; do not build them into v1. Recurring schedules were also cut from v1 and have since been built, at the user's request.
 
 ## 7. Account Protection (CRITICAL)
 The user posts as an ordinary group member, not an admin, so everything happens through the normal UI. Avoiding automated-behavior signals is the top priority.
@@ -131,7 +141,7 @@ The workload in §2 is small — a few posts a day to a handful of groups. Sever
 
 | Cut | Why |
 | --- | --- |
-| Recurring / cron scheduling | Next-run computation, DST, and catch-up-on-missed-runs are a meaningful chunk of work. At 2-3 varied posts a day the user is choosing content each time anyway. "Post now" plus one-time scheduling covers the real use. |
+| ~~Recurring / cron scheduling~~ — **built after v1** | Cut originally because next-run computation, DST and catch-up-on-missed-runs are a meaningful chunk of work, and the user was choosing content each time anyway. Reinstated at the user's request: daily, at up to three times of day. The content problem is what made it more than a date calculation — see §7, identical text is never sent to the same group twice — so a schedule holds *several* wordings and rotates them. |
 | "Groups of Groups" tags | Tagging pays off at 50+ groups. With ~5-15 total, a checkbox multi-select list does the same job and removes two tables plus a management screen. |
 | `run_log` table | `task_targets` already stores per-group status, timestamp, and error. A second history table is redundant. |
 | Video upload | Uploads are slow and progress/completion detection is flaky. Images only in v1; video is a clean addition later. |
@@ -150,7 +160,9 @@ This makes v1 roughly: *compose → pick groups from a list → post now or at o
 
 **All five phases are complete.** The app runs a batch end to end on its own: the worker starts with the GUI, drains the queue one group at a time, waits a randomised 10–25 minutes between groups, defers past the posting window rather than posting late, holds off system sleep while a batch is in flight, and resumes rather than repeats after a crash.
 
-Post-v1, in likely order of value: a variation-suggestion helper (generate light rewordings rather than typing each by hand), recurring schedules, video, per-group skip, tags.
+**Since v1:** per-group text editing, the Compose preview, the move from Tkinter to Qt (Tk 8.6 has no bidirectional text support, so mixed Hebrew/English lines rendered mirrored), and repeating posts.
+
+Post-v1, in likely order of value: a variation-suggestion helper (generate light rewordings rather than typing each by hand), video, per-group skip, tags.
 
 
 ## 12. Open Questions

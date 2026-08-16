@@ -17,15 +17,31 @@ from pathlib import Path
 import pytest
 
 from fbposter.db.models import TARGET_DONE, utcnow
+from fbposter.db.schema import DEFAULT_SETTINGS
 from fbposter.ui import preview as preview_module
+from fbposter.ui import textdir
 from fbposter.ui.app import NAV_ITEMS, PILL_STATES
 from fbposter.ui.connection import ConnectionResult, ConnectionState
-from fbposter.ui.views.compose import ALL_GROUPS_TAB, PREVIEW, REWORDED, SHARED_WORDING, WRITE
+from fbposter.ui.views.compose import (
+    ALL_GROUPS_TAB,
+    PREVIEW,
+    REWORDED,
+    RTL_TAG,
+    SHARED_WORDING,
+    WRITE,
+)
 
 from .conftest import SilentNamer, pump_until
 
+# Read off the schema rather than written out, so changing it is a one-line
+# change rather than a hunt through the suite.
+DEFAULT_COOLDOWN = int(DEFAULT_SETTINGS["default_cooldown_hours"])
+
 GROUP_A = "https://www.facebook.com/groups/123456789"
 GROUP_B = "https://www.facebook.com/groups/gardening.tlv"
+
+HEBREW = "שלום עולם, מה נשמע"
+ENGLISH = "Hello world, how are you"
 
 
 def IDLE_CHECK() -> ConnectionResult:
@@ -325,13 +341,13 @@ class TestGroupsView:
         view = app.views["groups"]
         view.add_group(GROUP_A)
         view.set_cooldown(view.groups[0], "soon")
-        assert app.group_repo.list()[0].cooldown_hours == 24
+        assert app.group_repo.list()[0].cooldown_hours == DEFAULT_COOLDOWN
 
     def test_a_negative_cooldown_is_rejected(self, app):
         view = app.views["groups"]
         view.add_group(GROUP_A)
         view.set_cooldown(view.groups[0], "-5")
-        assert app.group_repo.list()[0].cooldown_hours == 24
+        assert app.group_repo.list()[0].cooldown_hours == DEFAULT_COOLDOWN
 
 
 class TestGroupNames:
@@ -869,6 +885,209 @@ class TestPreview:
             assert calls == []
         finally:
             view.preview.render = original
+
+
+class TestTextDirection:
+    """Hebrew has to sit against the right edge, in the editor and the preview.
+
+    Tk reorders the characters correctly on its own; it is alignment it gets
+    wrong, so these check the one thing the app decides. The editor aligns as a
+    single block rather than line by line, which is what a textarea with
+    dir="auto" does -- otherwise a Hebrew post with an English line in it has
+    its lines jumping between the two edges as they are typed.
+    """
+
+    def editor_justify(self, view, line=1):
+        """How Tk will actually align that line: left unless it is tagged."""
+        tagged = RTL_TAG in view.textbox.tag_names(f"{line}.0")
+        return "right" if tagged else "left"
+
+    def editor_layout(self, view):
+        lines = len(view.get_text().split("\n"))
+        return [self.editor_justify(view, number) for number in range(1, lines + 1)]
+
+    def preview_labels(self, view):
+        view.view_mode.set(PREVIEW)
+        view.sync_mode()
+        return view.preview._wrapped
+
+    def test_hebrew_right_aligns_the_editor(self, app):
+        view = app.views["compose"]
+        view._show(HEBREW)
+        assert self.editor_justify(view) == "right"
+
+    def test_english_left_aligns_the_editor(self, app):
+        view = app.views["compose"]
+        view._show(ENGLISH)
+        assert self.editor_justify(view) == "left"
+
+    def test_an_empty_editor_is_left_aligned(self, app):
+        """Nothing strong to go on yet, so it waits rather than guessing."""
+        view = app.views["compose"]
+        view._show("")
+        assert self.editor_justify(view) == "left"
+
+    def test_typing_hebrew_flips_the_editor(self, app):
+        """The KeyRelease path, not just the programmatic one."""
+        view = app.views["compose"]
+        view._show("")
+        assert self.editor_justify(view) == "left"
+
+        view.textbox.insert("1.0", HEBREW)
+        view._on_text_changed()
+        assert self.editor_justify(view) == "right"
+
+    def test_each_line_is_aligned_on_its_own(self, app):
+        """The reported bug: one direction for the whole box tangled a
+        bilingual post by dragging the English over to the right."""
+        view = app.views["compose"]
+        view._show(f"{HEBREW}\n{ENGLISH}")
+        assert self.editor_layout(view) == ["right", "left"]
+
+        view._show(f"{ENGLISH}\n{HEBREW}")
+        assert self.editor_layout(view) == ["left", "right"]
+
+    def test_a_line_with_no_language_stays_with_the_block(self, app):
+        view = app.views["compose"]
+        view._show(f"{HEBREW}\n054-1234567\n{HEBREW}")
+        assert self.editor_layout(view) == ["right", "right", "right"]
+
+    def test_the_direction_follows_a_tab_switch(self, app):
+        """Each group's own wording decides how its tab is aligned."""
+        view, groups = TestPerGroupText().setup_compose(app)
+        view._show(ENGLISH)
+        view.capture()
+        assert self.editor_justify(view) == "left"
+
+        view.select_tab(groups[0].id)
+        view._show(HEBREW)
+        view.capture()
+        assert self.editor_justify(view) == "right"
+
+        view.select_tab(None)
+        assert self.editor_justify(view) == "left"
+
+    def test_a_keystroke_that_changes_nothing_does_not_retag(self, app):
+        """Retagging relayouts the whole widget, which is felt as typing lag.
+
+        Every keystroke used to pay for it; only a genuine change should.
+        """
+        view = app.views["compose"]
+        view._show(HEBREW)
+
+        calls = []
+        original = view.textbox.tag_remove
+        view.textbox.tag_remove = lambda *a, **k: (calls.append(a), original(*a, **k))[1]
+        try:
+            for extra in "ועוד מילים":
+                view.textbox.insert("end - 1c", extra)
+                view._on_text_changed()
+            assert calls == [], "typing within one direction should not retag"
+
+            view.textbox.insert("end - 1c", "\nEnglish now")
+            view._on_text_changed()
+            assert calls, "a new line in the other direction must retag"
+        finally:
+            view.textbox.tag_remove = original
+
+    def test_the_preview_aligns_each_line_like_the_editor(self, app):
+        """A preview aligned differently from the post is worse than none."""
+        view = app.views["compose"]
+        for text in (HEBREW, ENGLISH, f"{HEBREW}\n{ENGLISH}", f"{ENGLISH}\n{HEBREW}"):
+            view.view_mode.set(WRITE)
+            view.sync_mode()
+            view._show(text)
+            expected = self.editor_layout(view)
+            shown = [label.cget("justify") for label in self.preview_labels(view)]
+            assert shown == expected
+
+    def test_the_preview_anchors_hebrew_to_the_right_edge(self, app):
+        view = app.views["compose"]
+        view._show(HEBREW)
+        assert self.preview_labels(view)[0].cget("anchor") == textdir.anchor(HEBREW)
+
+    def test_the_preview_still_reads_back_the_whole_post(self, app):
+        """Split across labels, but text_shown() must reconstruct it."""
+        view = app.views["compose"]
+        post = f"{HEBREW}\n{ENGLISH}"
+        view._show(post)
+        self.preview_labels(view)
+        assert view.preview.text_shown() == post
+
+    def test_hebrew_text_is_not_altered_on_its_way_to_the_post(self, app):
+        """The marks are display scaffolding and must never be smuggled into
+        what actually gets typed into Facebook."""
+        view = app.views["compose"]
+        mixed = f"{HEBREW}\n{ENGLISH}"
+        view._show(mixed)
+        view.capture()
+        assert view.get_text() == mixed
+        assert view._base_body == mixed
+
+    def test_a_hebrew_line_carries_the_invisible_mark(self, app):
+        """Without it Windows draws a mixed line mirrored."""
+        view = app.views["compose"]
+        view._show(HEBREW)
+        assert view.textbox.get("1.0", "1.1") == textdir.RLE_MARK
+
+    def test_an_english_line_does_not(self, app):
+        view = app.views["compose"]
+        view._show(ENGLISH)
+        assert view.textbox.get("1.0", "1.1") != textdir.RLE_MARK
+
+    def test_the_mark_is_dropped_when_a_line_stops_being_hebrew(self, app):
+        view = app.views["compose"]
+        view._show(HEBREW)
+        assert view.textbox.get("1.0", "1.1") == textdir.RLE_MARK
+
+        view._show(ENGLISH)
+        assert view.textbox.get("1.0", "1.1") != textdir.RLE_MARK
+        assert view.get_text() == ENGLISH
+
+    def test_only_the_hebrew_lines_are_marked(self, app):
+        view = app.views["compose"]
+        view._show(f"{HEBREW}\n{ENGLISH}\n{HEBREW}")
+        marks = [view.textbox.get(f"{n}.0", f"{n}.1") == textdir.RLE_MARK for n in (1, 2, 3)]
+        assert marks == [True, False, True]
+
+    def test_the_character_count_ignores_the_mark(self, app):
+        """An invisible fix must not make the post look longer than it is."""
+        view = app.views["compose"]
+        view._show(HEBREW)
+        assert view.counter.cget("text") == f"{len(HEBREW)} characters"
+
+    @pytest.fixture
+    def open_posting_window(self, app):
+        """Queueing is refused outside 08:00-23:00, so without this the test
+        passes or fails depending on the time of day it happens to run at."""
+        app.settings_repo.set("posting_window_start_hour", 0)
+        app.settings_repo.set("posting_window_end_hour", 24)
+        yield
+        app.settings_repo.set("posting_window_start_hour", 8)
+        app.settings_repo.set("posting_window_end_hour", 23)
+
+    def test_the_queued_body_is_free_of_direction_marks(self, app, open_posting_window):
+        """The safety-critical one: this text is typed into Facebook."""
+        view, groups = TestPerGroupText().setup_compose(app)
+        view._show(f"{HEBREW} kalofan 1000")
+        assert view.add_to_queue() is True
+
+        stored = app.db.query("SELECT body FROM task_targets")
+        assert stored
+        for row in stored:
+            assert not any(mark in row["body"] for mark in textdir.BIDI_CONTROLS)
+        for row in app.db.query("SELECT body FROM tasks"):
+            assert not any(mark in row["body"] for mark in textdir.BIDI_CONTROLS)
+
+    def test_a_saved_template_is_free_of_direction_marks(self, app):
+        view = app.views["compose"]
+        view._show(HEBREW)
+        view.template_name.insert(0, "hebrew")
+        assert view.save_template() is True
+
+        saved = app.template_repo.get_by_name("hebrew")
+        assert saved is not None
+        assert saved.body == HEBREW
 
 
 class TestAddToQueue:

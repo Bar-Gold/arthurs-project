@@ -15,8 +15,12 @@ import pytest
 from fbposter.db import Database
 from fbposter.db.models import TARGET_DONE, utcnow
 from fbposter.db.repo import GroupRepo, SettingsRepo, TaskRepo, TemplateRepo
-from fbposter.db.schema import LATEST_VERSION, current_version
+from fbposter.db.schema import DEFAULT_SETTINGS, LATEST_VERSION, current_version
 from fbposter.errors import DuplicateGroup, InvalidGroupURL
+
+# Read off the schema rather than written out, so lowering it again is a
+# one-line change rather than a hunt through the suite.
+DEFAULT_COOLDOWN = int(DEFAULT_SETTINGS["default_cooldown_hours"])
 
 
 @pytest.fixture
@@ -84,8 +88,91 @@ class TestSchema:
             assert current_version(upgraded.connection) == LATEST_VERSION
             columns = [r["name"] for r in upgraded.query("PRAGMA table_info(tasks)")]
             assert "resume_at" in columns  # 003
+            assert "schedule_id" in columns  # 004
             assert SettingsRepo(upgraded).get("posting_timezone") == "Asia/Jerusalem"  # 002
             assert [g.identifier for g in GroupRepo(upgraded).list()] == ["old"]
+        finally:
+            upgraded.close()
+
+    def test_the_version_the_user_is_actually_on_upgrades_and_still_works(self, tmp_path):
+        """Version 3 is what shipped, so 3 -> 4 is the step that runs for real.
+
+        Reaching LATEST_VERSION is not enough on its own: the new tables have to
+        be usable afterwards, on a database that already has rows in it.
+        """
+        import sqlite3
+
+        from fbposter.db import schema
+        from fbposter.db.repo import ScheduleRepo, TaskRepo
+
+        path = tmp_path / "v3.db"
+        raw = sqlite3.connect(path, isolation_level=None)
+        for index in range(3):
+            schema.MIGRATIONS[index](raw)
+            raw.execute(f"PRAGMA user_version = {index + 1}")
+        raw.execute(
+            "INSERT INTO groups (identifier, url, created_at) VALUES ('old', 'u', '2026-01-01')"
+        )
+        raw.close()
+
+        upgraded = Database(path)
+        try:
+            assert current_version(upgraded.connection) == LATEST_VERSION
+            group = GroupRepo(upgraded).list()[0]
+
+            schedule = ScheduleRepo(upgraded).create(
+                name="Bikes", bodies=["one", "two"], group_ids=[group.id], times=["09:00"]
+            )
+            assert ScheduleRepo(upgraded).get(schedule.id).group_ids == [group.id]
+
+            task = TaskRepo(upgraded).create(
+                "one", [(group.id, "one")], schedule_id=schedule.id
+            )
+            assert TaskRepo(upgraded).get(task.id).schedule_id == schedule.id
+        finally:
+            upgraded.close()
+
+    def test_the_lowered_cooldown_reaches_a_database_seeded_with_the_old_one(
+        self, tmp_path
+    ):
+        """Changing DEFAULT_SETTINGS alone would not have touched the user.
+
+        Settings are seeded once, on first run, so their database still held 24
+        and every group with it. Migration 005 is what actually lowers it.
+        """
+        import sqlite3
+
+        from fbposter.db import schema
+
+        path = tmp_path / "cooldown.db"
+        raw = sqlite3.connect(path, isolation_level=None)
+        for index in range(4):
+            schema.MIGRATIONS[index](raw)
+            raw.execute(f"PRAGMA user_version = {index + 1}")
+        # What the old default looked like, plus a group the user chose to set
+        # differently.
+        raw.execute(
+            "UPDATE settings SET value = '24' WHERE key = 'default_cooldown_hours'"
+        )
+        raw.execute(
+            "INSERT INTO groups (identifier, url, cooldown_hours, created_at) "
+            "VALUES ('untouched', 'u', 24, '2026-01-01')"
+        )
+        raw.execute(
+            "INSERT INTO groups (identifier, url, cooldown_hours, created_at) "
+            "VALUES ('deliberate', 'u2', 48, '2026-01-01')"
+        )
+        raw.close()
+
+        upgraded = Database(path)
+        try:
+            assert (
+                SettingsRepo(upgraded).get_int("default_cooldown_hours", 0)
+                == DEFAULT_COOLDOWN
+            )
+            stored = {g.identifier: g.cooldown_hours for g in GroupRepo(upgraded).list()}
+            assert stored["untouched"] == DEFAULT_COOLDOWN
+            assert stored["deliberate"] == 48, "a chosen cooldown was overwritten"
         finally:
             upgraded.close()
 
@@ -103,7 +190,7 @@ class TestSettings:
         assert settings.get_int("daily_cap", 0) == 25
         assert settings.get_int("posting_window_start_hour", 0) == 8
         assert settings.get_int("posting_window_end_hour", 0) == 23
-        assert settings.get_int("default_cooldown_hours", 0) == 24
+        assert settings.get_int("default_cooldown_hours", 0) == DEFAULT_COOLDOWN
 
     def test_set_then_get(self, db):
         settings = SettingsRepo(db)
@@ -137,7 +224,7 @@ class TestGroups:
 
     def test_new_groups_take_the_default_cooldown(self, groups):
         group = groups.add_from_url("https://www.facebook.com/groups/123")
-        assert group.cooldown_hours == 24
+        assert group.cooldown_hours == DEFAULT_COOLDOWN
 
     def test_the_cooldown_can_be_shortened_per_group(self, groups):
         group = groups.add_from_url("https://www.facebook.com/groups/busy")

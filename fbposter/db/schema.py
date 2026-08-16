@@ -19,8 +19,14 @@ DEFAULT_SETTINGS = {
     # Hours are Israel local time, never UTC -- see fbposter/clock.py.
     "posting_window_start_hour": "8",
     "posting_window_end_hour": "23",
-    "default_cooldown_hours": "24",
+    # Lowered from 24 by the user; migration 005 carries the change onto
+    # databases that were seeded with the old value.
+    "default_cooldown_hours": "8",
     "posting_timezone": "Asia/Jerusalem",
+    # How long a finished batch stays on the queue screen. A view filter
+    # only -- the rows themselves are never deleted, because the repeated
+    # -text guard and the daily cap both read them.
+    "queue_retention_hours": "24",
 }
 
 _MIGRATION_001 = """
@@ -119,11 +125,95 @@ def _migration_003(connection: sqlite3.Connection) -> None:
     connection.execute("CREATE INDEX idx_tasks_resume ON tasks(resume_at)")
 
 
+_MIGRATION_004 = """
+CREATE TABLE schedules (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    name         TEXT    NOT NULL DEFAULT '',
+    -- The wordings this schedule rotates through, newest run taking the next
+    -- one. A single body would be refused by the repeated-text guard on the
+    -- second run, so the plural is the whole point.
+    bodies       TEXT    NOT NULL DEFAULT '[]',
+    media_paths  TEXT    NOT NULL DEFAULT '[]',
+    -- "HH:MM" strings in Israel local time, and days as 0=Monday..6=Sunday
+    -- with an empty list meaning every day. Wall-clock rather than an interval
+    -- in seconds, so 09:00 stays 09:00 across a daylight-saving change.
+    times        TEXT    NOT NULL DEFAULT '[]',
+    days         TEXT    NOT NULL DEFAULT '[]',
+    state        TEXT    NOT NULL DEFAULT 'active',
+    run_count    INTEGER NOT NULL DEFAULT 0,
+    next_run_at  TEXT,
+    last_run_at  TEXT,
+    created_at   TEXT    NOT NULL
+);
+
+CREATE TABLE schedule_targets (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    schedule_id  INTEGER NOT NULL REFERENCES schedules(id) ON DELETE CASCADE,
+    group_id     INTEGER NOT NULL REFERENCES groups(id)    ON DELETE CASCADE,
+    position     INTEGER NOT NULL,
+    UNIQUE (schedule_id, group_id)
+);
+
+CREATE INDEX idx_schedules_next    ON schedules(next_run_at);
+CREATE INDEX idx_schedule_targets  ON schedule_targets(schedule_id);
+"""
+
+
+def _migration_004(connection: sqlite3.Connection) -> None:
+    """Repeating posts.
+
+    A schedule is a definition, not a queue entry: when it comes due the worker
+    materialises an ordinary task from it. That keeps one posting path -- the
+    serial worker, the inter-group gap, crash recovery and the guards all apply
+    unchanged -- instead of a second one that would have to re-earn its safety.
+    """
+    connection.executescript(_MIGRATION_004)
+    # Which schedule spawned a batch, so the queue can say so and so a schedule
+    # never stacks a second batch on top of one still waiting to go out.
+    connection.execute("ALTER TABLE tasks ADD COLUMN schedule_id INTEGER")
+    connection.execute("CREATE INDEX idx_tasks_schedule ON tasks(schedule_id)")
+
+
+# What the per-group cooldown used to default to, before the user lowered it.
+PREVIOUS_DEFAULT_COOLDOWN_HOURS = 24
+
+
+def _migration_005(connection: sqlite3.Connection) -> None:
+    """Lower the default per-group cooldown from 24 hours to 8.
+
+    Changing DEFAULT_SETTINGS alone would do nothing here: settings are seeded
+    once, on first run, and the user's database was seeded long ago. So the
+    stored value is updated too.
+
+    Existing groups are moved only if they are still sitting on the old default.
+    A group the user deliberately set to something else is left alone -- there
+    is no way to tell "24 because I chose it" from "24 because it was the
+    default", so the safer reading is that an untouched 24 was the default.
+    """
+    connection.execute(
+        "UPDATE settings SET value = ? WHERE key = 'default_cooldown_hours' AND value = ?",
+        (DEFAULT_SETTINGS["default_cooldown_hours"], str(PREVIOUS_DEFAULT_COOLDOWN_HOURS)),
+    )
+    connection.execute(
+        "INSERT OR IGNORE INTO settings (key, value) VALUES ('default_cooldown_hours', ?)",
+        (DEFAULT_SETTINGS["default_cooldown_hours"],),
+    )
+    connection.execute(
+        "UPDATE groups SET cooldown_hours = ? WHERE cooldown_hours = ?",
+        (
+            int(DEFAULT_SETTINGS["default_cooldown_hours"]),
+            PREVIOUS_DEFAULT_COOLDOWN_HOURS,
+        ),
+    )
+
+
 # Index i applies when user_version == i, and bumps it to i + 1.
 MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _migration_001,
     _migration_002,
     _migration_003,
+    _migration_004,
+    _migration_005,
 ]
 
 LATEST_VERSION = len(MIGRATIONS)

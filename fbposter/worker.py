@@ -29,12 +29,13 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
-from . import clock, session
+from . import clock, recurrence, session
 from .automation import GroupPoster
 from .automation.humanize import Humanizer
 from .automation.poster import PostOutcome, PostRequest
 from .db import Database
 from .db.models import (
+    SCHEDULE_PAUSED,
     TARGET_DONE,
     TARGET_FAILED,
     TARGET_PENDING,
@@ -46,10 +47,11 @@ from .db.models import (
     TASK_MISSED,
     TASK_PENDING,
     TASK_RUNNING,
+    Schedule,
     Task,
     TaskTarget,
 )
-from .db.repo import GroupRepo, SettingsRepo, TaskRepo
+from .db.repo import GroupRepo, ScheduleRepo, SettingsRepo, TaskRepo
 from .errors import AutomationHalted, PostNotVerified
 from .guards import check_cooldown
 from .power import SleepBlocker
@@ -144,6 +146,7 @@ class PostingWorker:
         self.tasks = TaskRepo(db)
         self.groups = GroupRepo(db)
         self.settings = SettingsRepo(db)
+        self.schedules = ScheduleRepo(db)
         self.poster = poster if poster is not None else LivePoster()
         self.events: "queue.Queue[WorkerEvent]" = events or queue.Queue()
         self._now = now
@@ -239,6 +242,9 @@ class PostingWorker:
     def run_once(self) -> bool:
         """Advance the queue by at most one step. Returns True if it did."""
         now = self._now()
+        if self._materialise_schedules(now):
+            return True
+
         for task in self.tasks.claimable(now):
             fresh = self.tasks.get(task.id)
             if fresh is None or fresh.state in FINISHED_STATES:
@@ -274,12 +280,117 @@ class PostingWorker:
             return False
         if task.scheduled_for is None:
             return False
+        # A batch the worker deliberately deferred -- the window had closed, or
+        # the daily cap was full -- is waiting on purpose, not because the
+        # machine was asleep. Without this, a 23:30 slot deferred to 08:00 came
+        # back nine hours "late" and was thrown away at the moment it was
+        # finally allowed to run.
+        if task.resume_at is not None:
+            return False
         return now - task.scheduled_for > MISSED_GRACE
 
     def _finish(self, task: Task) -> None:
         self.tasks.set_resume_at(task.id, None)
         self.tasks.mark_task(task.id, TASK_DONE, finished=True)
         self.emit("batch_done", "Batch finished.", task.id)
+
+    # -- repeating schedules -----------------------------------------------
+    def _materialise_schedules(self, now) -> bool:
+        """Turn any schedule that has come due into an ordinary batch.
+
+        Deliberately the only thing schedules do. Everything after this point --
+        the serial queue, the 10-25 minute gap, the guards re-checked at posting
+        time, crash recovery -- is the existing path, untouched, because a
+        second posting path would have to re-earn all of it.
+        """
+        for schedule in self.schedules.due(now):
+            try:
+                rule = recurrence.build(schedule.times, schedule.days)
+            except recurrence.InvalidRecurrence as exc:
+                # Not fixable from here, and firing something we cannot describe
+                # would be worse than stopping.
+                self.schedules.set_state(schedule.id, SCHEDULE_PAUSED)
+                self.emit(
+                    "schedule_error",
+                    f"{schedule.display_name} has an unusable repeat rule ({exc}); "
+                    "it has been paused.",
+                )
+                return True
+
+            verdict = recurrence.evaluate_due(
+                rule, schedule.next_run_at, now, MISSED_GRACE
+            )
+            if verdict is None:
+                continue
+
+            if verdict.fire:
+                self._fire_schedule(schedule, now)
+            elif verdict.missed:
+                self.emit(
+                    "missed",
+                    f"{schedule.display_name} missed its slot at "
+                    f"{clock.format_local(schedule.next_run_at)}, probably while the "
+                    "machine was asleep. It has not been fired late.",
+                )
+
+            if schedule.next_run_at is None:
+                self.schedules.set_next_run(schedule.id, verdict.next_run_at)
+            else:
+                self.schedules.record_run(schedule.id, now, verdict.next_run_at)
+            return True
+        return False
+
+    def _fire_schedule(self, schedule: Schedule, now) -> None:
+        """Queue one occurrence, choosing each group's wording as it goes."""
+        if self.tasks.unfinished_for_schedule(schedule.id) > 0:
+            self.emit(
+                "skipped",
+                f"{schedule.display_name} came round again while its last batch was "
+                "still queued; this run was skipped rather than stacked on top.",
+            )
+            return
+
+        targets: list[tuple[int, str]] = []
+        stale: list[str] = []
+        for position, group_id in enumerate(schedule.group_ids):
+            group = self.groups.get(group_id)
+            if group is None:  # removed since the schedule was made
+                continue
+            # Rotating by run_count as well as position is what stops one
+            # wording going to every group at once, run after run.
+            body = recurrence.pick_body(
+                schedule.bodies,
+                schedule.run_count + position,
+                self.groups.recent_bodies(group.id),
+            )
+            if body is None:
+                stale.append(group.display_name)
+                continue
+            targets.append((group.id, body.strip()))
+
+        if stale:
+            self.emit(
+                "skipped",
+                f"{schedule.display_name}: every wording has already gone to "
+                f"{', '.join(stale)}. Add another wording — reposting the same text "
+                "is what gets accounts restricted.",
+            )
+        if not targets:
+            return
+
+        task = self.tasks.create(
+            schedule.bodies[0],
+            targets,
+            media_paths=schedule.media_paths,
+            scheduled_for=schedule.next_run_at,
+            schedule_id=schedule.id,
+        )
+        self.emit(
+            "scheduled",
+            f"{schedule.display_name} queued for {len(targets)} group"
+            f"{'s' if len(targets) != 1 else ''}.",
+            task.id,
+        )
 
     # -- guards, re-checked at the moment of posting -----------------------
     def _attempt(self, task: Task, target: TaskTarget, now) -> bool:

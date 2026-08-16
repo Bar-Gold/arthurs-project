@@ -12,7 +12,7 @@ from fbposter import clock
 from fbposter.db.models import utcnow
 from fbposter.guards import PlannedTarget, evaluate_batch
 
-from .. import theme
+from .. import textdir, theme
 from ..preview import PostPreview
 from .base import View, card, phase_note
 
@@ -32,6 +32,10 @@ PREVIEW = "Preview"
 ALL_GROUPS_TAB = "All groups"
 REWORDED = "Just now · reworded for this group"
 SHARED_WORDING = "Just now · the shared wording"
+
+# Tk has no widget-level justify on a Text; it is a tag option. Left is the
+# default, so only the right-to-left lines need marking.
+RTL_TAG = "rtl"
 
 
 def parse_schedule(raw: str) -> datetime:
@@ -123,7 +127,12 @@ class ComposeView(View):
             border_width=0,
         )
         self.textbox.pack(fill="both", expand=True, padx=theme.PAD_M, pady=theme.PAD_M)
-        self.textbox.bind("<KeyRelease>", lambda _event: self._update_counter())
+        self.textbox.bind("<KeyRelease>", lambda _event: self._on_text_changed())
+        self.textbox.tag_config(RTL_TAG, justify="right")
+        # What is currently tagged, so a keystroke that changes nothing visible
+        # costs nothing. See _apply_direction.
+        self._line_directions: list[str] = []
+        self._apply_direction()
 
         footer = ctk.CTkFrame(editor, fg_color="transparent")
         footer.pack(fill="x", padx=theme.PAD_M, pady=(0, theme.PAD_M))
@@ -548,7 +557,7 @@ class ComposeView(View):
     def _show(self, text: str) -> None:
         self.textbox.delete("1.0", "end")
         self.textbox.insert("1.0", text)
-        self._update_counter()
+        self._on_text_changed()
 
     # -- preview -----------------------------------------------------------
     def sync_mode(self) -> None:
@@ -673,8 +682,70 @@ class ComposeView(View):
 
     # -- text --------------------------------------------------------------
     def get_text(self) -> str:
-        return self.textbox.get("1.0", "end-1c")
+        """What the user actually wrote.
 
-    def _update_counter(self) -> None:
-        count = len(self.get_text())
+        The editor holds invisible direction marks so Windows draws Hebrew the
+        right way round; they are scaffolding, not content. Stripping here — the
+        one place the box is ever read — is what keeps them out of the post, the
+        templates and the database.
+        """
+        return textdir.strip_controls(self.textbox.get("1.0", "end-1c"))
+
+    def _on_text_changed(self) -> None:
+        """Everything that has to follow the text. The one hook for edits.
+
+        Runs on every keystroke, so it reads the box once and hands the text to
+        both jobs rather than fetching it twice.
+        """
+        text = self.get_text()
+        self._update_counter(text)
+        self._apply_direction(text)
+
+    def _has_mark(self, line: int) -> bool:
+        return self.textbox.get(f"{line}.0", f"{line}.1") == textdir.RLE_MARK
+
+    def _apply_direction(self, text: str | None = None) -> None:
+        """Make each line read and sit the way it should.
+
+        Two separate things, both per line. **Order** comes from an invisible
+        RLE at the start of a right-to-left line: Tk lays characters out in
+        logical order and leaves the reordering to Windows, which only manages
+        it one run of one script at a time, so a line mixing Hebrew with
+        English or digits comes out mirrored. The RLE gives Windows a
+        right-to-left base for the whole line and it comes out right, English
+        and numbers included. **Alignment** is the justify tag.
+
+        The mark lives in the widget and never in the post: `get_text` strips
+        it, and it is the only way anything reads this box.
+
+        Touching the widget forces a full relayout, felt as typing lag, so this
+        does nothing at all unless a line's direction or its mark is actually
+        wrong -- which is rare, and never during ordinary typing.
+        """
+        text = self.get_text() if text is None else text
+        directions = textdir.line_directions(text)
+        marks = [
+            self._has_mark(number) for number in range(1, len(directions) + 1)
+        ]
+        wanted = [direction == textdir.RTL for direction in directions]
+        if directions == self._line_directions and marks == wanted:
+            return
+        self._line_directions = directions
+
+        # Marks first: they shift columns, and the tags are placed by line.
+        for number, (needs_mark, has_mark) in enumerate(zip(wanted, marks), start=1):
+            if needs_mark and not has_mark:
+                self.textbox.insert(f"{number}.0", textdir.RLE_MARK)
+            elif has_mark and not needs_mark:
+                self.textbox.delete(f"{number}.0", f"{number}.1")
+
+        self.textbox.tag_remove(RTL_TAG, "1.0", "end")
+        for number, direction in enumerate(directions, start=1):
+            if direction == textdir.RTL:
+                # Through the newline, so a character typed at the end of the
+                # line inherits the tag instead of falling out of it.
+                self.textbox.tag_add(RTL_TAG, f"{number}.0", f"{number + 1}.0")
+
+    def _update_counter(self, text: str | None = None) -> None:
+        count = len(self.get_text() if text is None else text)
         self.counter.configure(text=f"{count} character{'s' if count != 1 else ''}")

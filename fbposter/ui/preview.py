@@ -15,7 +15,7 @@ from pathlib import Path
 
 import customtkinter as ctk
 
-from . import theme
+from . import textdir, theme
 
 # Images are capped rather than fitted to the panel: the left column is at
 # least ~520px at the minimum window size, so a 400px thumbnail never overflows
@@ -51,6 +51,33 @@ def scaled_size(
         return (1, 1)
     factor = min(max_size[0] / width, max_size[1] / height, 1.0)
     return (max(1, round(width * factor)), max(1, round(height * factor)))
+
+
+def wrap_to_width(line: str, font, width: int) -> list[str]:
+    """Break one logical line into display lines that fit, greedy on spaces.
+
+    Tk would do this itself, but only before the line is reordered for display,
+    and reordered text cannot be wrapped correctly. So the wrap happens here
+    while the text is still in logical order.
+
+    A single word wider than the panel is left to overflow rather than being
+    cut: the preview is for reading the wording back, and a chopped word would
+    misrepresent it.
+    """
+    if not line:
+        return [""]
+
+    lines: list[str] = []
+    current = ""
+    for word in line.split(" "):
+        candidate = f"{current} {word}" if current else word
+        if current and font.measure(candidate) > width:
+            lines.append(current)
+            current = word
+        else:
+            current = candidate
+    lines.append(current)
+    return lines
 
 
 def load_thumbnail(
@@ -111,6 +138,8 @@ class PostPreview(ctk.CTkFrame):
         self._images: list[ctk.CTkImage] = []
         self._placeholders: list[Path] = []
         self._wrapped: list[ctk.CTkLabel] = []
+        self._body_text = ""
+        self._last_render: tuple | None = None
         self._wrap_width = FALLBACK_WRAP
 
         # The panel's width is set by its parent, so re-wrapping the text can
@@ -132,6 +161,10 @@ class PostPreview(ctk.CTkFrame):
         self._images = []
         self._placeholders = []
         self._wrapped = []
+        self._body_text = ""
+        # Kept so a resize can lay the post out again: the wrapping is done by
+        # hand now, so it cannot be fixed up by reconfiguring a widget.
+        self._last_render = (heading, subheading, text, list(media))
         self._wrap_width = self._available_width()
 
         if not text.strip() and not media:
@@ -163,8 +196,13 @@ class PostPreview(ctk.CTkFrame):
         return list(self._placeholders)
 
     def text_shown(self) -> str:
-        """The body text as rendered, for tests and for debugging."""
-        return self._wrapped[0].cget("text") if self._wrapped else ""
+        """The body text this is a preview of, for tests and for debugging.
+
+        The post as written, not what the labels hold: those carry the
+        reordered, wrapped form, which is a drawing detail and would be
+        misleading to read back.
+        """
+        return self._body_text
 
     # -- pieces ------------------------------------------------------------
     def _header(self, post: ctk.CTkFrame, heading: str, subheading: str) -> None:
@@ -198,20 +236,48 @@ class PostPreview(ctk.CTkFrame):
         body = text.rstrip()
         muted = not body.strip()
 
+        block = ctk.CTkFrame(post, fg_color="transparent")
+        block.pack(fill="x", padx=theme.PAD_M, pady=(theme.PAD_S, theme.PAD_M))
+
+        if muted:
+            self._body_text = NO_TEXT
+            self._line(block, NO_TEXT, textdir.LTR, muted=True)
+            return
+
+        self._body_text = body
+        font = ctk.CTkFont(family=theme.FONT_FAMILY, size=theme.SIZE_BODY)
+
+        # Wrapping is done here rather than by Tk, because each display line is
+        # reordered before it is drawn and Tk would otherwise be wrapping text
+        # that had already been rearranged. Wrap in logical order, reorder each
+        # resulting line: that is the order the two steps have to happen in.
+        for line, direction in zip(body.split("\n"), textdir.line_directions(body)):
+            for display_line in wrap_to_width(line, font, self._wrap_width):
+                self._line(block, display_line, direction)
+
+    def _line(
+        self, block: ctk.CTkFrame, text: str, direction: str, muted: bool = False
+    ) -> None:
         label = ctk.CTkLabel(
-            post,
-            text=body if not muted else NO_TEXT,
+            block,
+            # Reordered for display. Tk hands mixed Hebrew and English to
+            # Windows a run at a time and gets the runs back in the wrong
+            # order; this is the only place in the app that can put them right,
+            # because it is the only place the text is not being edited.
+            text=textdir.to_visual(text),
             font=ctk.CTkFont(
                 family=theme.FONT_FAMILY,
                 size=theme.SIZE_BODY,
                 slant="italic" if muted else "roman",
             ),
             text_color=theme.TEXT_MUTED if muted else theme.TEXT,
-            anchor="w",
-            justify="left",
-            wraplength=self._wrap_width,
+            anchor=textdir.anchor_for(direction),
+            justify=textdir.justify_for(direction),
+            # Already wrapped by hand; letting Tk wrap again would break lines
+            # in the middle of the reordered text.
+            wraplength=0,
         )
-        label.pack(fill="x", padx=theme.PAD_M, pady=(theme.PAD_S, theme.PAD_M))
+        label.pack(fill="x")
         self._wrapped.append(label)
 
     def _image(self, post: ctk.CTkFrame, path: Path) -> None:
@@ -275,9 +341,16 @@ class PostPreview(ctk.CTkFrame):
         return max(MIN_WRAP, width - WRAP_INSET)
 
     def _on_resize(self, _event=None) -> None:
+        """Lay the post out again at the new width.
+
+        A full re-render rather than a reconfigure, because the line breaks are
+        chosen here rather than by Tk. The panel's width comes from its parent,
+        so this cannot feed back into another resize, and the threshold keeps it
+        off the path of the small jitter that arrives during layout.
+        """
         width = self._available_width()
         if abs(width - self._wrap_width) < 8:
             return
         self._wrap_width = width
-        for label in self._wrapped:
-            label.configure(wraplength=width)
+        if self._last_render is not None:
+            self.render(*self._last_render)

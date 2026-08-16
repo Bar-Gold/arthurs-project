@@ -90,10 +90,17 @@ def cmd_status(_: argparse.Namespace) -> int:
     return 1
 
 
-def cmd_gui(_: argparse.Namespace) -> int:
+def cmd_gui(args: argparse.Namespace) -> int:
     # Imported here so the CLI commands stay usable on a machine where the GUI
     # dependencies are missing or there is no display.
-    from fbposter.ui.app import run
+    #
+    # Qt by default: Tk cannot render Hebrew mixed with English correctly, which
+    # is most of what this app is used to write. --tk keeps the old window
+    # available while the Qt one settles in.
+    if getattr(args, "tk", False):
+        from fbposter.ui.app import run
+    else:
+        from fbposter.qtui.app import run
 
     return run()
 
@@ -205,12 +212,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    subparsers.add_parser(
+    start = subparsers.add_parser(
         "start", help="launch Chrome if it is not up, then open the app (use this one)"
-    ).set_defaults(func=cmd_start)
-    subparsers.add_parser(
-        "gui", help="open the app without touching Chrome"
-    ).set_defaults(func=cmd_gui)
+    )
+    start.add_argument(
+        "--tk", action="store_true", help="use the old Tkinter window instead of Qt"
+    )
+    start.set_defaults(func=cmd_start)
+
+    gui = subparsers.add_parser("gui", help="open the app without touching Chrome")
+    gui.add_argument(
+        "--tk", action="store_true", help="use the old Tkinter window instead of Qt"
+    )
+    gui.set_defaults(func=cmd_gui)
     subparsers.add_parser(
         "setup", help="launch Chrome on-screen for the one-time Facebook login"
     ).set_defaults(func=cmd_setup)

@@ -7,14 +7,16 @@ functions, so they can be tested without a database.
 
 from __future__ import annotations
 
+import json
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Sequence
 
 from ..errors import DuplicateGroup, InvalidGroupURL
 from ..groups import parse_group_url
 from .connection import Database
 from .models import (
+    SCHEDULE_ACTIVE,
     TARGET_DONE,
     TARGET_PENDING,
     TARGET_RUNNING,
@@ -22,6 +24,7 @@ from .models import (
     TASK_PENDING,
     TASK_RUNNING,
     Group,
+    Schedule,
     Task,
     TaskTarget,
     Template,
@@ -88,7 +91,7 @@ class GroupRepo:
         if self.get_by_identifier(ref.identifier) is not None:
             raise DuplicateGroup(f"Group {ref.identifier} is already in the list.")
 
-        default_cooldown = SettingsRepo(self.db).get_int("default_cooldown_hours", 24)
+        default_cooldown = SettingsRepo(self.db).get_int("default_cooldown_hours", 8)
         try:
             group_id = self.db.write(
                 "INSERT INTO groups (identifier, url, name, cooldown_hours, notes, created_at) "
@@ -162,8 +165,6 @@ class TemplateRepo:
 
     def save(self, name: str, body: str, media_paths: Sequence[str] = ()) -> Template:
         """Create or overwrite a template by name."""
-        import json
-
         now = to_iso(utcnow())
         self.db.write(
             "INSERT INTO templates (name, body, media_paths, created_at, updated_at) "
@@ -192,6 +193,7 @@ class TaskRepo:
         targets: Sequence[tuple[int, str]],
         media_paths: Sequence[str] = (),
         scheduled_for: datetime | None = None,
+        schedule_id: int | None = None,
     ) -> Task:
         """Create a batch and its per-group targets atomically.
 
@@ -199,21 +201,21 @@ class TaskRepo:
         a task row with no targets, or targets without a task -- would leave the
         worker with an impossible queue, so both go in one transaction.
         """
-        import json
-
         if not targets:
             raise ValueError("A task needs at least one target group.")
 
         with self.db.transaction() as connection:
             cursor = connection.execute(
-                "INSERT INTO tasks (body, media_paths, scheduled_for, state, created_at) "
-                "VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO tasks "
+                "(body, media_paths, scheduled_for, state, created_at, schedule_id) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
                 (
                     body,
                     json.dumps([str(p) for p in media_paths]),
                     to_iso(scheduled_for),
                     TASK_PENDING,
                     to_iso(utcnow()),
+                    schedule_id,
                 ),
             )
             task_id = cursor.lastrowid
@@ -240,6 +242,44 @@ class TaskRepo:
                 "SELECT * FROM tasks ORDER BY id DESC LIMIT ?", (limit,)
             )
         ]
+
+    def list_for_queue(
+        self, now: datetime, retention_hours: int = 24, limit: int = 50
+    ) -> list[Task]:
+        """What the queue screen shows: everything live, plus recent history.
+
+        A batch that has not finished is always listed however old it is --
+        hiding something still due to go out would be a good deal worse than a
+        cluttered screen. Only finished batches age out.
+
+        This filters the *view*. Nothing is deleted: `task_targets` rows are
+        what `GroupRepo.recent_bodies` reads to refuse reposting the same words
+        to a group, and what `posted_count_since` counts for the daily cap.
+        Deleting history would quietly switch off both.
+        """
+        if retention_hours <= 0:
+            return self.list_recent(limit)
+
+        cutoff = to_iso(now - timedelta(hours=retention_hours))
+        rows = self.db.query(
+            "SELECT * FROM tasks "
+            "WHERE state IN (?, ?) OR COALESCE(finished_at, created_at) >= ? "
+            "ORDER BY id DESC LIMIT ?",
+            (TASK_PENDING, TASK_RUNNING, cutoff, limit),
+        )
+        return [Task.from_row(row) for row in rows]
+
+    def count_older_than(self, now: datetime, retention_hours: int = 24) -> int:
+        """Finished batches the queue screen is currently hiding."""
+        if retention_hours <= 0:
+            return 0
+        cutoff = to_iso(now - timedelta(hours=retention_hours))
+        row = self.db.query_one(
+            "SELECT COUNT(*) AS n FROM tasks "
+            "WHERE state NOT IN (?, ?) AND COALESCE(finished_at, created_at) < ?",
+            (TASK_PENDING, TASK_RUNNING, cutoff),
+        )
+        return int(row["n"]) if row else 0
 
     def targets_for(self, task_id: int) -> list[TaskTarget]:
         rows = self.db.query(
@@ -375,3 +415,153 @@ class TaskRepo:
             (TARGET_DONE, to_iso(since)),
         )
         return int(row["n"]) if row else 0
+
+    def unfinished_for_schedule(self, schedule_id: int) -> int:
+        """Batches from this schedule that have not gone out yet.
+
+        A schedule firing again while its last batch is still queued would stack
+        posts on top of each other -- the opposite of the spacing everything
+        else in this app is built around -- so an occurrence that lands on top
+        of an unfinished one is skipped rather than added.
+        """
+        row = self.db.query_one(
+            "SELECT COUNT(*) AS n FROM tasks WHERE schedule_id = ? AND state IN (?, ?)",
+            (schedule_id, TASK_PENDING, TASK_RUNNING),
+        )
+        return int(row["n"]) if row else 0
+
+
+class ScheduleRepo:
+    """Repeating posts.
+
+    A schedule holds the definition; firing one writes an ordinary task through
+    TaskRepo, so nothing downstream needs to know schedules exist.
+    """
+
+    def __init__(self, db: Database) -> None:
+        self.db = db
+
+    def _group_ids(self, schedule_id: int) -> list[int]:
+        return [
+            row["group_id"]
+            for row in self.db.query(
+                "SELECT group_id FROM schedule_targets WHERE schedule_id = ? "
+                "ORDER BY position",
+                (schedule_id,),
+            )
+        ]
+
+    def _hydrate(self, rows: Sequence[Any]) -> list[Schedule]:
+        return [Schedule.from_row(row, self._group_ids(row["id"])) for row in rows]
+
+    def list(self) -> list[Schedule]:
+        return self._hydrate(self.db.query("SELECT * FROM schedules ORDER BY id"))
+
+    def get(self, schedule_id: int) -> Schedule | None:
+        row = self.db.query_one("SELECT * FROM schedules WHERE id = ?", (schedule_id,))
+        if row is None:
+            return None
+        return Schedule.from_row(row, self._group_ids(schedule_id))
+
+    def create(
+        self,
+        *,
+        name: str,
+        bodies: Sequence[str],
+        group_ids: Sequence[int],
+        times: Sequence[str],
+        days: Sequence[int] = (),
+        media_paths: Sequence[str] = (),
+        next_run_at: datetime | None = None,
+    ) -> Schedule:
+        """Write a schedule and its groups in one transaction.
+
+        A schedule with no groups, or groups with no schedule, would sit in the
+        database doing nothing visible -- so, as with tasks, both halves land
+        together or neither does.
+        """
+        cleaned = [b for b in bodies if b.strip()]
+        if not cleaned:
+            raise ValueError("A repeating post needs at least one wording.")
+        if not group_ids:
+            raise ValueError("A repeating post needs at least one group.")
+        if not times:
+            raise ValueError("A repeating post needs at least one time of day.")
+
+        with self.db.transaction() as connection:
+            cursor = connection.execute(
+                "INSERT INTO schedules "
+                "(name, bodies, media_paths, times, days, state, next_run_at, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    name,
+                    json.dumps(list(cleaned)),
+                    json.dumps([str(p) for p in media_paths]),
+                    json.dumps(list(times)),
+                    json.dumps([int(d) for d in days]),
+                    SCHEDULE_ACTIVE,
+                    to_iso(next_run_at),
+                    to_iso(utcnow()),
+                ),
+            )
+            schedule_id = cursor.lastrowid
+            connection.executemany(
+                "INSERT INTO schedule_targets (schedule_id, group_id, position) "
+                "VALUES (?, ?, ?)",
+                [
+                    (schedule_id, group_id, position)
+                    for position, group_id in enumerate(dict.fromkeys(group_ids))
+                ],
+            )
+
+        stored = self.get(schedule_id)
+        assert stored is not None
+        return stored
+
+    def set_state(self, schedule_id: int, state: str) -> None:
+        self.db.write(
+            "UPDATE schedules SET state = ? WHERE id = ?", (state, schedule_id)
+        )
+
+    def set_bodies(self, schedule_id: int, bodies: Sequence[str]) -> None:
+        cleaned = [b for b in bodies if b.strip()]
+        if not cleaned:
+            raise ValueError("A repeating post needs at least one wording.")
+        self.db.write(
+            "UPDATE schedules SET bodies = ? WHERE id = ?",
+            (json.dumps(cleaned), schedule_id),
+        )
+
+    def set_next_run(self, schedule_id: int, when: datetime | None) -> None:
+        self.db.write(
+            "UPDATE schedules SET next_run_at = ? WHERE id = ?",
+            (to_iso(when), schedule_id),
+        )
+
+    def record_run(
+        self, schedule_id: int, ran_at: datetime, next_run_at: datetime | None
+    ) -> None:
+        """Advance a schedule past the occurrence it just fired.
+
+        run_count is what rotates the wordings, so it moves on every firing --
+        that is the difference between each group getting its own text and all
+        of them getting the same one.
+        """
+        self.db.write(
+            "UPDATE schedules SET run_count = run_count + 1, last_run_at = ?, "
+            "next_run_at = ? WHERE id = ?",
+            (to_iso(ran_at), to_iso(next_run_at), schedule_id),
+        )
+
+    def delete(self, schedule_id: int) -> None:
+        self.db.write("DELETE FROM schedules WHERE id = ?", (schedule_id,))
+
+    def due(self, now: datetime) -> list[Schedule]:
+        """Active schedules whose moment has arrived, oldest slot first."""
+        rows = self.db.query(
+            "SELECT * FROM schedules WHERE state = ? "
+            "  AND (next_run_at IS NULL OR next_run_at <= ?) "
+            "ORDER BY COALESCE(next_run_at, created_at), id",
+            (SCHEDULE_ACTIVE, to_iso(now)),
+        )
+        return self._hydrate(rows)

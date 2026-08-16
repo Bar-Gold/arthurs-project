@@ -7,7 +7,8 @@ these rules are the difference between an account surviving and not.
 
 The rules come from README section 7, and the thresholds were confirmed with
 the user: 25 group-posts a day, an 08:00-23:00 window, and a per-group cooldown
-defaulting to 24 hours.
+defaulting to 8 hours (lowered from 24 by the user, so that posting two or
+three times a day to one group is possible at all).
 """
 
 from __future__ import annotations
@@ -36,7 +37,7 @@ class PlannedTarget:
     group_name: str
     body: str
     last_posted_at: datetime | None = None
-    cooldown_hours: int = 24
+    cooldown_hours: int = 8
     recent_bodies: tuple[str, ...] = ()
 
 

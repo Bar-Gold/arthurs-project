@@ -7,6 +7,6 @@ hit -- a duplicate post is the worst failure this project has.
 """
 
 from .connection import Database
-from .models import Group, Task, TaskTarget, Template
+from .models import Group, Schedule, Task, TaskTarget, Template
 
-__all__ = ["Database", "Group", "Task", "TaskTarget", "Template"]
+__all__ = ["Database", "Group", "Schedule", "Task", "TaskTarget", "Template"]

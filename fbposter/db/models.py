@@ -30,6 +30,11 @@ TARGET_DONE = "done"
 TARGET_FAILED = "failed"
 TARGET_SKIPPED = "skipped"
 
+# States a repeating schedule can be in. It is either firing or it is not;
+# a finished schedule is a deleted one.
+SCHEDULE_ACTIVE = "active"
+SCHEDULE_PAUSED = "paused"
+
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
@@ -67,13 +72,23 @@ def _paths_from_json(raw: str | None) -> list[str]:
     return [str(item) for item in loaded] if isinstance(loaded, list) else []
 
 
+def _ints_from_json(raw: str | None) -> list[int]:
+    values = []
+    for item in _paths_from_json(raw):
+        try:
+            values.append(int(item))
+        except (TypeError, ValueError):
+            continue
+    return values
+
+
 @dataclass(frozen=True)
 class Group:
     id: int
     identifier: str
     url: str
     name: str = ""
-    cooldown_hours: int = 24
+    cooldown_hours: int = 8
     last_posted_at: datetime | None = None
     notes: str = ""
     archived: bool = False
@@ -133,6 +148,9 @@ class Task:
     # The instant the worker may next act on this task: the inter-group gap,
     # or a deferral until the posting window reopens.
     resume_at: datetime | None = None
+    # Set when a repeating schedule materialised this batch, so the queue can
+    # say where it came from.
+    schedule_id: int | None = None
 
     @classmethod
     def from_row(cls, row: Mapping[str, Any]) -> "Task":
@@ -148,6 +166,7 @@ class Task:
             finished_at=from_iso(row["finished_at"]),
             error=row["error"] or "",
             resume_at=from_iso(row["resume_at"]) if "resume_at" in keys else None,
+            schedule_id=row["schedule_id"] if "schedule_id" in keys else None,
         )
 
     @property
@@ -193,4 +212,53 @@ class TaskTarget:
             # Present only when the query joined groups.
             group_identifier=(row["group_identifier"] if "group_identifier" in keys else "") or "",
             group_name=(row["group_name"] if "group_name" in keys else "") or "",
+        )
+
+
+@dataclass(frozen=True)
+class Schedule:
+    """A repeating post: several wordings, some groups, and when to fire.
+
+    `bodies` is plural on purpose. One wording would be refused by
+    `guards.check_repeat_text` the second time it reached a group, so a
+    schedule that could only hold one would work exactly once.
+    """
+
+    id: int
+    name: str = ""
+    bodies: list[str] = field(default_factory=list)
+    media_paths: list[str] = field(default_factory=list)
+    times: list[str] = field(default_factory=list)
+    days: list[int] = field(default_factory=list)
+    state: str = SCHEDULE_ACTIVE
+    run_count: int = 0
+    next_run_at: datetime | None = None
+    last_run_at: datetime | None = None
+    created_at: datetime | None = None
+    # Filled in by the repository from schedule_targets, in position order.
+    group_ids: list[int] = field(default_factory=list)
+
+    @property
+    def active(self) -> bool:
+        return self.state == SCHEDULE_ACTIVE
+
+    @property
+    def display_name(self) -> str:
+        return self.name or f"Schedule {self.id}"
+
+    @classmethod
+    def from_row(cls, row: Mapping[str, Any], group_ids: Sequence[int] = ()) -> "Schedule":
+        return cls(
+            id=row["id"],
+            name=row["name"] or "",
+            bodies=_paths_from_json(row["bodies"]),
+            media_paths=_paths_from_json(row["media_paths"]),
+            times=_paths_from_json(row["times"]),
+            days=_ints_from_json(row["days"]),
+            state=row["state"],
+            run_count=row["run_count"],
+            next_run_at=from_iso(row["next_run_at"]),
+            last_run_at=from_iso(row["last_run_at"]),
+            created_at=from_iso(row["created_at"]),
+            group_ids=list(group_ids),
         )
