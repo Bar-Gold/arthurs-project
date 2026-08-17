@@ -229,14 +229,38 @@ class TestOutcomesArePersisted:
         make_worker(db).run_once()
         assert groups.get(one.id).last_posted_at is not None
 
-    def test_posting_the_media_from_the_task(self, db, repos):
+    def test_posting_the_media_from_the_task(self, db, repos, tmp_path):
         groups, tasks, _ = repos
         one, _ = add_groups(groups)
-        tasks.create(BODY, [(one.id, BODY)], media_paths=["a.png", "b.png"])
+        # Real files: the worker refuses to post an attachment that is no
+        # longer on disk, so placeholder names would never reach the poster.
+        made = []
+        for name in ("a.png", "b.png"):
+            path = tmp_path / name
+            path.write_bytes(b"x")
+            made.append(str(path))
+        tasks.create(BODY, [(one.id, BODY)], media_paths=made)
 
         poster = FakePoster()
         make_worker(db, poster).run_once()
         assert [p.name for p in poster.requests[0].media_paths] == ["a.png", "b.png"]
+
+    def test_an_attachment_deleted_before_posting_halts_with_a_clear_reason(
+        self, db, repos, tmp_path
+    ):
+        """Otherwise this arrives as a Playwright timeout inside
+        set_input_files, naming nothing the user can act on."""
+        groups, tasks, _ = repos
+        one, _ = add_groups(groups)
+        gone = tmp_path / "bike.jpg"
+        task = tasks.create(BODY, [(one.id, BODY)], media_paths=[str(gone)])
+
+        poster = FakePoster()
+        make_worker(db, poster).run_once()
+
+        assert poster.requests == [], "drove the browser with a missing file"
+        assert tasks.get(task.id).state == TASK_HALTED
+        assert "bike.jpg" in tasks.targets_for(task.id)[0].error
 
     def test_the_per_group_body_is_used_not_the_task_body(self, db, repos):
         groups, tasks, _ = repos
@@ -592,3 +616,98 @@ class TestLifecycle:
         worker = make_worker(db)
         drain(worker)
         assert "posted" in kinds(worker)
+
+
+class TestInterruptsDoNotStrandABatch:
+    """KeyboardInterrupt and SystemExit are not Exception, so they slipped past
+    the handler and killed the worker thread -- leaving the target stuck in
+    `running` and the keep-awake request still held."""
+
+    @pytest.mark.parametrize("interrupt", [KeyboardInterrupt, SystemExit])
+    def test_the_target_is_not_left_running(self, db, repos, interrupt):
+        groups, tasks, _ = repos
+        one, _ = add_groups(groups)
+        task = tasks.create(BODY, [(one.id, BODY)])
+
+        worker = make_worker(db, FakePoster(raises={one.url: interrupt()}))
+        with pytest.raises(interrupt):
+            worker.run_once()
+
+        assert tasks.targets_for(task.id)[0].state == TARGET_FAILED
+        assert tasks.get(task.id).state == TASK_HALTED
+
+    def test_the_machine_is_allowed_to_sleep_again(self, db, repos):
+        groups, tasks, _ = repos
+        one, _ = add_groups(groups)
+        tasks.create(BODY, [(one.id, BODY)])
+
+        released = []
+        blocker = SleepBlocker(setter=lambda flags: released.append(flags))
+        worker = make_worker(db, FakePoster(raises={one.url: KeyboardInterrupt()}))
+        worker.blocker = blocker
+        with pytest.raises(KeyboardInterrupt):
+            worker.run_once()
+
+        assert not blocker.held, "keep-awake still held after an interrupt"
+
+    def test_an_ordinary_exception_still_does_not_propagate(self):
+        """The new handler must not have widened what escapes."""
+        import inspect
+
+        from fbposter import worker as worker_module
+
+        source = inspect.getsource(worker_module.PostingWorker._post)
+        assert "except BaseException" in source
+        assert "raise" in source
+
+
+class TestTwoWorkersCannotDoublePost:
+    """A second copy of the app is a second worker on the same database.
+
+    Racing two of them produced a duplicate post in 7 runs out of 40 before
+    claim_target existed. A duplicate is the worst outcome this project has, so
+    the claim is a conditional UPDATE and the transition itself is the lock.
+    """
+
+    def test_only_one_worker_can_claim_a_target(self, db, repos):
+        groups, tasks, _ = repos
+        one, _ = add_groups(groups)
+        task = tasks.create(BODY, [(one.id, BODY)])
+        target = tasks.targets_for(task.id)[0]
+
+        assert tasks.claim_target(target.id) is True
+        assert tasks.claim_target(target.id) is False, "claimed twice"
+
+    def test_a_claim_marks_it_running_and_attempted(self, db, repos):
+        groups, tasks, _ = repos
+        one, _ = add_groups(groups)
+        task = tasks.create(BODY, [(one.id, BODY)])
+        target = tasks.targets_for(task.id)[0]
+
+        tasks.claim_target(target.id)
+        claimed = tasks.targets_for(task.id)[0]
+        assert claimed.state == TARGET_RUNNING
+        assert claimed.attempted_at is not None
+
+    def test_an_already_finished_target_cannot_be_reclaimed(self, db, repos):
+        groups, tasks, _ = repos
+        one, _ = add_groups(groups)
+        task = tasks.create(BODY, [(one.id, BODY)])
+        target = tasks.targets_for(task.id)[0]
+        tasks.mark_target(target.id, TARGET_DONE, posted=True)
+
+        assert tasks.claim_target(target.id) is False
+
+    def test_a_second_worker_finding_it_taken_posts_nothing(self, db, repos):
+        """The whole point: it must walk away, not post it as well."""
+        groups, tasks, _ = repos
+        one, _ = add_groups(groups)
+        task = tasks.create(BODY, [(one.id, BODY)])
+        target = tasks.targets_for(task.id)[0]
+        tasks.claim_target(target.id)          # the other worker got there first
+
+        poster = FakePoster()
+        worker = make_worker(db, poster)
+        worker._post(tasks.get(task.id), target, groups.get(one.id))
+
+        assert poster.requests == [], "posted a target another worker had claimed"

@@ -42,6 +42,7 @@ from PySide6.QtWidgets import (
 )
 
 from fbposter import clock, recurrence
+from fbposter.text import strip_invisible
 from fbposter.db.models import SCHEDULE_ACTIVE, SCHEDULE_PAUSED, utcnow
 
 from .. import theme
@@ -485,7 +486,9 @@ class PublishView(QWidget):
         self.refresh_summary()
 
     def alternates(self) -> list[str]:
-        return [e.toPlainText().strip() for e in self._wordings if e.toPlainText().strip()]
+        """Cleaned on read, like the Compose editor: these become post bodies."""
+        cleaned = (strip_invisible(e.toPlainText()).strip() for e in self._wordings)
+        return [text for text in cleaned if text]
 
     def wordings(self) -> list[str]:
         """Everything a repeating post would rotate through.

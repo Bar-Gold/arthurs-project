@@ -18,6 +18,7 @@ from datetime import datetime, timedelta
 from typing import Sequence
 
 from . import clock
+from .text import strip_invisible
 
 # Sending byte-identical text to more than this many groups earns a warning.
 IDENTICAL_TEXT_WARN_THRESHOLD = 2
@@ -58,8 +59,15 @@ def normalise(text: str) -> str:
     trailing newline or a changed capital is not content variation, and letting
     it defeat the check would make the guard worse than useless by giving false
     reassurance.
+
+    Invisible characters are removed first, and that is not a nicety. Text
+    pasted from Word or WhatsApp carries direction marks and zero-width joiners
+    the user cannot see; without stripping them, the same post pasted twice
+    compares as two different posts and the guard waves through the exact
+    repeat it exists to stop. Folding it in here rather than only at the input
+    means bodies already stored with marks in them compare correctly too.
     """
-    return " ".join(text.split()).casefold()
+    return " ".join(strip_invisible(text).split()).casefold()
 
 
 def check_daily_cap(posted_today: int, adding: int, cap: int) -> Violation | None:
@@ -105,13 +113,17 @@ def check_posting_window(when: datetime, start_hour: int, end_hour: int) -> Viol
     has to be right.
 
     end_hour is exclusive, so 08:00-23:00 means the last post may start at
-    22:59 local.
+    22:59 local. A window whose start is after its end crosses midnight, and
+    `clock.inside_window` owns that rule so this and `clock.next_window_open`
+    cannot disagree -- when they did, a batch deferred itself for ever.
     """
+    start_hour = clock.sane_hour(start_hour, 8)
+    end_hour = clock.sane_hour(end_hour, 23)
     if start_hour == end_hour:
         return None
 
     local = clock.to_local(when)
-    if start_hour <= local.hour < end_hour:
+    if clock.inside_window(local.hour, start_hour, end_hour):
         return None
     return Violation(
         "posting_window",

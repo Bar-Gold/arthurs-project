@@ -25,6 +25,8 @@ as tangled and hard to read.
 
 from __future__ import annotations
 
+from ..text import strip_invisible
+
 import unicodedata
 
 LTR = "ltr"
@@ -127,8 +129,12 @@ def strip_controls(text: str) -> str:
     The editor holds a few of these to get Windows to draw Hebrew the right way
     round. They are not part of what the user wrote, and Facebook must never
     see them, so every read of the editor goes through here.
+
+    Delegates to the shared list, which is wider than BIDI_CONTROLS: pasted
+    text also carries zero-width joiners and byte-order marks, and those cause
+    the same trouble downstream.
     """
-    return text.translate(_STRIP_CONTROLS)
+    return strip_invisible(text)
 
 
 def bidi_available() -> bool:

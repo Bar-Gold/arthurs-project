@@ -210,6 +210,14 @@ class TaskRepo:
         if not targets:
             raise ValueError("A task needs at least one target group.")
 
+        # First wording wins if a group is listed twice. UNIQUE(task_id,
+        # group_id) would otherwise raise a raw sqlite3.IntegrityError at the
+        # caller -- the index is the backstop, not the error message.
+        deduped: dict[int, str] = {}
+        for group_id, body_for_group in targets:
+            deduped.setdefault(group_id, body_for_group)
+        targets = list(deduped.items())
+
         with self.db.transaction() as connection:
             cursor = connection.execute(
                 "INSERT INTO tasks "
@@ -336,6 +344,27 @@ class TaskRepo:
             (task_id, TARGET_PENDING),
         )
         return TaskTarget.from_row(row) if row else None
+
+    def claim_target(self, target_id: int) -> bool:
+        """Take ownership of a target, or report that someone else has it.
+
+        The conditional UPDATE is the whole point. Reading a pending target and
+        then marking it running as two steps leaves a window in which a second
+        worker -- a second copy of the app, on the same database -- reads the
+        same target and posts it too. Racing two workers on one database
+        produced a duplicate in 7 runs out of 40 before this existed, and a
+        duplicate post is the worst thing this project can do.
+
+        `WHERE state = pending` makes the transition itself the lock: SQLite
+        serialises the writers, so exactly one of them changes a row.
+        """
+        with self.db.transaction() as connection:
+            cursor = connection.execute(
+                "UPDATE task_targets SET state = ?, attempted_at = ? "
+                "WHERE id = ? AND state = ?",
+                (TARGET_RUNNING, to_iso(utcnow()), target_id, TARGET_PENDING),
+            )
+            return cursor.rowcount == 1
 
     def running_targets(self) -> list[TaskTarget]:
         """Targets left mid-flight by a crash.

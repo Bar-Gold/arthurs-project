@@ -385,6 +385,20 @@ def run() -> int:
 
     from PySide6.QtWidgets import QApplication
 
+    from ..single import SingleInstance
+
+    # One app, one worker. A second copy would be a second worker on the same
+    # database; TaskRepo.claim_target stops that becoming a duplicate post, but
+    # two of them would still fight over Chrome and both hold the machine awake.
+    lock = SingleInstance()
+    if not lock.acquired:
+        print(
+            "The auto-poster is already running — look for its window in the "
+            "taskbar. Running two copies would mean two schedulers on one "
+            "database, so this one will close."
+        )
+        return 1
+
     application = QApplication(sys.argv)
     theme.activate()
     application.setStyleSheet(theme.stylesheet())

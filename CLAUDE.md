@@ -72,9 +72,20 @@ UI (Tk, legacy — `main.py gui --tk`): `ui/app.py`, `ui/views/`, `theme.py`, `t
 
 Storage: `db/` — `connection.py` (per-thread connections), `schema.py` (migrations), `models.py`, `repo.py` (`GroupRepo`, `TemplateRepo`, `TaskRepo`, `ScheduleRepo`, `SettingsRepo`).
 
+### Invisible characters must never reach a comparison
+
+`fbposter/text.py` owns one list of characters that print nothing — bidi marks, zero-width joiners, soft hyphen, BOM — and `strip_invisible()` removes them. It exists because two load-bearing comparisons are string equality against the user's own words:
+
+- **`guards.normalise`** folds them, so `check_repeat_text` cannot be defeated by a paste from Word or WhatsApp. Before this, the same ad pasted twice compared as *different text* and the guard waved through the exact repeat it exists to stop. Folding in `normalise` rather than only at the input is deliberate: bodies already stored with marks in them have to compare correctly too.
+- **`distinctive_snippet`** strips them, because Facebook drops them when it renders. A snippet still carrying one is searched for and never found, which reports a post that went out fine as failed and halts the batch.
+
+Both Qt entry points clean on the way in as well — `ComposeView.get_text()` and `PublishView.alternates()`. The Tk `textdir.strip_controls()` now delegates to the same list. **Qt needing no direction marks of its own is not the same as no marks arriving**; that gap is how this shipped.
+
 ### Time: stored in UTC, judged in Israel time
 
 Every timestamp is stored and compared in UTC, but **every human judgement is made in `Asia/Jerusalem`** — the posting window, what counts as "today" for the daily cap, and every time shown in or typed into the UI. Go through `fbposter/clock.py` (`to_local`, `local_hour`, `start_of_local_day`, `next_window_open`, `parse_local`, `format_local`); never read `.hour` or `.date()` off a stored UTC value. Doing that put the window three hours out — it allowed a 01:00 local post and refused a 09:00 one, and posting at 4am is the loudest automation signal there is.
+
+**A posting window may cross midnight.** `clock.inside_window` owns the rule and both `guards.check_posting_window` and `clock.next_window_open` defer to it, because when they disagreed a 22:00–06:00 window excluded *every* hour: nothing could post and the batch deferred itself one day at a time, for ever, silently. `clock.sane_hour` also guards against a stored hour outside 0–23, which used to raise `hour must be in 0..23` inside `datetime.replace` — swallowed by the worker loop and retried every tick, so the app just stopped posting.
 
 `tzdata` is therefore a hard requirement, not a nicety: Windows ships no IANA time zone database, so without it `Asia/Jerusalem` does not resolve and `clock.posting_zone()` falls back to the machine's own zone.
 
@@ -238,7 +249,11 @@ One `PostingWorker`, one thread, started by `App.start_worker()` and by nothing 
 - **Every wait is an absolute instant, never a countdown.** The inter-group gap lives in `tasks.resume_at` and is compared against the wall clock each tick. Never replace it with `sleep()` — a countdown does not survive the app closing or the machine suspending.
 - **Guards are re-checked at posting time**, not just at enqueue. The window may have closed, the cap may have filled, the cooldown may have started since. Outside the window the batch defers to `clock.next_window_open` rather than posting late.
 - **Believe the `PostOutcome`.** `outcome.posted` being False (a dry run) must not be recorded as a real post — that would start a real cooldown and consume real daily cap. This was a live bug.
+- **A target is claimed, not just marked.** `TaskRepo.claim_target` is a conditional `UPDATE ... WHERE state = 'pending'` and the transition itself is the lock. Reading a pending target and then marking it running as two steps left a window in which a *second copy of the app* read the same target and posted it too — racing two workers on one database produced a duplicate in **7 runs out of 40**. Never replace this with an unconditional `mark_target`.
+- **Only one app may run.** `fbposter/single.py` takes a Windows named mutex in `run()`; a second launch prints a message and exits 1. This is the second layer — `claim_target` is what makes a duplicate impossible — but it stops two copies fighting over the same Chrome session and both holding the machine awake.
 - **Never retry.** `PostNotVerified` halts the batch; it does not re-post. A duplicate is worse than a missing post.
+- **`_post` catches `BaseException`, records, then re-raises.** `KeyboardInterrupt` and `SystemExit` are not `Exception`, so they used to kill the worker thread outright — leaving the target stuck in `running` and the keep-awake request still held, so the machine could not sleep.
+- **Attachments are checked on disk before the browser is touched.** A file moved since the batch was queued otherwise surfaces as a Playwright timeout inside `set_input_files`, naming nothing the user can act on.
 - **Crash recovery verifies, it does not guess.** A target left `running` is checked against the group with `GroupPoster.verify`: found → done, missing → requeued, uncheckable → escalated to the user.
 - **A failed guard defers the batch; a cooldown skips one group.** Cap and window set `tasks.resume_at` and the whole batch waits. A group still inside its cooldown is marked `skipped` and the batch moves on, rather than stalling every remaining group behind it.
 - A missed slot older than `MISSED_GRACE` (2h) is marked `missed`, never fired late in a burst. **A batch the worker deferred on purpose is exempt** — `resume_at` being set means it is waiting for the window to reopen, not that the machine was asleep, and without that exemption a 23:30 slot deferred to 08:00 came back nine hours "late" and was thrown away at the moment it was finally allowed to run.

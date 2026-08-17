@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
 )
 
 from fbposter import clock
+from fbposter.text import strip_invisible
 from fbposter.db.models import utcnow
 from fbposter.guards import PlannedTarget, evaluate_batch
 
@@ -270,7 +271,13 @@ class ComposeView(QWidget):
 
     # -- text --------------------------------------------------------------
     def get_text(self) -> str:
-        return self.editor.toPlainText()
+        """The only read of the editor, and the only place text is cleaned.
+
+        Qt needs no direction marks of its own, but a paste out of Word or
+        WhatsApp brings its own invisible ones. Left in, they make an identical
+        post compare as different and defeat the repeated-text guard.
+        """
+        return strip_invisible(self.editor.toPlainText())
 
     def _show(self, text: str) -> None:
         blocked = self.editor.blockSignals(True)

@@ -343,22 +343,41 @@ class TestTasks:
             TaskRepo(db).create("body", [])
 
     def test_the_same_group_cannot_be_targeted_twice_in_one_batch(self, db, groups):
-        """The database itself refuses this. A duplicate post is the worst
-        failure mode in the project, so it is not left to application code."""
+        """A duplicate post is the worst failure mode in the project.
+
+        create() collapses a repeated group to one target, keeping the first
+        wording, rather than letting UNIQUE(task_id, group_id) surface as a raw
+        sqlite3.IntegrityError at the caller.
+        """
         group = groups.add_from_url("https://www.facebook.com/groups/one")
         tasks = TaskRepo(db)
 
+        task = tasks.create("body", [(group.id, "a"), (group.id, "b")])
+        targets = tasks.targets_for(task.id)
+        assert [t.body for t in targets] == ["a"]
+
+    def test_the_database_still_refuses_a_duplicate_target(self, db, groups):
+        """The index is the backstop, not the error message. It has to stay:
+        de-duplicating in create() protects that one path, not every path."""
+        group = groups.add_from_url("https://www.facebook.com/groups/one")
+        tasks = TaskRepo(db)
+        task = tasks.create("body", [(group.id, "a")])
+
         with pytest.raises(sqlite3.IntegrityError):
-            tasks.create("body", [(group.id, "a"), (group.id, "b")])
+            db.write(
+                "INSERT INTO task_targets (task_id, group_id, position, body) "
+                "VALUES (?, ?, 1, 'b')",
+                (task.id, group.id),
+            )
 
     def test_a_failed_create_leaves_nothing_behind(self, db, groups):
         """Task and targets are written in one transaction, so a rejected batch
         must not leave an orphan task for the worker to pick up."""
-        group = groups.add_from_url("https://www.facebook.com/groups/one")
         tasks = TaskRepo(db)
 
+        # A group id that does not exist trips the foreign key.
         with pytest.raises(sqlite3.IntegrityError):
-            tasks.create("body", [(group.id, "a"), (group.id, "b")])
+            tasks.create("body", [(999_999, "a")])
 
         assert tasks.list_recent() == []
 

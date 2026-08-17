@@ -203,3 +203,67 @@ class TestEvaluateBatch:
         )
         assert verdict.allowed
         assert verdict.warnings
+
+
+class TestAWindowThatCrossesMidnight:
+    """22:00-06:00 used to exclude every hour of the day.
+
+    Nothing could post, and the batch deferred itself one day at a time for
+    ever -- silently, with no error anywhere.
+    """
+
+    @pytest.mark.parametrize("when", ["22:00", "23:30", "00:30", "02:00", "05:59"])
+    def test_hours_inside_an_overnight_window_are_allowed(self, when):
+        moment = clock.parse_local(f"2026-08-10 {when}")
+        assert guards.check_posting_window(moment, 22, 6) is None
+
+    @pytest.mark.parametrize("when", ["06:00", "12:00", "21:59"])
+    def test_hours_outside_it_are_still_refused(self, when):
+        moment = clock.parse_local(f"2026-08-10 {when}")
+        assert guards.check_posting_window(moment, 22, 6) is not None
+
+    def test_the_batch_is_told_when_to_come_back(self):
+        noon = clock.parse_local("2026-08-10 12:00")
+        reopens = clock.next_window_open(noon, 22, 6)
+        assert clock.format_local(reopens) == "2026-08-10 22:00"
+
+    def test_and_that_moment_is_actually_allowed(self):
+        """The deadlock: it deferred to a time it then refused."""
+        noon = clock.parse_local("2026-08-10 12:00")
+        reopens = clock.next_window_open(noon, 22, 6)
+        assert guards.check_posting_window(reopens, 22, 6) is None
+
+    def test_inside_the_window_it_does_not_defer_at_all(self):
+        night = clock.parse_local("2026-08-11 01:00")
+        assert clock.next_window_open(night, 22, 6) == night
+
+    def test_the_ordinary_daytime_window_is_unchanged(self):
+        assert guards.check_posting_window(
+            clock.parse_local("2026-08-10 12:00"), 8, 23
+        ) is None
+        assert guards.check_posting_window(
+            clock.parse_local("2026-08-10 23:30"), 8, 23
+        ) is not None
+        late = clock.parse_local("2026-08-10 23:30")
+        assert clock.format_local(clock.next_window_open(late, 8, 23)) == "2026-08-11 08:00"
+
+
+class TestNonsenseWindowHours:
+    """A stored setting reads back as a valid int however silly it is, so -4
+    and 99 reached datetime.replace() and raised "hour must be in 0..23". The
+    worker swallowed that every tick and quietly stopped posting."""
+
+    @pytest.mark.parametrize("start,end", [(-4, 23), (8, 99), (-1, -2), (99, 99), (24, 25)])
+    def test_they_never_raise(self, start, end):
+        moment = clock.parse_local("2026-08-10 12:00")
+        guards.check_posting_window(moment, start, end)
+        clock.next_window_open(moment, start, end)
+
+    def test_an_out_of_range_hour_falls_back_to_the_default(self):
+        assert clock.sane_hour(-4, 8) == 8
+        assert clock.sane_hour(99, 23) == 23
+        assert clock.sane_hour("nonsense", 8) == 8
+
+    def test_a_valid_hour_is_kept(self):
+        for hour in (0, 8, 23):
+            assert clock.sane_hour(hour, 99) == hour

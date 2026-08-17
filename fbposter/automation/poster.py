@@ -17,6 +17,7 @@ from typing import Any, Sequence
 
 from .. import strings
 from ..errors import AutomationHalted, ComposerNotFound, PostNotVerified
+from ..text import strip_invisible
 from .detect import PageVerdict, classify, halt_message
 from .humanize import Humanizer
 
@@ -95,6 +96,10 @@ def distinctive_snippet(body: str) -> str:
     does not depend on the interface language. Prefers the longest line: a post
     often opens with a short greeting that would match half the feed.
     """
+    # Facebook drops invisible characters when it renders the post, so a
+    # snippet that still contains one is searched for and never found -- which
+    # reports a post that went out fine as failed, and halts the batch.
+    body = strip_invisible(body)
     lines = [" ".join(line.split()) for line in body.splitlines()]
     lines = [line for line in lines if line]
     if not lines:

@@ -487,12 +487,31 @@ class PostingWorker:
 
     # -- the actual post ---------------------------------------------------
     def _post(self, task: Task, target: TaskTarget, group) -> bool:
+        # Claim it first. If another worker got there, leave it alone entirely:
+        # posting it as well is the duplicate this whole app is built to avoid.
+        if not self.tasks.claim_target(target.id):
+            return True
+
         self.tasks.mark_task(task.id, TASK_RUNNING, started=True)
-        self.tasks.mark_target(target.id, TARGET_RUNNING, attempted=True)
         self.blocker.acquire()
         self._busy = True
         self.emit("posting", f"Posting to {group.display_name}…", task.id, target.id)
 
+
+        # Checked before the browser is touched: an attachment moved or deleted
+        # since the batch was queued otherwise surfaces as a Playwright timeout
+        # deep in set_input_files, which tells the user nothing about which
+        # file is missing.
+        missing = [p for p in task.media_paths if not Path(p).exists()]
+        if missing:
+            names = ", ".join(Path(p).name for p in missing)
+            self._halt(
+                task,
+                target,
+                f"Attachment no longer on disk: {names}. Nothing was posted — "
+                "re-attach the file, or remove it from the post, and queue again.",
+            )
+            return True
 
         request = PostRequest(
             group_url=group.url,
@@ -512,6 +531,14 @@ class PostingWorker:
         except Exception as exc:
             self._halt(task, target, _readable(exc))
             return True
+        except BaseException as exc:
+            # KeyboardInterrupt and SystemExit are not Exception, so they slid
+            # past the handler above and killed the worker thread outright --
+            # leaving the target stuck in `running`, and the keep-awake request
+            # still held so the machine could not sleep. Record and release,
+            # then let it carry on unwinding.
+            self._halt(task, target, f"Interrupted: {type(exc).__name__}.")
+            raise
         finally:
             self._busy = False
 

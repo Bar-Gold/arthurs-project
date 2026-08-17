@@ -72,6 +72,36 @@ def start_of_local_day(moment: datetime | None = None) -> datetime:
     return midnight.astimezone(timezone.utc)
 
 
+def sane_hour(hour: int, fallback: int) -> int:
+    """A window hour that datetime.replace() will actually accept.
+
+    A stored setting is only ever read back as an int, so -4 and 99 arrive
+    looking perfectly valid and then raise "hour must be in 0..23" deep inside
+    the window calculation. The worker swallows that and retries every tick,
+    which reads as "the app has silently stopped posting".
+    """
+    try:
+        hour = int(hour)
+    except (TypeError, ValueError):
+        return fallback
+    return hour if 0 <= hour <= 23 else fallback
+
+
+def inside_window(hour: int, start_hour: int, end_hour: int) -> bool:
+    """Whether an hour falls in the posting window.
+
+    Handles a window that crosses midnight (22:00-06:00), which the plain
+    `start <= hour < end` comparison got exactly backwards: it excluded every
+    hour of the day, so nothing could ever post and the batch deferred itself
+    one day at a time for ever.
+    """
+    if start_hour == end_hour:
+        return True  # no restriction configured
+    if start_hour < end_hour:
+        return start_hour <= hour < end_hour
+    return hour >= start_hour or hour < end_hour
+
+
 def next_window_open(moment: datetime, start_hour: int, end_hour: int) -> datetime:
     """When the posting window next opens, in UTC.
 
@@ -79,15 +109,18 @@ def next_window_open(moment: datetime, start_hour: int, end_hour: int) -> dateti
     closes at 23:00 waits for 08:00 tomorrow instead of posting through the
     night, which is the single loudest automation signal there is.
     """
-    local = to_local(moment)
+    start_hour = sane_hour(start_hour, 8)
+    end_hour = sane_hour(end_hour, 23)
     if start_hour == end_hour:
         return moment  # no restriction configured
+
+    local = to_local(moment)
+    if inside_window(local.hour, start_hour, end_hour):
+        return moment
 
     today_open = local.replace(hour=start_hour, minute=0, second=0, microsecond=0)
     if local < today_open:
         return today_open.astimezone(timezone.utc)
-    if local.hour < end_hour:
-        return moment  # already inside the window
     return (today_open + timedelta(days=1)).astimezone(timezone.utc)
 
 
