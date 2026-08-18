@@ -64,7 +64,11 @@ def my_content_url(group_url_or_identifier: str) -> str:
 # "אין פוסטים להצגה". Its tabs are בהמתנה / פורסמו / נדחו עם משוב / הוסרו עם
 # משוב -- unused, because the app relies on Pending being the default rather
 # than clicking a translated tab name.
-# Russian researched, UNVERIFIED.
+# Russian verified 2026-08-18 in the same way: "SneakerHeads in Israel › Ваш
+# контент" with the blurb "Управление публикациями в группе и их просмотр", and
+# the post listed under the default На рассмотрении tab. Its empty state was
+# not on screen -- there was a real post -- so "нет публикаций" is still a
+# guess, and the two verified strings are what the render-proof rests on.
 MY_CONTENT_PAGE_MARKERS = (
     # English (verified)
     "your content",
@@ -74,8 +78,9 @@ MY_CONTENT_PAGE_MARKERS = (
     "התוכן שלך",
     "אין פוסטים להצגה",
     "לנהל את הפוסטים שלך",
-    # Russian (unverified)
+    # Russian (the first two verified; the empty state is researched)
     "ваш контент",
+    "управление публикациями в группе",
     "нет публикаций",
 )
 
@@ -191,7 +196,15 @@ RATE_LIMIT_MARKERS = (
 # forms cost nothing and a false hit cannot invent a pending post, because
 # _is_queued asks the group's pending list before believing one.
 #
-# Russian is researched and UNVERIFIED.
+# Russian is VERIFIED: same group on 2026-08-18 with the account switched to
+# Russian, the same post still held. It renders "Ожидает подтверждения
+# администратора / 1 публикация Подробнее / Управление публикацией" -- so the
+# live word is "подтверждения" (confirmation), and the natural translation
+# "одобрения" (approval) does not appear on the page at all.
+#
+# All three languages now match the live site. The researched forms are kept
+# below them: they cost nothing, and a false hit cannot invent a pending post,
+# because _is_queued asks the group's pending list before believing one.
 PENDING_APPROVAL_MARKERS = (
     # English (verified)
     "pending admin approval",
@@ -204,10 +217,10 @@ PENDING_APPROVAL_MARKERS = (
     "ממתין לאישור מנהל",
     "ממתין לאישור",
     "הפוסט שלך ממתין",
-    # Russian (unverified)
+    # Russian ("ожидает подтверждения администратора" verified; rest researched)
+    "ожидает подтверждения",
     "ожидает одобрения администратора",
     "ожидает одобрения",
-    "ожидает подтверждения",
     "ваша публикация ожидает",
 )
 

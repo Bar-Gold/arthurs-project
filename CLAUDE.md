@@ -306,14 +306,14 @@ Verified live in each language:
 | Composer trigger | `Write something...` | `כאן כותבים…` | `Напишите что-нибудь...` |
 | Photo/video | `Photo/video` | `תמונה או סרטון` | `Фото/видео` |
 | **Post** | `Post` | `פרסום` | **`Отправить`** |
-| Pending banner | `Pending admin approval` | `בהמתנה לאישור מנהל` | **unverified** |
-| "Your content" page | `Your content` | `התוכן שלך` | **unverified** |
+| Pending banner | `Pending admin approval` | `בהמתנה לאישור מנהל` | **`Ожидает подтверждения администратора`** |
+| "Your content" page | `Your content` | `התוכן שלך` | `Ваш контент` |
 
 The composer trigger carries **no aria-label in any language** and is matched on visible text; the text field has no accessible name and is found as the dialog's only `textbox`.
 
-**Read every string off the live site — never translate one.** Russian's post button is `Отправить` ("send"), while the obvious translation, and what research suggested, is `Опубликовать`. Shipping the plausible word would have failed at the Post click, which is the one step that cannot safely be retried. The pending banner is the same shape of trap: the live Hebrew is `בהמתנה לאישור מנהל`, while the natural translation gives `ממתין לאישור`. To add a language: `main.py probe` a real group, dump the composer, paste what Facebook returns.
+**Read every string off the live site — never translate one.** Russian's post button is `Отправить` ("send"), while the obvious translation, and what research suggested, is `Опубликовать`. Shipping the plausible word would have failed at the Post click, which is the one step that cannot safely be retried. **The pending banner caught the same trap twice more**, verified 2026-08-18: the live Hebrew is `בהמתנה` where the natural translation gives `ממתין`, and the live Russian is `подтверждения` ("confirmation") where the natural translation gives `одобрения` ("approval") — a word that appears nowhere on the page. Two of the three shipped only because the researched list happened to include the right variant alongside the wrong one. To add a language: `main.py probe` a real group, dump the composer, paste what Facebook returns.
 
-**The two pending strings are unverified in Russian.** Both fail safe — a missed banner halts the batch instead of recording "awaiting approval", and a missed page marker makes `pending_verdict` return `"unknown"` for ever so the post is never resolved automatically — but neither can cause a duplicate or release a wording early. Verifying the page marker only needs the account switched and one read-only page load; verifying the banner needs a real post to a moderated group while it is switched.
+**Verifying a pending string is cheap only while something is pending.** The banner exists solely while the group is holding a post of yours, so it cannot be read on demand: the Hebrew round needed a real post, and the Russian round was free only because that post was still sitting in the queue. If a fourth language is ever added, read both strings *while a post is pending* rather than switching twice.
 
 **`?locale=` is ignored outright on a logged-in session — verified live, 2026-08-16.** Probing a real group with `?locale=ru_RU`, `?locale=he_IL` and `?locale=en_US` against an English account: Facebook kept the parameter in the URL and rendered English every time. `<html lang>` stayed `en` in all three, and under `he_IL` `dir` stayed **`ltr`** — Hebrew would have forced `rtl`, so this is not a redirect or a strip, it is simply ignored. There is no account-language x URL-locale matrix; there are only three states, the account's own setting.
 

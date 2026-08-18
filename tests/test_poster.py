@@ -535,14 +535,18 @@ class TestAGroupThatHoldsPostsForApproval:
         with pytest.raises(PostNotVerified):
             make_poster(page).post(request())
 
-    @pytest.mark.parametrize(
-        "banner",
-        [
-            "Pending admin approval",
-            "ממתין לאישור מנהל",
-            "Ожидает одобрения администратора",
-        ],
-    )
+    # Exactly what each language renders, read off the live site rather than
+    # translated -- 2026-08-17 (en) and 2026-08-18 (he, ru). Two of the three
+    # differ from the obvious translation: Hebrew says בהמתנה, not ממתין, and
+    # Russian says подтверждения, not одобрения.
+    LIVE_BANNERS = [
+        "Pending admin approval 1 post Learn more Manage post",
+        "בהמתנה לאישור מנהל פוסט אחד לקבלת מידע נוסף ניהול הפוסט",
+        "Ожидает подтверждения администратора 1 публикация Подробнее "
+        "Управление публикацией",
+    ]
+
+    @pytest.mark.parametrize("banner", LIVE_BANNERS, ids=["en", "he", "ru"])
     def test_the_banner_is_recognised_in_each_language(self, banner):
         page = self.moderated_page(f"A normal looking group feed. {banner}")
         outcome = make_poster(page).post(request())
@@ -606,3 +610,21 @@ class TestFindingOutWhatBecameOfAPendingPost:
         page = FakePage(body_text=self.PAGE)
         assert make_poster(page).pending_verdict(GROUP_URL, "   ") == "unknown"
         assert page.call_names() == []
+
+    # The header and blurb each language actually renders, read off the live
+    # page on the dates above. The tabs are not here on purpose: the app relies
+    # on Pending being the default rather than clicking a translated name.
+    LIVE_PAGES = [
+        "SneakerHeads in Israel › Your content Manage and view your posts",
+        "SneakerHeads in Israel › התוכן שלך "
+        "באפשרותך לנהל את הפוסטים שלך ולעיין בהם בקבוצה",
+        "SneakerHeads in Israel › Ваш контент "
+        "Управление публикациями в группе и их просмотр",
+    ]
+
+    @pytest.mark.parametrize("page_text", LIVE_PAGES, ids=["en", "he", "ru"])
+    def test_the_page_is_recognised_in_each_language(self, page_text):
+        """If this misses, the follow-up answers "unknown" for ever and a
+        pending post is never resolved on its own."""
+        page = FakePage(body_text=f"{page_text} {BODY}")
+        assert make_poster(page).pending_verdict(GROUP_URL, BODY) == "pending"
