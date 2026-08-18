@@ -366,6 +366,33 @@ class GroupPoster:
         text = self._page_text().lower()
         return any(marker in text for marker in strings.PENDING_APPROVAL_MARKERS)
 
+    def _pending_outcome(self) -> PostOutcome:
+        return PostOutcome(
+            posted=True,
+            verified=False,
+            pending=True,
+            detail=(
+                "Submitted, and the group is holding it for an admin to "
+                "approve. It is not visible yet and may still be declined."
+            ),
+        )
+
+    def _is_queued(self, request: PostRequest) -> bool:
+        """Is *this* post the one the group is holding?
+
+        Asked only when the banner is up and the post appeared to be visible.
+        The group's own pending list is the one place that distinguishes "your
+        queued post, shown to you" from "published", which the feed does not.
+
+        Anything unexpected answers no: the post was seen, so the existing
+        verdict already errs the right way, and turning a good post into a
+        halted batch over a failed extra check would be a poor trade.
+        """
+        try:
+            return self.pending_verdict(request.group_url, request.body) == "pending"
+        except Exception:
+            return False
+
     def pending_verdict(self, group_url: str, body: str) -> str:
         """What became of a post that was awaiting approval.
 
@@ -473,29 +500,28 @@ class GroupPoster:
 
         # Verification is the source of truth, not whether the dialog closed.
         if self.verify(request.body, request.group_url):
+            # Seeing it is not the same as it being published. Facebook shows
+            # the author their own queued post in the feed, so in a moderated
+            # group verify() succeeds on a post nobody else can see -- observed
+            # live in Hebrew on 2026-08-18, where this returned a confident
+            # "done" for a post the same page said was awaiting an admin.
+            #
+            # The banner alone cannot settle it either, because it persists
+            # while ANY post of ours is queued. So when it is showing, the
+            # question "is it this post?" goes to the one page that answers it.
+            if self.awaiting_approval() and self._is_queued(request):
+                return self._pending_outcome()
             return PostOutcome(
                 posted=True,
                 verified=True,
                 detail="Posted and confirmed visible in the group.",
             )
 
-        # Not in the feed. Before calling that a failure, ask whether the group
-        # is simply holding it for an admin -- which is a success of a different
-        # shape, and the batch should carry on rather than stop.
-        #
-        # Deliberately checked only after the snippet was NOT found: the banner
-        # persists while any post of ours is queued, so consulting it first
-        # would mark a perfectly live post as pending.
+        # Not in the feed at all. Before calling that a failure, ask whether the
+        # group is simply holding it for an admin -- which is a success of a
+        # different shape, and the batch should carry on rather than stop.
         if self.awaiting_approval():
-            return PostOutcome(
-                posted=True,
-                verified=False,
-                pending=True,
-                detail=(
-                    "Submitted, and the group is holding it for an admin to "
-                    "approve. It is not visible yet and may still be declined."
-                ),
-            )
+            return self._pending_outcome()
 
         if not closed:
             # Still sitting in an open composer, so nothing was published --

@@ -451,6 +451,7 @@ class TestAGroupThatHoldsPostsForApproval:
     """
 
     BANNER = "Pending admin approval 1 post"
+    CONTENT_PAGE = "Your content Manage and view your posts"
 
     def moderated_page(self, body_text: str) -> FakePage:
         """A group where the post is genuinely nowhere to be found.
@@ -479,11 +480,53 @@ class TestAGroupThatHoldsPostsForApproval:
 
     def test_a_post_that_is_actually_visible_is_not_called_pending(self):
         """The banner persists while any of our posts is queued, so it must
-        never override a post that really did appear."""
-        page = FakePage(body_text=f"{BODY} ... {self.BANNER}")
+        never override a post that really did appear.
+
+        The group's pending list is what settles it: this post is not on it, so
+        the banner is about some other post of ours.
+        """
+        page = FakePage(
+            body_text=f"{BODY} ... {self.BANNER}",
+            pending_page_text=f"{self.CONTENT_PAGE} some other post of ours",
+        )
         outcome = make_poster(page).post(request())
         assert outcome.pending is False
         assert outcome.verified is True
+
+    def test_seeing_your_own_queued_post_is_not_publication(self):
+        """Caught live in Hebrew on 2026-08-18, and it had shipped.
+
+        Facebook shows the author their own queued post in the feed, so in a
+        moderated group verify() succeeds on a post nobody else can see -- and
+        the banner check never ran, because it only ran when the post was
+        absent. The app recorded a confident "done" for a post the same page
+        said was awaiting an admin: the cooldown and the wording were right by
+        luck, but the follow-up never looked at it again, so an admin declining
+        it would have locked those words to that group for ever.
+        """
+        page = FakePage(
+            # Visible in the feed, banner up, AND on the group's pending list.
+            body_text=f"{BODY} ... {self.BANNER}",
+            pending_page_text=f"{self.CONTENT_PAGE} {BODY}",
+        )
+        outcome = make_poster(page).post(request())
+        assert outcome.pending is True
+        assert outcome.verified is False
+
+    def test_a_broken_pending_list_leaves_a_visible_post_alone(self):
+        """The extra check is a refinement, not a new way to fail: the post was
+        seen, so anything unexpected keeps the verdict it already had."""
+
+        class Awkward(FakePage):
+            def goto(self, url, **kwargs):
+                if strings.MY_CONTENT_PATH in url:
+                    raise RuntimeError("that page would not load")
+                return super().goto(url, **kwargs)
+
+        page = Awkward(body_text=f"{BODY} ... {self.BANNER}")
+        outcome = make_poster(page).post(request())
+        assert outcome.verified is True
+        assert outcome.pending is False
 
     def test_an_ordinary_group_with_no_banner_still_halts(self):
         """The safe default is unchanged: absent positive evidence of pending,

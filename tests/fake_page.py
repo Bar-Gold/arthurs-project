@@ -13,6 +13,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from fbposter import strings
+
 
 class FakeLocator:
     def __init__(
@@ -105,6 +107,10 @@ class FakePage:
     # the login page instead of the URL we asked for.
     redirect_to: str = ""
     body_text: str = "A normal looking group feed"
+    # What the group's "Your content" page shows, when the test cares. The feed
+    # and that page have to differ for the one question this fake exists to
+    # answer here: a post the author can see is not necessarily published.
+    pending_page_text: str = ""
     missing: tuple[str, ...] = ()
     wait_fails_for: tuple[str, ...] = ()
     # The composer opens but never closes after Post is clicked.
@@ -145,6 +151,8 @@ class FakePage:
     def inner_text(self, selector: str) -> str:
         # Verification falls back to the page text, so anything "missing" as a
         # locator must be missing here too or the fallback would find it.
+        if self.pending_page_text and strings.MY_CONTENT_PATH in self.url:
+            return self.pending_page_text
         return self.body_text
 
     def wait_for_timeout(self, ms: float) -> None:

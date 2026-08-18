@@ -58,15 +58,22 @@ def my_content_url(group_url_or_identifier: str) -> str:
 # blank page is how a wording gets released while the post is still queued.
 #
 # English verified 2026-08-17 ("Your content" / "No posts to show").
-# Hebrew and Russian researched, UNVERIFIED.
+# Hebrew verified 2026-08-18, read off the live page with the account switched
+# to Hebrew: the page returned "SneakerHeads in Israel › התוכן שלך", the blurb
+# "באפשרותך לנהל את הפוסטים שלך ולעיין בהם בקבוצה", and the empty Pending tab
+# "אין פוסטים להצגה". Its tabs are בהמתנה / פורסמו / נדחו עם משוב / הוסרו עם
+# משוב -- unused, because the app relies on Pending being the default rather
+# than clicking a translated tab name.
+# Russian researched, UNVERIFIED.
 MY_CONTENT_PAGE_MARKERS = (
     # English (verified)
     "your content",
     "no posts to show",
     "manage and view your posts",
-    # Hebrew (unverified)
+    # Hebrew (verified)
     "התוכן שלך",
     "אין פוסטים להצגה",
+    "לנהל את הפוסטים שלך",
     # Russian (unverified)
     "ваш контент",
     "нет публикаций",
@@ -177,11 +184,14 @@ RATE_LIMIT_MARKERS = (
 # English is VERIFIED: read off SneakerHeads in Israel on 2026-08-17, which
 # renders "Pending admin approval / 1 post / Learn more / Manage post".
 #
-# Hebrew and Russian are researched and UNVERIFIED, like the anomaly markers
-# below -- the account is in English and switching it to read two strings is
-# not worth changing the user's Facebook settings for. Over-matching is the
-# right bias: the marker is only ever consulted when the post is already
-# confirmed absent from the feed, so a false hit cannot invent a pending post.
+# Hebrew is VERIFIED: same group on 2026-08-18 with the account switched to
+# Hebrew, holding a real post. It renders "בהמתנה לאישור מנהל / פוסט אחד
+# לקבלת מידע נוסף / ניהול הפוסט" -- so the live string is "בהמתנה", not the
+# "ממתין" that the obvious translation gives. Both are kept: the researched
+# forms cost nothing and a false hit cannot invent a pending post, because
+# _is_queued asks the group's pending list before believing one.
+#
+# Russian is researched and UNVERIFIED.
 PENDING_APPROVAL_MARKERS = (
     # English (verified)
     "pending admin approval",
@@ -189,10 +199,10 @@ PENDING_APPROVAL_MARKERS = (
     "waiting for approval",
     "your post is pending",
     "will be visible once approved",
-    # Hebrew (unverified)
+    # Hebrew ("בהמתנה לאישור מנהל" verified; the rest researched)
+    "בהמתנה לאישור",
     "ממתין לאישור מנהל",
     "ממתין לאישור",
-    "בהמתנה לאישור",
     "הפוסט שלך ממתין",
     # Russian (unverified)
     "ожидает одобрения администратора",
