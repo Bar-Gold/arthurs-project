@@ -29,6 +29,15 @@ TARGET_RUNNING = "running"
 TARGET_DONE = "done"
 TARGET_FAILED = "failed"
 TARGET_SKIPPED = "skipped"
+# Submitted to a group that holds posts for admin approval. Counts as posted
+# for every safety purpose -- cooldown, daily cap, repeated text -- because the
+# words have left the building even though they are not on screen yet.
+TARGET_AWAITING_APPROVAL = "awaiting_approval"
+# An admin turned it down, so nothing was ever published. Excluded from
+# recent_bodies on purpose: the wording never appeared in the group, so
+# refusing to let the user send it again would be punishing them for a post
+# that does not exist.
+TARGET_DECLINED = "declined"
 
 # States a repeating schedule can be in. It is either firing or it is not;
 # a finished schedule is a deleted one.
@@ -189,6 +198,8 @@ class TaskTarget:
     error: str = ""
     group_identifier: str = ""
     group_name: str = ""
+    # Consecutive follow-up checks that could not find an awaiting post.
+    resolve_misses: int = 0
 
     @property
     def group_label(self) -> str:
@@ -212,6 +223,9 @@ class TaskTarget:
             # Present only when the query joined groups.
             group_identifier=(row["group_identifier"] if "group_identifier" in keys else "") or "",
             group_name=(row["group_name"] if "group_name" in keys else "") or "",
+            resolve_misses=(
+                row["resolve_misses"] if "resolve_misses" in keys else 0
+            ) or 0,
         )
 
 

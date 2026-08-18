@@ -36,6 +36,7 @@ from .automation.poster import PostOutcome, PostRequest
 from .db import Database
 from .db.models import (
     SCHEDULE_PAUSED,
+    TARGET_AWAITING_APPROVAL,
     TARGET_DONE,
     TARGET_FAILED,
     TARGET_PENDING,
@@ -54,7 +55,7 @@ from .db.models import (
     to_iso,
 )
 from .db.repo import GroupRepo, ScheduleRepo, SettingsRepo, TaskRepo
-from .errors import AutomationHalted, PostNotVerified
+from .errors import AutomationHalted, ConnectionFailed, PostNotVerified
 from .guards import check_cooldown
 from .power import SleepBlocker
 
@@ -67,6 +68,23 @@ TICK_SECONDS = 5.0
 
 # How often the finished-batch history is pruned. Housekeeping, not a deadline.
 PRUNE_EVERY = timedelta(days=1)
+
+# How often posts awaiting an admin are followed up, and how long to leave one
+# alone first -- an admin who has just been sent something needs a moment.
+FOLLOW_UP_EVERY = timedelta(hours=6)
+FOLLOW_UP_AFTER = timedelta(minutes=30)
+# Groups checked in one sweep. Every check drives a real browser, so an
+# unbounded loop would both stall the queue for minutes and produce a burst of
+# page loads no member would make. The rest come round on the next sweep.
+FOLLOW_UP_PER_SWEEP = 3
+# Stop chasing a post an admin has simply never got to. It stays awaiting --
+# the wording remains claimed, which is the cautious direction, and the Queue
+# screen goes on showing it with its two buttons -- but the app stops opening a
+# group page about it twice a day for ever.
+FOLLOW_UP_GIVE_UP = timedelta(days=30)
+# Consecutive checks that must fail to find it before it counts as declined.
+# One is not enough: a page that half-renders looks like an empty Pending tab.
+MISSES_BEFORE_DECLINED = 2
 
 FINISHED_STATES = {TASK_DONE, TASK_HALTED, TASK_CANCELLED, TASK_MISSED}
 
@@ -103,6 +121,8 @@ class Poster(Protocol):
 
     def verify(self, group_url: str, body: str) -> bool: ...
 
+    def pending_verdict(self, group_url: str, body: str) -> str: ...
+
 
 class LivePoster:
     """Drives real Chrome. One page per group, opened and closed each time.
@@ -130,6 +150,14 @@ class LivePoster:
                 poster = GroupPoster(page)
                 page.goto(group_url, timeout=45_000, wait_until="domcontentloaded")
                 return poster.verify(body, group_url)
+            finally:
+                page.close()
+
+    def pending_verdict(self, group_url: str, body: str) -> str:
+        with session.attach() as context:
+            page = context.new_page()
+            try:
+                return GroupPoster(page).pending_verdict(group_url, body)
             finally:
                 page.close()
 
@@ -248,6 +276,7 @@ class PostingWorker:
         """Advance the queue by at most one step. Returns True if it did."""
         now = self._now()
         self._maybe_prune(now)
+        self._follow_up_pending(now)
         if self._materialise_schedules(now):
             return True
 
@@ -333,6 +362,130 @@ class PostingWorker:
             self.emit("error", f"History cleanup skipped: {exc}")
             return False
         return bool(removed)
+
+    def _follow_up_pending(self, now) -> bool:
+        """Find out what admins did with posts awaiting approval.
+
+        The alternative was asking the user, which is not something this app
+        should need. Runs on its own slow clock and only when there is
+        something to check, so a user with no moderated groups never pays for
+        it -- and never outside the posting window, because a group page being
+        opened at 4am is the same signal as a post at 4am.
+
+        Wrapped the same way as the pruner, and for the same reason: this runs
+        at the top of every tick, and optional work must never be able to take
+        the tick that posts down with it.
+        """
+        try:
+            return self._sweep_pending(now)
+        except Exception as exc:
+            self.emit("error", f"Checking pending posts failed: {exc}")
+            return False
+
+    def _sweep_pending(self, now) -> bool:
+        waiting = self.tasks.awaiting_approval_targets()
+        if not waiting:
+            return False
+
+        start_hour = self.settings.get_int("posting_window_start_hour", 8)
+        end_hour = self.settings.get_int("posting_window_end_hour", 23)
+        if clock.next_window_open(now, start_hour, end_hour) > now:
+            return False
+
+        last = from_iso(self.settings.get("last_follow_up_at", ""))
+        if last is not None and now - last < FOLLOW_UP_EVERY:
+            return False
+        self.settings.set("last_follow_up_at", to_iso(now) or "")
+
+        checked = 0
+        for target in self._follow_up_order(waiting):
+            if checked >= FOLLOW_UP_PER_SWEEP:
+                break
+
+            age = None if target.posted_at is None else now - target.posted_at
+            if age is not None and (age < FOLLOW_UP_AFTER or age > FOLLOW_UP_GIVE_UP):
+                continue
+
+            group = self.groups.get(target.group_id)
+            if group is None:
+                # Only reachable if the group is removed between the query above
+                # and this line. Nothing is stranded by skipping it: task_targets
+                # cascade with the group, so removing one takes its awaiting
+                # posts out of every future sweep too.
+                continue
+
+            if checked:
+                self.human.read_pause()
+            checked += 1
+            # Recorded as attempted before the call, so one target that always
+            # fails cannot sit at the front of the rotation starving the rest.
+            self.settings.set("follow_up_cursor", target.id)
+
+            try:
+                verdict = self.poster.pending_verdict(group.url, target.body)
+            except AutomationHalted as exc:
+                # A checkpoint, a login screen or a rate-limit warning. Opening
+                # more group pages into that is precisely the wrong move, so the
+                # sweep stops and the user is told. Nothing about the post is
+                # changed -- it is still awaiting, and still will be next time.
+                self.emit("halted", f"Stopped checking pending posts: {exc}")
+                break
+            except ConnectionFailed as exc:
+                # No browser to ask, so the other groups would fail the same way
+                # -- one message rather than one per group.
+                self.emit("error", f"Could not check pending posts: {exc}")
+                break
+            except Exception as exc:
+                # Checking is optional; never let it disturb the queue.
+                self.emit("error", f"Could not check {group.display_name}: {exc}")
+                continue
+
+            if verdict == "pending":
+                self.tasks.clear_resolve_misses(target.id)
+            elif verdict == "approved":
+                self.tasks.resolve_pending(
+                    target.id,
+                    approved=True,
+                    note="An admin approved it; confirmed visible in the group.",
+                )
+                self.emit(
+                    "posted",
+                    f"{group.display_name} approved the post — it is live now.",
+                    target.task_id,
+                    target.id,
+                )
+            elif verdict == "declined":
+                misses = self.tasks.record_resolve_miss(target.id)
+                if misses >= MISSES_BEFORE_DECLINED:
+                    self.tasks.resolve_pending(
+                        target.id,
+                        approved=False,
+                        note=(
+                            f"Gone from the group's pending list on "
+                            f"{MISSES_BEFORE_DECLINED} checks running and never "
+                            "published, so an admin declined it."
+                        ),
+                    )
+                    self.emit(
+                        "declined",
+                        f"{group.display_name} declined the post. That wording is "
+                        "free to send again.",
+                        target.task_id,
+                        target.id,
+                    )
+            # "unknown" falls through untouched and is tried again next time.
+        return checked > 0
+
+    def _follow_up_order(self, waiting: list[TaskTarget]) -> list[TaskTarget]:
+        """Round-robin, so a sweep's budget is not spent on the same few.
+
+        Only FOLLOW_UP_PER_SWEEP groups are checked at a time, and the oldest
+        pending post is also the one least likely ever to resolve. Always
+        starting from the front would mean three posts an admin has abandoned
+        soak up every sweep and a fourth is never looked at at all.
+        """
+        cursor = self.settings.get_int("follow_up_cursor", 0)
+        return sorted(waiting, key=lambda target: (target.id <= cursor, target.id))
 
     # -- repeating schedules -----------------------------------------------
     def _materialise_schedules(self, now) -> bool:
@@ -542,7 +695,27 @@ class PostingWorker:
         finally:
             self._busy = False
 
-        if not outcome.posted:
+        if outcome.pending:
+            # Treated as posted for every safety purpose: the cooldown starts
+            # and the wording is remembered, because it has been submitted and
+            # will appear the moment an admin approves. Recording it as failed
+            # would leave the guard blind and invite the same text being sent
+            # again -- two live posts once both are approved.
+            self.tasks.mark_target(
+                target.id,
+                TARGET_AWAITING_APPROVAL,
+                posted=True,
+                error=outcome.detail,
+            )
+            self.groups.mark_posted(group.id)
+            self.emit(
+                "pending",
+                f"{group.display_name} holds posts for admin approval — "
+                "submitted, not visible yet.",
+                task.id,
+                target.id,
+            )
+        elif not outcome.posted:
             # A dry-run poster reaches here having published nothing. Recording
             # it as done would falsely start the group's cooldown and count
             # against the daily cap, so the outcome is believed rather than

@@ -60,6 +60,9 @@ class PostOutcome:
     post_url: str = ""
     dry_run: bool = False
     verified: bool = False
+    # Submitted, but the group holds posts for an admin to approve, so it is
+    # not in the feed yet. Neither a success to celebrate nor a failure.
+    pending: bool = False
 
 
 @dataclass
@@ -353,6 +356,69 @@ class GroupPoster:
         self.page.wait_for_timeout(FEED_SETTLE_MS)
         return self._hunt_for_snippet(snippet)
 
+    def awaiting_approval(self) -> bool:
+        """Whether this group is holding a post of ours for an admin.
+
+        Read off the group page, which shows the author a "Pending admin
+        approval" banner. The page has already been reloaded by verify(), so
+        this reads what is on screen rather than navigating again.
+        """
+        text = self._page_text().lower()
+        return any(marker in text for marker in strings.PENDING_APPROVAL_MARKERS)
+
+    def pending_verdict(self, group_url: str, body: str) -> str:
+        """What became of a post that was awaiting approval.
+
+        Returns "pending", "approved", "declined" or "unknown".
+
+        A plain decline leaves no positive trace anywhere -- "Declined with
+        Feedback" only lists the ones an admin wrote a reason for -- so
+        "declined" has to be reached by elimination. That makes proving the
+        page actually rendered essential: a blank "Your content" page looks
+        exactly like an empty Pending tab, and treating that as declined would
+        release the wording while the post is still queued.
+
+        "unknown" is the safe answer and the caller is expected to try again
+        another day rather than act on it. A checkpoint or a rate-limit warning
+        is not one of those answers -- it raises, like every other step here.
+        """
+        snippet = distinctive_snippet(body)
+        if not snippet:
+            return "unknown"
+
+        try:
+            self.page.goto(
+                strings.my_content_url(group_url),
+                timeout=NAV_TIMEOUT_MS,
+                wait_until="domcontentloaded",
+            )
+            self.page.wait_for_timeout(FEED_SETTLE_MS)
+        except Exception:
+            return "unknown"
+
+        page_text = self._page_text()
+
+        # Classified before anything is read off it. A checkpoint, a login
+        # screen or a "posting too fast" warning carries none of the markers
+        # below, so without this it would come back as a polite "unknown" and
+        # be retried twice a day while the user was never told. The rate-limit
+        # case is worse than silent: the caller would go on opening group pages
+        # straight through a block.
+        verdict = classify(self.page.url, page_text)
+        if not verdict.is_ok:
+            raise AutomationHalted(verdict, halt_message(verdict))
+
+        lowered = page_text.lower()
+        if not any(m in lowered for m in strings.MY_CONTENT_PAGE_MARKERS):
+            return "unknown"  # never rendered; do not read anything into it
+
+        # The page opens on Pending, so finding it here means still waiting.
+        if snippet.casefold() in lowered:
+            return "pending"
+
+        # Not pending any more. Live, or gone.
+        return "approved" if self.verify(body, group_url) else "declined"
+
     def discard(self) -> None:
         """Close the composer and throw away the draft.
 
@@ -411,6 +477,24 @@ class GroupPoster:
                 posted=True,
                 verified=True,
                 detail="Posted and confirmed visible in the group.",
+            )
+
+        # Not in the feed. Before calling that a failure, ask whether the group
+        # is simply holding it for an admin -- which is a success of a different
+        # shape, and the batch should carry on rather than stop.
+        #
+        # Deliberately checked only after the snippet was NOT found: the banner
+        # persists while any post of ours is queued, so consulting it first
+        # would mark a perfectly live post as pending.
+        if self.awaiting_approval():
+            return PostOutcome(
+                posted=True,
+                verified=False,
+                pending=True,
+                detail=(
+                    "Submitted, and the group is holding it for an admin to "
+                    "approve. It is not visible yet and may still be declined."
+                ),
             )
 
         if not closed:

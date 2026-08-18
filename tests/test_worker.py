@@ -18,6 +18,8 @@ from fbposter.automation.humanize import HumanProfile, Humanizer
 from fbposter.automation.poster import PostOutcome, PostRequest
 from fbposter.db import Database
 from fbposter.db.models import (
+    TARGET_AWAITING_APPROVAL,
+    TARGET_DECLINED,
     TARGET_DONE,
     TARGET_FAILED,
     TARGET_PENDING,
@@ -32,7 +34,12 @@ from fbposter.db.models import (
 from fbposter.db.repo import GroupRepo, SettingsRepo, TaskRepo
 from fbposter.errors import AutomationHalted, PostNotVerified
 from fbposter.power import SleepBlocker
-from fbposter.worker import MISSED_GRACE, PostingWorker
+from fbposter.worker import (
+    FOLLOW_UP_GIVE_UP,
+    FOLLOW_UP_PER_SWEEP,
+    MISSED_GRACE,
+    PostingWorker,
+)
 
 BODY = "Selling a road bike, 54cm frame."
 
@@ -48,6 +55,8 @@ class FakePoster:
         self.raises = raises or {}
         self.verify_result = verify_result
         self.verify_calls: list[str] = []
+        self.verdict = "unknown"
+        self.verdict_calls: list[str] = []
 
     def post(self, request: PostRequest) -> PostOutcome:
         self.requests.append(request)
@@ -59,6 +68,11 @@ class FakePoster:
     def verify(self, group_url: str, body: str) -> bool:
         self.verify_calls.append(group_url)
         return self.verify_result
+
+    def pending_verdict(self, group_url: str, body: str) -> str:
+        """What an admin did with a post awaiting approval. Scripted per test."""
+        self.verdict_calls.append(group_url)
+        return self.verdict
 
     @property
     def group_urls(self) -> list[str]:
@@ -111,6 +125,10 @@ def add_groups(groups, count=2):
         groups.add_from_url(f"https://www.facebook.com/groups/g{index}")
         for index in range(count)
     ]
+
+
+def _explode(*_args, **_kwargs):
+    raise RuntimeError("the database fell over")
 
 
 def drain(worker, limit=40):
@@ -711,3 +729,430 @@ class TestTwoWorkersCannotDoublePost:
         worker._post(tasks.get(task.id), target, groups.get(one.id))
 
         assert poster.requests == [], "posted a target another worker had claimed"
+
+
+class TestAGroupThatHoldsPostsForApproval:
+    """Read off SneakerHeads in Israel: the post is submitted, the composer
+    closes, and it is NOT in the feed -- the group shows the author a
+    "Pending admin approval" banner instead.
+
+    Before this existed the app guessed, and which way it guessed depended on
+    timing: sometimes a confident (wrong) "Done", sometimes a halted batch.
+    """
+
+    def pending_poster(self, url):
+        from fbposter.automation.poster import PostOutcome
+
+        class Poster(FakePoster):
+            def post(self, request):
+                self.requests.append(request)
+                if request.group_url == url:
+                    return PostOutcome(
+                        posted=True, verified=False, pending=True,
+                        detail="Submitted, and the group is holding it for an admin.",
+                    )
+                return PostOutcome(posted=True, verified=True, detail="ok")
+
+        return Poster()
+
+    def test_the_batch_carries_on_to_the_other_groups(self, db, repos):
+        """One moderated group used to abandon every group after it."""
+        groups, tasks, _ = repos
+        one, two = add_groups(groups)
+        task = tasks.create(BODY, [(one.id, BODY), (two.id, "second wording")])
+
+        ticker = Clock()
+        worker = make_worker(db, self.pending_poster(one.url), ticker)
+        drain(worker)
+        # The pending group is not a reason to skip the inter-group gap.
+        ticker.advance(minutes=30)
+        drain(worker)
+
+        assert tasks.get(task.id).state == TASK_DONE
+        states = [t.state for t in tasks.targets_for(task.id)]
+        assert states == [TARGET_AWAITING_APPROVAL, TARGET_DONE]
+
+    def test_it_is_not_recorded_as_a_failure(self, db, repos):
+        groups, tasks, _ = repos
+        one, _ = add_groups(groups)
+        task = tasks.create(BODY, [(one.id, BODY)])
+
+        worker = make_worker(db, self.pending_poster(one.url))
+        drain(worker)
+        assert tasks.targets_for(task.id)[0].state != TARGET_FAILED
+
+    def test_the_cooldown_starts(self, db, repos):
+        """The words have left the building even if they are not on screen."""
+        groups, tasks, _ = repos
+        one, _ = add_groups(groups)
+        tasks.create(BODY, [(one.id, BODY)])
+
+        drain(make_worker(db, self.pending_poster(one.url)))
+        assert groups.get(one.id).last_posted_at is not None
+
+    def test_the_repeat_guard_remembers_the_wording(self, db, repos):
+        """The dangerous one. Recorded as failed, the guard would be blind and
+        the same text could be sent again -- two live posts once approved."""
+        groups, tasks, _ = repos
+        one, _ = add_groups(groups)
+        tasks.create(BODY, [(one.id, BODY)])
+
+        drain(make_worker(db, self.pending_poster(one.url)))
+        assert BODY in groups.recent_bodies(one.id)
+
+    def test_it_counts_towards_the_daily_cap(self, db, repos):
+        groups, tasks, _ = repos
+        one, _ = add_groups(groups)
+        tasks.create(BODY, [(one.id, BODY)])
+
+        drain(make_worker(db, self.pending_poster(one.url)))
+        assert tasks.posted_count_since(clock.start_of_local_day(NOON)) == 1
+
+    def test_the_user_is_told_it_is_not_visible_yet(self, db, repos):
+        groups, tasks, _ = repos
+        one, _ = add_groups(groups)
+        tasks.create(BODY, [(one.id, BODY)])
+
+        worker = make_worker(db, self.pending_poster(one.url))
+        drain(worker)
+        messages = []
+        while not worker.events.empty():
+            messages.append(worker.events.get_nowait().message)
+        assert any("approval" in m and "not visible" in m for m in messages)
+
+
+class TestResolvingAPostThatWasAwaitingApproval:
+    """Blocking the wording while it is pending is right -- the app cannot know
+    the outcome yet, and guessing "declined" risks two live posts. But an admin
+    who says no must not cost the user that wording for ever.
+    """
+
+    def pending_target(self, groups, tasks):
+        one, _ = add_groups(groups)
+        task = tasks.create(BODY, [(one.id, BODY)])
+        target = tasks.targets_for(task.id)[0]
+        tasks.mark_target(target.id, TARGET_AWAITING_APPROVAL, posted=True)
+        return one, task, tasks.targets_for(task.id)[0]
+
+    def test_while_pending_the_wording_is_held(self, db, repos):
+        groups, tasks, _ = repos
+        one, _task, _target = self.pending_target(groups, tasks)
+        assert BODY in groups.recent_bodies(one.id)
+
+    def test_declining_releases_the_wording(self, db, repos):
+        """The bug: nothing was published, so the guard must let it go."""
+        groups, tasks, _ = repos
+        one, _task, target = self.pending_target(groups, tasks)
+
+        assert tasks.resolve_pending(target.id, approved=False) is True
+        assert BODY not in groups.recent_bodies(one.id)
+
+    def test_and_the_post_can_then_be_sent_again(self, db, repos):
+        groups, tasks, _ = repos
+        one, _task, target = self.pending_target(groups, tasks)
+        tasks.resolve_pending(target.id, approved=False)
+
+        from fbposter import guards
+
+        assert guards.check_repeat_text(BODY, groups.recent_bodies(one.id)) is None
+
+    def test_approving_keeps_it_held(self, db, repos):
+        """It is live now, so sending the same words again would be a repeat."""
+        groups, tasks, _ = repos
+        one, _task, target = self.pending_target(groups, tasks)
+
+        assert tasks.resolve_pending(target.id, approved=True) is True
+        assert BODY in groups.recent_bodies(one.id)
+
+    def test_the_states_are_recorded(self, db, repos):
+        groups, tasks, _ = repos
+        _one, task, target = self.pending_target(groups, tasks)
+        tasks.resolve_pending(target.id, approved=False)
+        stored = tasks.targets_for(task.id)[0]
+        assert stored.state == TARGET_DECLINED
+        assert "declined" in stored.error.lower()
+
+    def test_it_only_touches_a_genuinely_pending_target(self, db, repos):
+        """It must not resurrect a failure or overwrite a real success."""
+        groups, tasks, _ = repos
+        one, _ = add_groups(groups)
+        task = tasks.create(BODY, [(one.id, BODY)])
+        target = tasks.targets_for(task.id)[0]
+        tasks.mark_target(target.id, TARGET_DONE, posted=True)
+
+        assert tasks.resolve_pending(target.id, approved=False) is False
+        assert tasks.targets_for(task.id)[0].state == TARGET_DONE
+
+    def test_a_declined_post_does_not_count_towards_the_daily_cap(self, db, repos):
+        groups, tasks, _ = repos
+        _one, _task, target = self.pending_target(groups, tasks)
+        before = tasks.posted_count_since(clock.start_of_local_day(NOON))
+        tasks.resolve_pending(target.id, approved=False)
+        assert tasks.posted_count_since(clock.start_of_local_day(NOON)) == before - 1
+
+
+class TestFollowingUpOnPostsAwaitingApproval:
+    """No manual step: the app finds out for itself what the admin did.
+
+    A plain decline leaves no positive trace anywhere -- "Declined with
+    Feedback" only lists the ones with a written reason -- so "declined" is
+    reached by elimination, which is why it takes two consecutive misses.
+    """
+
+    def waiting(self, groups, tasks, posted_ago=timedelta(hours=3)):
+        """A post submitted `posted_ago` before the fake clock's NOON.
+
+        mark_target stamps posted_at from the real wall clock, which sits years
+        away from the test clock, so it is set explicitly here -- otherwise
+        every target looks newer than FOLLOW_UP_AFTER and is skipped.
+        """
+        one, _ = add_groups(groups)
+        task = tasks.create(BODY, [(one.id, BODY)])
+        target = tasks.targets_for(task.id)[0]
+        tasks.mark_target(target.id, TARGET_AWAITING_APPROVAL, posted=True)
+        from fbposter.db.models import to_iso
+
+        tasks.db.write(
+            "UPDATE task_targets SET posted_at = ? WHERE id = ?",
+            (to_iso(NOON - posted_ago), target.id),
+        )
+        return one, task, tasks.targets_for(task.id)[0]
+
+    def follow_up(self, db, verdict, ticker=None):
+        poster = FakePoster()
+        poster.verdict = verdict
+        worker = make_worker(db, poster, ticker or Clock())
+        worker._follow_up_pending((ticker or Clock())())
+        return poster, worker
+
+    def test_approved_becomes_live(self, db, repos):
+        groups, tasks, _ = repos
+        _one, task, _t = self.waiting(groups, tasks)
+        self.follow_up(db, "approved")
+        assert tasks.targets_for(task.id)[0].state == TARGET_DONE
+
+    def test_still_pending_is_left_alone(self, db, repos):
+        groups, tasks, _ = repos
+        _one, task, _t = self.waiting(groups, tasks)
+        self.follow_up(db, "pending")
+        assert tasks.targets_for(task.id)[0].state == TARGET_AWAITING_APPROVAL
+
+    def test_unknown_changes_nothing(self, db, repos):
+        """A page that did not render must never release a wording."""
+        groups, tasks, _ = repos
+        _one, task, _t = self.waiting(groups, tasks)
+        self.follow_up(db, "unknown")
+        stored = tasks.targets_for(task.id)[0]
+        assert stored.state == TARGET_AWAITING_APPROVAL
+        assert stored.resolve_misses == 0
+
+    def test_one_miss_is_not_enough_to_declare_it_declined(self, db, repos):
+        groups, tasks, _ = repos
+        one, task, _t = self.waiting(groups, tasks)
+        self.follow_up(db, "declined")
+        stored = tasks.targets_for(task.id)[0]
+        assert stored.state == TARGET_AWAITING_APPROVAL
+        assert stored.resolve_misses == 1
+        assert BODY in groups.recent_bodies(one.id), "released the wording too early"
+
+    def test_two_consecutive_misses_declare_it_declined(self, db, repos):
+        groups, tasks, _ = repos
+        one, task, _t = self.waiting(groups, tasks)
+        ticker = Clock()
+        self.follow_up(db, "declined", ticker)
+        ticker.advance(hours=7)
+        self.follow_up(db, "declined", ticker)
+
+        assert tasks.targets_for(task.id)[0].state == TARGET_DECLINED
+        assert BODY not in groups.recent_bodies(one.id)
+
+    def test_turning_up_again_resets_the_count(self, db, repos):
+        """A transient miss must not accumulate towards a decline."""
+        groups, tasks, _ = repos
+        _one, task, _t = self.waiting(groups, tasks)
+        ticker = Clock()
+        self.follow_up(db, "declined", ticker)
+        ticker.advance(hours=7)
+        self.follow_up(db, "pending", ticker)
+        assert tasks.targets_for(task.id)[0].resolve_misses == 0
+
+        ticker.advance(hours=7)
+        self.follow_up(db, "declined", ticker)
+        assert tasks.targets_for(task.id)[0].state == TARGET_AWAITING_APPROVAL
+
+    def test_nothing_waiting_means_no_page_loads_at_all(self, db, repos):
+        groups, tasks, _ = repos
+        one, _ = add_groups(groups)
+        tasks.create(BODY, [(one.id, BODY)])
+        poster, _ = self.follow_up(db, "declined")
+        assert poster.verdict_calls == []
+
+    def test_it_does_not_check_outside_the_posting_window(self, db, repos):
+        """A group page opened at 4am is the same signal as a post at 4am."""
+        groups, tasks, settings = repos
+        self.waiting(groups, tasks)
+        settings.set("posting_window_start_hour", 8)
+        settings.set("posting_window_end_hour", 23)
+        night = Clock(clock.parse_local("2026-08-10 03:00"))
+        poster, _ = self.follow_up(db, "declined", night)
+        assert poster.verdict_calls == []
+
+    def test_it_does_not_check_the_same_post_twice_in_a_row(self, db, repos):
+        groups, tasks, _ = repos
+        self.waiting(groups, tasks)
+
+        ticker = Clock()
+        poster = FakePoster()
+        poster.verdict = "pending"
+        worker = make_worker(db, poster, ticker)
+        worker._follow_up_pending(ticker())
+        worker._follow_up_pending(ticker())
+        assert len(poster.verdict_calls) == 1, "checked again without waiting"
+
+    def test_a_brand_new_post_is_given_a_moment(self, db, repos):
+        """An admin who was just sent something needs time to see it."""
+        groups, tasks, _ = repos
+        self.waiting(groups, tasks, posted_ago=timedelta(minutes=5))
+
+        poster, _ = self.follow_up(db, "declined")
+        assert poster.verdict_calls == []
+
+    def test_a_failure_to_check_never_disturbs_the_queue(self, db, repos):
+        groups, tasks, _ = repos
+        _one, task, _t = self.waiting(groups, tasks)
+
+        class Broken(FakePoster):
+            def pending_verdict(self, group_url, body):
+                raise RuntimeError("network gone")
+
+        worker = make_worker(db, Broken())
+        worker._follow_up_pending(Clock()())
+        assert tasks.targets_for(task.id)[0].state == TARGET_AWAITING_APPROVAL
+
+    def test_the_worker_says_how_it_found_out(self, db, repos):
+        """The row used to claim the user confirmed it, which they had not."""
+        groups, tasks, _ = repos
+        _one, task, _t = self.waiting(groups, tasks)
+        self.follow_up(db, "approved")
+        assert "user" not in tasks.targets_for(task.id)[0].error.lower()
+
+
+class TestASweepCannotRunAway:
+    """Everything in a follow-up drives a real browser, so the sweep is bounded
+    in three directions: how many groups it touches at once, how long it goes on
+    chasing one post, and what it does when Facebook shows it something bad.
+
+    None of these are tidiness. An unbounded sweep is a burst of page loads no
+    member would produce, an unbounded chase reopens a group page about a dead
+    post twice a day for ever, and carrying on through a rate-limit warning is
+    the one thing this app must never do.
+    """
+
+    def waiting(self, groups, tasks, count, posted_ago=timedelta(hours=3)):
+        """`count` groups, each holding a post for an admin."""
+        from fbposter.db.models import to_iso
+
+        made = add_groups(groups, count)
+        task = tasks.create(BODY, [(g.id, f"{BODY} {g.id}") for g in made])
+        for target in tasks.targets_for(task.id):
+            tasks.mark_target(target.id, TARGET_AWAITING_APPROVAL, posted=True)
+            tasks.db.write(
+                "UPDATE task_targets SET posted_at = ? WHERE id = ?",
+                (to_iso(NOON - posted_ago), target.id),
+            )
+        return made, task
+
+    def test_only_a_few_groups_are_checked_in_one_sweep(self, db, repos):
+        groups, tasks, _ = repos
+        self.waiting(groups, tasks, 6)
+
+        poster = FakePoster()
+        poster.verdict ="pending"
+        worker = make_worker(db, poster)
+        worker._follow_up_pending(Clock()())
+
+        assert len(poster.verdict_calls) == FOLLOW_UP_PER_SWEEP
+
+    def test_the_next_sweep_picks_up_where_it_left_off(self, db, repos):
+        """Otherwise three posts an admin has abandoned soak up every sweep and
+        the fourth group is never looked at at all."""
+        groups, tasks, _ = repos
+        self.waiting(groups, tasks, 6)
+        ticker = Clock()
+
+        seen: list[str] = []
+        for _ in range(2):
+            poster = FakePoster()
+            poster.verdict = "pending"
+            make_worker(db, poster, ticker)._follow_up_pending(ticker())
+            seen.extend(poster.verdict_calls)
+            ticker.advance(hours=7)
+
+        assert len(set(seen)) == 2 * FOLLOW_UP_PER_SWEEP, "checked the same ones twice"
+
+    def test_a_post_nobody_ever_answers_is_eventually_left_alone(self, db, repos):
+        groups, tasks, _ = repos
+        self.waiting(groups, tasks, 1, posted_ago=FOLLOW_UP_GIVE_UP + timedelta(days=1))
+
+        poster = FakePoster()
+        poster.verdict ="declined"
+        worker = make_worker(db, poster)
+        worker._follow_up_pending(Clock()())
+
+        assert poster.verdict_calls == []
+        # Still on screen with its two buttons, and the wording still claimed:
+        # giving up on asking is not the same as deciding.
+        assert tasks.awaiting_approval_targets() != []
+
+    def test_a_checkpoint_stops_the_sweep_rather_than_opening_more_pages(
+        self, db, repos
+    ):
+        groups, tasks, _ = repos
+        self.waiting(groups, tasks, 3)
+
+        class Blocked(FakePoster):
+            def pending_verdict(self, group_url, body):
+                self.verdict_calls.append(group_url)
+                raise AutomationHalted("rate_limit", "temporarily blocked")
+
+        poster = Blocked()
+        worker = make_worker(db, poster)
+        worker._follow_up_pending(Clock()())
+
+        assert len(poster.verdict_calls) == 1, "kept loading pages through a block"
+        assert kinds(worker) == ["halted"]
+        assert all(
+            t.state == TARGET_AWAITING_APPROVAL for t in tasks.awaiting_approval_targets()
+        )
+
+    def test_a_broken_sweep_does_not_stop_the_queue(self, db, repos):
+        """It runs at the top of every tick, so anything it raises would take
+        the posting with it. Same rule as the pruner."""
+        groups, tasks, _ = repos
+        one, _two = add_groups(groups)
+        task = tasks.create(BODY, [(one.id, BODY)])
+
+        worker = make_worker(db)
+        worker.tasks.awaiting_approval_targets = _explode
+
+        assert worker.run_once() is True
+        assert tasks.targets_for(task.id)[0].state == TARGET_DONE
+        assert "error" in kinds(worker)
+
+    def test_a_group_removed_while_a_post_waits_stops_being_chased(self, db, repos):
+        """A post that can never be resolved must not be asked about for ever.
+
+        It is not: task_targets cascade with the group, so removing one takes
+        its awaiting posts out of the sweep as well.
+        """
+        groups, tasks, _ = repos
+        made, _task = self.waiting(groups, tasks, 1)
+        groups.remove(made[0].id)
+
+        poster = FakePoster()
+        poster.verdict = "pending"
+        worker = make_worker(db, poster)
+        worker._follow_up_pending(Clock()())
+
+        assert poster.verdict_calls == []
+        assert tasks.awaiting_approval_targets() == []

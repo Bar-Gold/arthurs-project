@@ -13,7 +13,13 @@ from PySide6.QtWidgets import (
 )
 
 from fbposter import clock
-from fbposter.db.models import TASK_PENDING, TASK_RUNNING, utcnow
+from fbposter.db.models import (
+    TARGET_AWAITING_APPROVAL,
+    TARGET_DECLINED,
+    TASK_PENDING,
+    TASK_RUNNING,
+    utcnow,
+)
 
 from .. import theme
 from ..widgets import card
@@ -27,6 +33,8 @@ STATE_COLOURS = {
     "missed": "WARNING",
     "skipped": "WARNING",
     "running": "ACCENT_TEXT",
+    TARGET_AWAITING_APPROVAL: "WARNING",
+    TARGET_DECLINED: "TEXT_MUTED",
 }
 
 SNIPPET_CHARS = 60
@@ -87,6 +95,24 @@ class QueueView(QWidget):
         self.app.task_repo.cancel(task_id)
         self.refresh()
         self.app.toast("Batch cancelled.", "info")
+
+    def resolve_pending(self, target_id: int, approved: bool) -> None:
+        """Record what the admin did with a post that was awaiting approval.
+
+        Declining releases the wording: nothing was published, so the repeated
+        -text guard should not go on treating it as sent. Without this the user
+        could never send those words to that group again, over a post that
+        never existed.
+        """
+        if not self.app.task_repo.resolve_pending(target_id, approved):
+            self.app.toast("That post is no longer awaiting approval.", "warning")
+        elif approved:
+            self.app.toast("Marked as live.", "success")
+        else:
+            self.app.toast(
+                "Marked as declined — that wording is free to send again.", "info"
+            )
+        self.refresh()
 
     def set_scope(self, show_all: bool) -> None:
         self.show_all = show_all
@@ -178,11 +204,29 @@ class QueueView(QWidget):
             row = QHBoxLayout()
             label = QLabel(name)
             row.addWidget(label, 1)
-            outcome = QLabel(target.state.title())
+            label_text = (
+                "Awaiting admin approval"
+                if target.state == TARGET_AWAITING_APPROVAL
+                else target.state.title()
+            )
+            outcome = QLabel(label_text)
             outcome.setStyleSheet(
                 f"color: {theme.C[STATE_COLOURS.get(target.state, 'TEXT_MUTED')]};"
             )
             row.addWidget(outcome)
+            if target.state == TARGET_AWAITING_APPROVAL:
+                # An override, not a chore: the worker follows these up on its
+                # own every few hours. They are here for the post an admin
+                # never gets round to, which the app stops chasing after a
+                # month, and for a user who already knows the answer.
+                for caption, approved in (("Went live", True), ("Declined", False)):
+                    button = QPushButton(caption)
+                    button.setObjectName("Tab")
+                    button.clicked.connect(
+                        lambda _c, tid=target.id, ok=approved:
+                        self.resolve_pending(tid, ok)
+                    )
+                    row.addWidget(button)
             layout.addLayout(row)
             if target.error:
                 error = QLabel(target.error)

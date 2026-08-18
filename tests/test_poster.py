@@ -440,3 +440,126 @@ class TestProbe:
         page = FakePage()
         make_poster(page).probe(GROUP_URL)
         assert ("press", "Escape") in page.calls
+
+
+class TestAGroupThatHoldsPostsForApproval:
+    """Verified against a live moderated group on 2026-08-17.
+
+    The post is submitted, the composer closes, and it is NOT in the feed --
+    the group shows the author a "Pending admin approval" banner instead.
+    The app used to guess, and which way it guessed depended on timing.
+    """
+
+    BANNER = "Pending admin approval 1 post"
+
+    def moderated_page(self, body_text: str) -> FakePage:
+        """A group where the post is genuinely nowhere to be found.
+
+        `missing` kills the text locator and body_text carries no snippet, so
+        both halves of _snippet_visible fail -- which is what really happens
+        when the post is sitting in the admin queue.
+        """
+        return FakePage(
+            body_text=body_text,
+            missing=(f"text={distinctive_snippet(BODY)}",),
+        )
+
+    def test_it_is_reported_as_pending_not_failed(self):
+        page = self.moderated_page(f"A normal group feed. {self.BANNER}")
+        outcome = make_poster(page).post(request())
+        assert outcome.pending is True
+        assert outcome.posted is True
+        assert outcome.verified is False
+
+    def test_the_detail_says_it_may_still_be_declined(self):
+        page = self.moderated_page(f"A normal group feed. {self.BANNER}")
+        outcome = make_poster(page).post(request())
+        assert "approve" in outcome.detail.lower()
+        assert "declined" in outcome.detail.lower()
+
+    def test_a_post_that_is_actually_visible_is_not_called_pending(self):
+        """The banner persists while any of our posts is queued, so it must
+        never override a post that really did appear."""
+        page = FakePage(body_text=f"{BODY} ... {self.BANNER}")
+        outcome = make_poster(page).post(request())
+        assert outcome.pending is False
+        assert outcome.verified is True
+
+    def test_an_ordinary_group_with_no_banner_still_halts(self):
+        """The safe default is unchanged: absent positive evidence of pending,
+        an unverifiable post stops the batch."""
+        page = self.moderated_page("A normal looking group feed")
+        with pytest.raises(PostNotVerified):
+            make_poster(page).post(request())
+
+    @pytest.mark.parametrize(
+        "banner",
+        [
+            "Pending admin approval",
+            "ממתין לאישור מנהל",
+            "Ожидает одобрения администратора",
+        ],
+    )
+    def test_the_banner_is_recognised_in_each_language(self, banner):
+        page = self.moderated_page(f"A normal looking group feed. {banner}")
+        outcome = make_poster(page).post(request())
+        assert outcome.pending is True
+
+
+class TestFindingOutWhatBecameOfAPendingPost:
+    """`pending_verdict` reads the group's "Your content" page, whose default
+    tab is Pending.
+
+    Everything here turns on one asymmetry: a plain decline leaves no positive
+    trace, so "declined" is an absence -- and an absence is also what a page
+    that failed to load looks like. Only "unknown" is safe to guess.
+    """
+
+    PAGE = "Your content Manage and view your posts"
+
+    def test_still_listed_means_still_waiting(self):
+        page = FakePage(body_text=f"{self.PAGE} {BODY}")
+        assert make_poster(page).pending_verdict(GROUP_URL, BODY) == "pending"
+
+    def test_gone_from_pending_but_in_the_feed_means_approved(self):
+        page = FakePage(body_text=self.PAGE)
+        # goto() to the group leaves the same body text, so the snippet has to
+        # come from somewhere: verify() finds it through the text locator.
+        assert make_poster(page).pending_verdict(GROUP_URL, BODY) == "approved"
+
+    def test_gone_from_both_means_declined(self):
+        page = FakePage(
+            body_text=self.PAGE, missing=(f"text={distinctive_snippet(BODY)}",)
+        )
+        assert make_poster(page).pending_verdict(GROUP_URL, BODY) == "declined"
+
+    def test_a_page_that_never_rendered_is_unknown_not_declined(self):
+        """The whole reason MY_CONTENT_PAGE_MARKERS exists. Reading "declined"
+        off a blank page releases the wording while the post is still queued."""
+        page = FakePage(
+            body_text="", missing=(f"text={distinctive_snippet(BODY)}",)
+        )
+        assert make_poster(page).pending_verdict(GROUP_URL, BODY) == "unknown"
+
+    @pytest.mark.parametrize(
+        "page",
+        [
+            FakePage(
+                redirect_to=f"https://www.facebook.com{strings.CHECKPOINT_MARKERS[0]}"
+            ),
+            FakePage(body_text=strings.RATE_LIMIT_MARKERS[0]),
+        ],
+        ids=["checkpoint", "rate limit"],
+    )
+    def test_an_anomaly_raises_rather_than_reading_as_unknown(self, page):
+        """Neither carries the page markers, so both would come back as a
+        polite "unknown" and be retried twice a day while the user was never
+        told -- and the rate-limit one would go on opening group pages straight
+        through a block."""
+        with pytest.raises(AutomationHalted):
+            make_poster(page).pending_verdict(GROUP_URL, BODY)
+
+    def test_an_empty_body_asks_nothing(self):
+        page = FakePage(body_text=self.PAGE)
+        assert make_poster(page).pending_verdict(GROUP_URL, "   ") == "unknown"
+        assert page.call_names() == []

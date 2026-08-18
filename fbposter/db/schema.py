@@ -229,6 +229,19 @@ def _migration_006(connection: sqlite3.Connection) -> None:
     )
 
 
+def _migration_007(connection: sqlite3.Connection) -> None:
+    """Count how many follow-up checks failed to find a pending post.
+
+    A post is only declared declined after two consecutive misses. One is not
+    enough: a "Your content" page that half-renders looks exactly like an empty
+    Pending tab, and releasing the wording on that would let the user repost
+    something still sitting in the admin queue.
+    """
+    connection.execute(
+        "ALTER TABLE task_targets ADD COLUMN resolve_misses INTEGER NOT NULL DEFAULT 0"
+    )
+
+
 # Index i applies when user_version == i, and bumps it to i + 1.
 MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _migration_001,
@@ -237,6 +250,7 @@ MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _migration_004,
     _migration_005,
     _migration_006,
+    _migration_007,
 ]
 
 LATEST_VERSION = len(MIGRATIONS)

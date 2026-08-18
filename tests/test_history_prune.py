@@ -25,6 +25,7 @@ from fbposter.automation.humanize import HumanProfile, Humanizer
 from fbposter.automation.poster import PostOutcome, PostRequest
 from fbposter.db import Database
 from fbposter.db.models import (
+    TARGET_AWAITING_APPROVAL,
     TARGET_DONE,
     TARGET_FAILED,
     TASK_DONE,
@@ -169,6 +170,25 @@ class TestWhatGetsDeleted:
 
         assert tasks.prune_history(NOON, keep_days=90) == 0
         assert tasks.get(task.id).state == TASK_PENDING
+
+    def test_a_post_still_awaiting_an_admin_never_goes(self, db, repos):
+        """The batch around it counts as finished, but the post has not landed.
+
+        Deleting it would take the Queue row, its two override buttons and the
+        follow-up's only record of it all at once, while the post itself sat on
+        in the group's moderation queue.
+        """
+        groups, tasks, _settings = repos
+        group = add_group(groups)
+        task = posted_batch(db, tasks, group, "held by an admin", days_ago=200,
+                            target_state=TARGET_AWAITING_APPROVAL)
+        fill_keep_set(db, tasks, group)
+
+        assert tasks.prune_history(NOON, keep_days=90) == 0
+        assert tasks.get(task.id) is not None
+        assert [t.body for t in tasks.awaiting_approval_targets()] == [
+            "held by an admin"
+        ]
 
     def test_the_targets_go_with_the_batch(self, db, repos):
         groups, tasks, _settings = repos

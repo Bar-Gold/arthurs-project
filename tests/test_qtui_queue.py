@@ -16,6 +16,8 @@ from datetime import timedelta
 import pytest
 
 from fbposter.db.models import (
+    TARGET_AWAITING_APPROVAL,
+    TARGET_DECLINED,
     TARGET_DONE,
     TASK_DONE,
     TASK_HALTED,
@@ -188,3 +190,68 @@ class TestTheQueueScreen:
         qt_app.show_view("queue")
         assert view.retention_hours() == 72
         assert view.hidden_label.text() == ""
+
+
+class TestResolvingAPendingPostFromTheQueue:
+    """The user is the only one who knows what the admin decided, so the app
+    asks rather than guessing -- but it must actually offer somewhere to say."""
+
+    def pending(self, qt_app):
+        group = qt_app.group_repo.list()[0]
+        task = qt_app.task_repo.create(BODY, [(group.id, BODY)])
+        target = qt_app.task_repo.targets_for(task.id)[0]
+        qt_app.task_repo.mark_target(target.id, TARGET_AWAITING_APPROVAL, posted=True)
+        return group, task, target
+
+    def test_a_pending_target_offers_both_answers(self, qt_app, repos):
+        from PySide6.QtWidgets import QPushButton
+
+        self.pending(qt_app)
+        view = qt_app.views["queue"]
+        qt_app.show_view("queue")
+        labels = {b.text() for b in view.holder.findChildren(QPushButton)}
+        assert {"Went live", "Declined"} <= labels
+
+    def test_an_ordinary_target_does_not(self, qt_app, repos):
+        from PySide6.QtWidgets import QPushButton
+
+        group = qt_app.group_repo.list()[0]
+        task = qt_app.task_repo.create(BODY, [(group.id, BODY)])
+        target = qt_app.task_repo.targets_for(task.id)[0]
+        qt_app.task_repo.mark_target(target.id, TARGET_DONE, posted=True)
+
+        view = qt_app.views["queue"]
+        qt_app.show_view("queue")
+        labels = {b.text() for b in view.holder.findChildren(QPushButton)}
+        assert "Declined" not in labels
+
+    def test_declining_frees_the_wording(self, qt_app, repos):
+        group, _task, target = self.pending(qt_app)
+        view = qt_app.views["queue"]
+        qt_app.show_view("queue")
+
+        view.resolve_pending(target.id, approved=False)
+        assert BODY not in qt_app.group_repo.recent_bodies(group.id)
+
+    def test_marking_it_live_keeps_the_wording_claimed(self, qt_app, repos):
+        group, _task, target = self.pending(qt_app)
+        view = qt_app.views["queue"]
+        qt_app.show_view("queue")
+
+        view.resolve_pending(target.id, approved=True)
+        assert BODY in qt_app.group_repo.recent_bodies(group.id)
+
+    def test_resolving_twice_is_reported_not_silent(self, qt_app, repos):
+        _group, _task, target = self.pending(qt_app)
+        view = qt_app.views["queue"]
+        qt_app.show_view("queue")
+        view.resolve_pending(target.id, approved=False)
+        view.resolve_pending(target.id, approved=False)
+        assert "no longer awaiting" in qt_app.toast_label.text()
+
+    def test_the_state_shows_as_declined_afterwards(self, qt_app, repos):
+        _group, task, target = self.pending(qt_app)
+        view = qt_app.views["queue"]
+        qt_app.show_view("queue")
+        view.resolve_pending(target.id, approved=False)
+        assert qt_app.task_repo.targets_for(task.id)[0].state == TARGET_DECLINED

@@ -360,6 +360,10 @@ class App(QMainWindow):
             "scheduled": "success",
             "skipped": "warning",
             "missed": "warning",
+            # Neither is a success: one has not landed yet, the other never
+            # will. An "info" toast reads as "that went fine".
+            "pending": "warning",
+            "declined": "warning",
         }.get(event.kind, "info")
         self.toast(event.message, level)
         queue_view = self.views.get("queue")

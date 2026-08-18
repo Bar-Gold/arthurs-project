@@ -17,6 +17,8 @@ from ..groups import parse_group_url
 from .connection import Database
 from .models import (
     SCHEDULE_ACTIVE,
+    TARGET_AWAITING_APPROVAL,
+    TARGET_DECLINED,
     TARGET_DONE,
     TARGET_PENDING,
     TARGET_RUNNING,
@@ -148,9 +150,9 @@ class GroupRepo:
         restricted.
         """
         rows = self.db.query(
-            "SELECT body FROM task_targets WHERE group_id = ? AND state = ? "
+            "SELECT body FROM task_targets WHERE group_id = ? AND state IN (?, ?) "
             "ORDER BY posted_at DESC LIMIT ?",
-            (group_id, TARGET_DONE, limit),
+            (group_id, TARGET_DONE, TARGET_AWAITING_APPROVAL, limit),
         )
         return [row["body"] for row in rows]
 
@@ -366,6 +368,65 @@ class TaskRepo:
             )
             return cursor.rowcount == 1
 
+    def awaiting_approval_targets(self) -> list[TaskTarget]:
+        """Posts submitted to a moderated group and not yet resolved."""
+        rows = self.db.query(
+            "SELECT t.*, g.identifier AS group_identifier, g.name AS group_name "
+            "FROM task_targets t JOIN groups g ON g.id = t.group_id "
+            "WHERE t.state = ? ORDER BY t.posted_at",
+            (TARGET_AWAITING_APPROVAL,),
+        )
+        return [TaskTarget.from_row(row) for row in rows]
+
+    def record_resolve_miss(self, target_id: int) -> int:
+        """One more follow-up that could not find it. Returns the new total."""
+        self.db.write(
+            "UPDATE task_targets SET resolve_misses = resolve_misses + 1 "
+            "WHERE id = ?",
+            (target_id,),
+        )
+        row = self.db.query_one(
+            "SELECT resolve_misses FROM task_targets WHERE id = ?", (target_id,)
+        )
+        return int(row["resolve_misses"]) if row else 0
+
+    def clear_resolve_misses(self, target_id: int) -> None:
+        """It turned up again, so the count starts over."""
+        self.db.write(
+            "UPDATE task_targets SET resolve_misses = 0 WHERE id = ?", (target_id,)
+        )
+
+    def resolve_pending(
+        self, target_id: int, approved: bool, note: str = ""
+    ) -> bool:
+        """Record what an admin did with a post that was awaiting approval.
+
+        Approved leaves the wording claimed, because it is now live. Declined
+        releases it: nothing was published, so refusing to let the user send
+        those words again would be blocking them on a post that never existed.
+
+        `note` says how it was found out -- the worker resolves these on its
+        own, and a row saying the user confirmed it when they did nothing of
+        the sort is a small lie the queue screen would go on repeating.
+
+        Conditional on the target still being `awaiting_approval`, so this can
+        only ever resolve a genuinely pending post -- it cannot resurrect a
+        failed one or overwrite a real success.
+        """
+        state = TARGET_DONE if approved else TARGET_DECLINED
+        note = note or (
+            "Confirmed live by the user."
+            if approved
+            else "An admin declined it, so nothing was published."
+        )
+        with self.db.transaction() as connection:
+            cursor = connection.execute(
+                "UPDATE task_targets SET state = ?, error = ? "
+                "WHERE id = ? AND state = ?",
+                (state, note, target_id, TARGET_AWAITING_APPROVAL),
+            )
+            return cursor.rowcount == 1
+
     def running_targets(self) -> list[TaskTarget]:
         """Targets left mid-flight by a crash.
 
@@ -446,8 +507,9 @@ class TaskRepo:
     def posted_count_since(self, since: datetime) -> int:
         """Group-posts completed since a moment. Feeds the daily cap."""
         row = self.db.query_one(
-            "SELECT COUNT(*) AS n FROM task_targets WHERE state = ? AND posted_at >= ?",
-            (TARGET_DONE, to_iso(since)),
+            "SELECT COUNT(*) AS n FROM task_targets "
+            "WHERE state IN (?, ?) AND posted_at >= ?",
+            (TARGET_DONE, TARGET_AWAITING_APPROVAL, to_iso(since)),
         )
         return int(row["n"]) if row else 0
 
@@ -459,9 +521,14 @@ class TaskRepo:
     ) -> int:
         """Delete finished batches older than `keep_days`. Returns how many.
 
-        Three things are never deleted, and each one is load-bearing:
+        Four things are never deleted, and each one is load-bearing:
 
         * **Anything unfinished.** A batch still due to go out is not history.
+        * **Anything still awaiting an admin.** The batch around it counts as
+          finished, but the post has not landed yet: deleting it would take the
+          Queue row, the two override buttons and the follow-up's only record
+          of it all at once, and the post would still be sitting in the group's
+          moderation queue.
         * **The newest `keep_per_group` posted bodies for each group**, however
           old. That is exactly what `GroupRepo.recent_bodies` reads, so the
           repeated-text guard keeps refusing wording a group has already had --
@@ -486,14 +553,18 @@ class TaskRepo:
                 "    SELECT task_id, ROW_NUMBER() OVER ("
                 "      PARTITION BY group_id ORDER BY posted_at DESC, id DESC"
                 "    ) AS rank_in_group"
-                "    FROM task_targets WHERE state = ?"
+                "    FROM task_targets WHERE state IN (?, ?)"
                 "  ) WHERE rank_in_group <= ?"
                 ") "
                 "SELECT id FROM tasks "
                 "WHERE state NOT IN (?, ?) "
                 "  AND COALESCE(finished_at, created_at) < ? "
-                "  AND id NOT IN (SELECT task_id FROM keep)",
-                (TARGET_DONE, keep_per_group, TASK_PENDING, TASK_RUNNING, cutoff),
+                "  AND id NOT IN (SELECT task_id FROM keep) "
+                "  AND id NOT IN ("
+                "    SELECT task_id FROM task_targets WHERE state = ?"
+                "  )",
+                (TARGET_DONE, TARGET_AWAITING_APPROVAL, keep_per_group,
+                 TASK_PENDING, TASK_RUNNING, cutoff, TARGET_AWAITING_APPROVAL),
             )
         ]
         if not doomed:

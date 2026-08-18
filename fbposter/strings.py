@@ -40,6 +40,39 @@ def group_url(identifier: str) -> str:
     return f"{BASE_URL}/groups/{identifier}/"
 
 
+# Where Facebook lists your own posts in a group, "Pending" first. Verified on
+# 2026-08-17: /pending/ is the *admin* moderation queue and is not this.
+MY_CONTENT_PATH = "my_pending_content"
+
+
+def my_content_url(group_url_or_identifier: str) -> str:
+    """The "Your content" page for a group, whose default tab is Pending."""
+    base = group_url_or_identifier.rstrip("/")
+    if not base.startswith("http"):
+        base = f"{BASE_URL}/groups/{base}"
+    return f"{base}/{MY_CONTENT_PATH}/"
+
+
+# Proof the "Your content" page actually rendered. Without this, a page that
+# failed to load reads as "nothing pending" -- and concluding "declined" from a
+# blank page is how a wording gets released while the post is still queued.
+#
+# English verified 2026-08-17 ("Your content" / "No posts to show").
+# Hebrew and Russian researched, UNVERIFIED.
+MY_CONTENT_PAGE_MARKERS = (
+    # English (verified)
+    "your content",
+    "no posts to show",
+    "manage and view your posts",
+    # Hebrew (unverified)
+    "התוכן שלך",
+    "אין פוסטים להצגה",
+    # Russian (unverified)
+    "ваш контент",
+    "нет публикаций",
+)
+
+
 # --- Composer ---------------------------------------------------------------
 # The group composer trigger carries no aria-label in any language, so it is
 # matched on its visible text.
@@ -136,6 +169,36 @@ RATE_LIMIT_MARKERS = (
     "попробуйте позже",
     "повторите попытку позже",
     "эта функция сейчас недоступна",
+)
+
+# A group with post approval turned on holds the post for an admin instead of
+# publishing it. Facebook then shows the author a banner on the group page.
+#
+# English is VERIFIED: read off SneakerHeads in Israel on 2026-08-17, which
+# renders "Pending admin approval / 1 post / Learn more / Manage post".
+#
+# Hebrew and Russian are researched and UNVERIFIED, like the anomaly markers
+# below -- the account is in English and switching it to read two strings is
+# not worth changing the user's Facebook settings for. Over-matching is the
+# right bias: the marker is only ever consulted when the post is already
+# confirmed absent from the feed, so a false hit cannot invent a pending post.
+PENDING_APPROVAL_MARKERS = (
+    # English (verified)
+    "pending admin approval",
+    "pending approval",
+    "waiting for approval",
+    "your post is pending",
+    "will be visible once approved",
+    # Hebrew (unverified)
+    "ממתין לאישור מנהל",
+    "ממתין לאישור",
+    "בהמתנה לאישור",
+    "הפוסט שלך ממתין",
+    # Russian (unverified)
+    "ожидает одобрения администратора",
+    "ожидает одобрения",
+    "ожидает подтверждения",
+    "ваша публикация ожидает",
 )
 
 UNAVAILABLE_MARKERS = (
