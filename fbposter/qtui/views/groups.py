@@ -159,11 +159,22 @@ class GroupsView(QWidget):
             self.notify(str(exc), "error")
             return False
 
+        # Pasting the link of a removed group brings it back, history and all.
+        # Saying so matters: the user is about to wonder why the repeat guard
+        # already knows what this group has been sent.
+        restored = bool(self.app.group_repo.recent_bodies(group.id, limit=1))
+
         self.url_entry.clear()
         # A group added here was added to be posted to, so it starts ticked.
         self.app.set_group_selected(group.id, True)
         self.refresh()
-        self.notify(f"Added {group.display_name}.", "success")
+        if restored:
+            self.notify(
+                f"Brought {group.display_name} back, with what it has already been sent.",
+                "success",
+            )
+        else:
+            self.notify(f"Added {group.display_name}.", "success")
         self._fetch_missing_names()
         return True
 
@@ -171,7 +182,7 @@ class GroupsView(QWidget):
         self.app.group_repo.remove(group_id)
         self.app.set_group_selected(group_id, False)
         self.refresh()
-        self.notify("Group removed.", "info")
+        self.notify("Group removed. Paste its link again to bring it back.", "info")
 
     def set_cooldown(self, group_id: int, hours: int) -> None:
         self.app.group_repo.set_cooldown(group_id, hours)

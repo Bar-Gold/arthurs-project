@@ -483,12 +483,15 @@ class PostingWorker:
             if age is not None and (age < FOLLOW_UP_AFTER or age > FOLLOW_UP_GIVE_UP):
                 continue
 
-            group = self.groups.get(target.group_id)
+            group = self.groups.active(target.group_id)
             if group is None:
-                # Only reachable if the group is removed between the query above
-                # and this line. Nothing is stranded by skipping it: task_targets
-                # cascade with the group, so removing one takes its awaiting
-                # posts out of every future sweep too.
+                # A post in a group the user has removed can never be resolved
+                # from here, and every check is a real page load in a browser --
+                # so it is dropped from the rotation rather than chased twice a
+                # day for thirty days. The target row stays exactly as it is:
+                # awaiting_approval already counts towards recent_bodies, so the
+                # wording goes on being refused to that group whether or not
+                # anyone ever finds out what an admin did with it.
                 continue
 
             if checked:
@@ -623,7 +626,7 @@ class PostingWorker:
         targets: list[tuple[int, str]] = []
         stale: list[str] = []
         for position, group_id in enumerate(schedule.group_ids):
-            group = self.groups.get(group_id)
+            group = self.groups.active(group_id)
             if group is None:  # removed since the schedule was made
                 continue
             # Rotating by run_count as well as position is what stops one
@@ -646,6 +649,16 @@ class PostingWorker:
                 "is what gets accounts restricted.",
             )
         if not targets:
+            if not stale:
+                # Every group has been removed. Left active it would come round
+                # two or three times a day for ever, post nothing and say
+                # nothing -- so it is paused, like an unusable repeat rule.
+                self.schedules.set_state(schedule.id, SCHEDULE_PAUSED)
+                self.emit(
+                    "schedule_error",
+                    f"{schedule.display_name} has no groups left — every group it "
+                    "posted to has been removed. It has been paused.",
+                )
             return
 
         task = self.tasks.create(
@@ -664,7 +677,10 @@ class PostingWorker:
 
     # -- guards, re-checked at the moment of posting -----------------------
     def _attempt(self, task: Task, target: TaskTarget, now) -> bool:
-        group = self.groups.get(target.group_id)
+        # active(), not get(): removing a group archives it now, and a batch
+        # queued before the removal must not post to a group the user has
+        # taken out of the list.
+        group = self.groups.active(target.group_id)
         if group is None:
             self.tasks.mark_target(
                 target.id, TARGET_FAILED, error="Group was removed.", attempted=True

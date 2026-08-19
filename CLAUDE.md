@@ -22,7 +22,7 @@ Text that reaches a post also passes Invisible characters and Hebrew, whatever s
 
 **All five phases are done; v1 is feature-complete.** Chrome debug-profile launcher and CDP session (1), CustomTkinter UI (2), SQLite persistence and the safety guards (3), the automation engine in `fbposter/automation/` (4), and the scheduler/worker in `fbposter/worker.py` (5).
 
-**The app now posts on its own.** Opening the GUI starts the worker, and any due batch will go out. `README.md` holds the full spec. Per-group text editing, the Compose preview, the Qt rewrite and **repeating posts** all shipped after v1; the content-variation warning is now actionable, so it should be rare rather than constant. Since then: a post a group holds for an admin is tracked as its own outcome and resolved by the app itself (`TARGET_AWAITING_APPROVAL` and `_follow_up_pending`, see the Worker rules), a dropped Chrome connection defers a batch instead of throwing it away, and `scripts/setup_always_on.ps1` covers the laptop that has to post with its lid shut (see Power).
+**The app now posts on its own.** Opening the GUI starts the worker, and any due batch will go out. `README.md` holds the full spec. Per-group text editing, the Compose preview, the Qt rewrite and **repeating posts** all shipped after v1; the content-variation warning is now actionable, so it should be rare rather than constant. Since then: a post a group holds for an admin is tracked as its own outcome and resolved by the app itself (`TARGET_AWAITING_APPROVAL` and `_follow_up_pending`, see the Worker rules), a dropped Chrome connection defers a batch instead of throwing it away, and `scripts/setup_always_on.ps1` covers the laptop that has to post with its lid shut (see Power). Most recently, two things that were silent are not: removing a group archives it rather than deleting its posting history out from under the repeat guard, and closing the window warns when doing so would strand a queued batch or an active schedule.
 
 ## What This Is
 
@@ -60,7 +60,7 @@ powershell -ExecutionPolicy Bypass -File scripts\setup_always_on.ps1 -Revert
 
 `status` exits 0 when logged in, 1 when not, 2 on error (Chrome not running, etc.).
 
-There is no linter or formatter configured, and no pytest config file — the suite is the whole check. Baseline: **1095 tests, 75-150s** — the spread is machine load, not the suite; the Qt and Tk GUI files are ~80s of it on their own. A run of *five minutes or more* means something is reaching the network; see the `SilentNamer` note below.
+There is no linter or formatter configured, and no pytest config file — the suite is the whole check. Baseline: **1119 tests, 75-150s** — the spread is machine load, not the suite; the Qt and Tk GUI files are ~80s of it on their own. A run of *five minutes or more* means something is reaching the network; see the `SilentNamer` note below.
 
 **Do not add `playwright install`.** It is unnecessary and was verified so against Chrome 150: the app attaches to the user's real Chrome over CDP and never launches Playwright's bundled Chromium, so the driver shipped inside the pip package is all that is required.
 
@@ -230,6 +230,41 @@ The queue screen shows every unfinished batch however old, plus batches finished
 
 A batch still pending or running is never hidden, whatever its age: hiding something still due to go out is worse than a cluttered screen.
 
+### Removing a group archives it; it has never been safe to delete one
+
+`GroupRepo.remove` sets `archived = 1`. It used to be a `DELETE`, and
+`task_targets.group_id` is `ON DELETE CASCADE` — so removing a group destroyed
+every post ever made to it, which is exactly the window `GroupRepo.recent_bodies`
+reads for `guards.check_repeat_text`. Remove a group and add it back, which is
+the obvious thing to do to correct a name, and the guard went blank: the advert
+that group had already been sent could go to it again. Two clicks in the UI, no
+warning, and the app's main protection against a restriction silently off.
+
+- **`list()` already excludes archived groups**, so every screen needed no
+  change; `get()` deliberately still finds them, because the Queue has to name a
+  group it posted to last week.
+- **Anything deciding whether to *post* must call `GroupRepo.active()`**, which
+  returns `None` for an archived group — that is what `get()` returning `None`
+  used to mean. `worker._attempt`, `worker._fire_schedule` and
+  `worker._sweep_pending` all do. Reaching for `get()` in one of those posts to,
+  or opens a page for, a group the user removed.
+- **The follow-up sweep drops a removed group rather than chasing it**, since
+  every check is a real page load and the answer can no longer be acted on. The
+  target row stays `awaiting_approval` — which already counts towards
+  `recent_bodies`, so that wording goes on being refused to that group whether
+  or not anyone ever learns what the admin did with it.
+- **`add_from_url` un-archives**, so pasting the link again is the undo, and it
+  brings the history back with it. The Groups screen says so, because the user
+  is otherwise about to wonder why the repeat guard already knows this group.
+- **A schedule keeps the archived group's id** rather than losing the row to a
+  cascade, so re-adding resumes it unchanged. A schedule left with *no* usable
+  groups is paused and reported, like one with an unusable repeat rule —
+  otherwise it comes round two or three times a day for ever, posts nothing and
+  says nothing.
+- A batch queued before the removal marks that target failed at posting time
+  ("Group was removed.") and carries on to the rest, which is what it did when
+  the row vanished.
+
 ### Database rules
 
 - **`Database.transaction()`, never `with connection:`.** Connections use `isolation_level=None` (autocommit), so `with connection:` commits a transaction that was never begun and a later failure leaves earlier statements written. This already produced an orphan task row once; `tests/test_db.py` guards it.
@@ -254,7 +289,8 @@ Qt shapes text itself and needs none of it. `qtui/views/compose.py` contains **n
 The Tk widget specifics — `CTkFrame`/`CTkButton` defaults, pack order, and the whole `textdir.py` bidi apparatus — now live in **`fbposter/ui/CLAUDE.md`**, which loads on its own when you open a file in `fbposter/ui/`. None of it applies to `qtui/`. What follows holds in both windows.
 
 - **Only the main thread touches widgets.** Blocking work goes through a background thread → `queue.Queue` → a pump on the UI thread: `BackgroundRunner` and `widget.after()` in Tk, `App.run_in_background` and a `QTimer` driving `App._drain_worker_events` in Qt. The posting worker reports progress the same way and never touches a widget itself.
-- **No modal dialogs for status, ever** — use `app.toast`. The single permitted OS dialog is the app's own media file picker in Compose, because the user asked for it and it can only fire while they are sitting there choosing images. Chrome's native file dialog is a different thing entirely and is never acceptable — see the Photo/video rule below.
+- **No modal dialogs for status, ever** — use `app.toast`. There are exactly two permitted, and both share one justification: they can only appear because the user just acted on this window, so the app already has focus and they cannot interrupt anything. One is the media file picker in Compose. The other is `qtui.app.ask_before_closing`, raised only from `closeEvent`, only when `App.unfinished_work()` finds something still due — see the close rule below. Chrome's native file dialog is a different thing entirely and is never acceptable — see the Photo/video rule below.
+- **Closing the window stops the posting, so it says so first.** The worker is the window's own thread; `closeEvent` stopped it silently, so a daily repeat set up and then closed away simply never ran again with nothing on screen to show it. `App.unfinished_work()` returns a phrase naming what is still due — unfinished batches, active schedules — or `None`, and only a non-`None` answer costs the user a dialog. **The confirmation is injectable (`App(confirm_close=)`) and defaults to the real one**, exactly like `check_fn` and `group_namer`: the GUI suite closes every window it builds, so a real modal would hang the run rather than fail it. It is also skipped entirely while `self.worker is None`, which is every window a test builds.
 - **Compose owns per-group wording, and `body_for()` is the only way to read it.** `_base_body` is the shared text, `_bodies` holds per-group rewrites, `_editing` is the active tab. `body_for()` reads committed state only, so `capture()` must run first — it once returned the live editor contents when that group was active, which handed back the wrong text as soon as `_editing` was assigned before the read. Editing the base clears the rewrites (the user's choice) and toasts, and only when the text genuinely changed — a tab switch must never cost someone their wording.
 - **Anything in a view that reaches for a browser must be injectable, and the shared test App must be given a stub.** The Groups view looks up group names on its own whenever it is shown, and `chrome.probe()` succeeds on any machine with Chrome running — so before `SilentNamer` existed, the GUI suite silently opened real Facebook pages and took nearly three minutes instead of twenty seconds. Both `App`s take `check_fn=`, `db=` and `group_namer=` for this reason.
 
@@ -279,7 +315,7 @@ It is achievable because Playwright dispatches input through the DevTools protoc
 - **Never call `page.bring_to_front()`.**
 - Attach media with `set_input_files` on the input element. Never open the native OS file-picker — it is modal and steals focus.
 - Launch the debug profile off-screen (`--window-position=-32000,-32000`) rather than minimized, and disable background throttling so an unfocused window still behaves normally: `--disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-renderer-backgrounding`.
-- The app's own UI must not raise itself or open modal dialogs; status goes to the queue view or a passive toast.
+- The app's own UI must not raise itself, and opens a modal dialog only in the two cases listed under the UI rules — never to report status, which goes to the queue view or a passive toast.
 - Headless is not an option — different fingerprint, defeats the real-session premise.
 - Schedules are absolute timestamps recomputed on wake, never `sleep()` countdowns. Hold off system sleep during an active batch via `SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)`; a slot missed during suspend is reported, never fired late in a burst.
 
@@ -315,6 +351,7 @@ One `PostingWorker`, one thread, started by `App.start_worker()` and by nothing 
   `"unknown"` changes nothing and is retried later. A failure to check is reported and swallowed — following up must never disturb the queue, so `_follow_up_pending` is a `try/except` wrapper around `_sweep_pending` exactly like `_maybe_prune`. It runs at the top of every tick; anything it let escape would take the posting with it.
 - **The sweep is bounded in three directions, and each bound is a safety rule.** It checks at most `FOLLOW_UP_PER_SWEEP` (3) groups at a time, because every check drives a real browser and a burst of page loads is the signal this whole app is built to avoid; `_follow_up_order` rotates through them on a cursor so three abandoned posts cannot starve a fourth. It stops chasing a post after `FOLLOW_UP_GIVE_UP` (30 days) — the state stays `awaiting_approval`, which is the cautious direction, and the Queue row keeps its two override buttons. And `pending_verdict` **classifies the page** before reading anything off it: a checkpoint or a rate-limit warning carries none of the page markers, so without that it would read as a polite `"unknown"`, be retried twice a day in silence, and go on opening group pages straight through a block. An `AutomationHalted` — or a browser that is not there — stops the sweep rather than moving to the next group.
 - **`prune_history` never deletes a batch with a post still awaiting an admin.** The batch around it is finished, so it would otherwise age out normally — taking the Queue row, the override buttons and the follow-up's only record of it, while the post itself sat on in the group's moderation queue.
+- **Ask `GroupRepo.active()` before posting, never `get()`.** Removing a group archives it now, so `get()` still returns one the user has taken off the list. `active()` is `None` for those, which is what `get()` returning `None` used to mean. See the archiving section above.
 - **Never retry.** `PostNotVerified` halts the batch; it does not re-post. A duplicate is worse than a missing post. The **one** exception is `ConnectionFailed`, and only because it is raised before a page exists — see the Power section. Do not widen it: every other failure happens with a composer open, where "it may already have posted" is live.
 - **`_post` catches `BaseException`, records, then re-raises.** `KeyboardInterrupt` and `SystemExit` are not `Exception`, so they used to kill the worker thread outright — leaving the target stuck in `running` and the keep-awake request still held, so the machine could not sleep.
 - **Attachments are checked on disk before the browser is touched.** A file moved since the batch was queued otherwise surfaces as a Playwright timeout inside `set_input_files`, naming nothing the user can act on.

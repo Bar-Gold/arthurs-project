@@ -1483,8 +1483,11 @@ class TestASweepCannotRunAway:
     def test_a_group_removed_while_a_post_waits_stops_being_chased(self, db, repos):
         """A post that can never be resolved must not be asked about for ever.
 
-        It is not: task_targets cascade with the group, so removing one takes
-        its awaiting posts out of the sweep as well.
+        It used to leave the sweep by being deleted -- task_targets cascaded
+        with the group. Removing a group archives it now, so the row survives
+        and the sweep has to decline it on purpose. The record staying is the
+        point: awaiting_approval already counts towards recent_bodies, so that
+        wording goes on being refused to that group either way.
         """
         groups, tasks, _ = repos
         made, _task = self.waiting(groups, tasks, 1)
@@ -1495,5 +1498,45 @@ class TestASweepCannotRunAway:
         worker = make_worker(db, poster)
         worker._follow_up_pending(Clock()())
 
-        assert poster.verdict_calls == []
-        assert tasks.awaiting_approval_targets() == []
+        assert poster.verdict_calls == [], "opened a page for a group the user removed"
+        assert len(tasks.awaiting_approval_targets()) == 1
+        assert groups.recent_bodies(made[0].id) != []
+
+
+class TestAGroupTakenOffTheListIsNotPostedTo:
+    """Removing a group archives it rather than deleting it, so its history
+    survives for the repeated-text guard. The row surviving must not mean the
+    post still goes out: before archiving, a removed group was simply gone and
+    the target failed, and that is the behaviour to keep.
+    """
+
+    def test_the_target_fails_and_the_batch_carries_on(self, db, repos):
+        groups, tasks, _ = repos
+        one, two = add_groups(groups)
+        task = tasks.create(BODY, [(one.id, "a"), (two.id, "b")])
+
+        groups.remove(one.id)
+
+        poster = FakePoster()
+        worker = make_worker(db, poster)
+        drain(worker)
+
+        states = [t.state for t in tasks.targets_for(task.id)]
+        assert states[0] == TARGET_FAILED
+        assert states[1] == TARGET_DONE
+        assert poster.group_urls == [two.url], "posted to a group the user removed"
+
+    def test_bringing_it_back_makes_it_postable_again(self, db, repos):
+        groups, tasks, _ = repos
+        (one,) = add_groups(groups, count=1)
+        groups.remove(one.id)
+        groups.add_from_url(one.url)
+
+        task = tasks.create(BODY, [(one.id, "a")])
+        poster = FakePoster()
+        worker = make_worker(db, poster)
+        drain(worker)
+
+        assert tasks.targets_for(task.id)[0].state == TARGET_DONE
+        assert poster.group_urls == [one.url]
+

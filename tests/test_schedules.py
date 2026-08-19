@@ -25,6 +25,7 @@ from fbposter.db import Database
 from fbposter.db.models import (
     SCHEDULE_ACTIVE,
     SCHEDULE_PAUSED,
+    TARGET_DONE,
     TASK_MISSED,
     TASK_PENDING,
 )
@@ -187,12 +188,17 @@ class TestScheduleStorage:
             schedules.create(name="x", bodies=WORDINGS, group_ids=[], times=["09:00"])
         assert schedules.list() == []
 
-    def test_deleting_a_group_deletes_its_schedule_rows(self, repos):
+    def test_removing_a_group_leaves_its_schedule_rows_alone(self, repos):
+        """This asserted the cascade until removing a group started archiving
+        it instead. The schedule keeps the id; the worker is what declines to
+        post to an archived group, so re-adding it resumes the schedule
+        unchanged rather than silently dropping a recipient for ever.
+        """
         groups, _tasks, schedules, _settings = repos
         one, two = add_groups(groups)
         made = make_schedule(schedules, [one.id, two.id])
         groups.remove(one.id)
-        assert schedules.get(made.id).group_ids == [two.id]
+        assert schedules.get(made.id).group_ids == [one.id, two.id]
 
     def test_due_returns_only_active_schedules(self, repos):
         groups, _tasks, schedules, _settings = repos
@@ -527,3 +533,60 @@ class TestScheduledBatchesGoThroughTheNormalPath:
         drain(worker)
         assert tasks.get(task.id).state != TASK_MISSED
         assert len(poster.requests) == 1
+
+
+class TestAScheduleWithNothingLeftToPostTo:
+    """Removing a group no longer deletes it, so `schedule_targets` no longer
+    cascades away with it and a schedule can be left pointing only at groups
+    the user has taken off the list. Left active it would come round two or
+    three times a day for ever, post nothing, and say nothing.
+    """
+
+    def test_it_is_paused_rather_than_firing_into_the_void(self, db, repos):
+        groups, tasks, schedules, _settings = repos
+        one, _two = add_groups(groups)
+        made = make_schedule(schedules, [one.id])
+        groups.remove(one.id)
+
+        worker = make_worker(db)
+        worker.run_once()
+
+        assert schedules.get(made.id).state == SCHEDULE_PAUSED
+        assert "schedule_error" in kinds(worker)
+        assert tasks.list_recent() == []
+
+    def test_one_group_left_still_fires(self, db, repos):
+        """Only *every* group going means the schedule is dead. One removed
+        out of two is an ordinary run with one fewer recipient."""
+        groups, tasks, schedules, _settings = repos
+        one, two = add_groups(groups)
+        made = make_schedule(schedules, [one.id, two.id])
+        groups.remove(one.id)
+
+        worker = make_worker(db)
+        worker.run_once()
+
+        assert schedules.get(made.id).state == SCHEDULE_ACTIVE
+        assert len(tasks.list_recent()) == 1
+        targets = tasks.targets_for(tasks.list_recent()[0].id)
+        assert [t.group_id for t in targets] == [two.id]
+
+    def test_stale_wordings_are_still_reported_as_stale(self, db, repos):
+        """The empty-schedule message must not displace the one that tells the
+        user to add another wording -- they call for different fixes."""
+        groups, tasks, schedules, _settings = repos
+        one, _two = add_groups(groups)
+        made = make_schedule(schedules, [one.id], bodies=["only wording"])
+        task = tasks.create("only wording", [(one.id, "only wording")])
+        target = tasks.targets_for(task.id)[0]
+        tasks.claim_target(target.id)
+        tasks.mark_target(target.id, TARGET_DONE)
+
+        worker = make_worker(db)
+        worker.run_once()
+
+        seen = kinds(worker)
+        assert "skipped" in seen
+        assert "schedule_error" not in seen
+        assert schedules.get(made.id).state == SCHEDULE_ACTIVE
+

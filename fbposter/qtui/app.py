@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QMessageBox,
     QPushButton,
     QStackedWidget,
     QVBoxLayout,
@@ -27,6 +28,7 @@ from PySide6.QtWidgets import (
 from .. import config, power
 from ..automation.groupinfo import LiveGroupNamer
 from ..db import Database
+from ..db.models import SCHEDULE_ACTIVE
 from ..db.repo import GroupRepo, ScheduleRepo, SettingsRepo, TaskRepo, TemplateRepo
 from ..ui.connection import ConnectionResult, ConnectionState, check_connection
 from ..worker import PostingWorker
@@ -94,9 +96,13 @@ class App(QMainWindow):
     _worker_event = Signal(object)
 
     def __init__(self, check_fn=check_connection, db: Database | None = None,
-                 group_namer=None) -> None:
+                 group_namer=None, confirm_close=None) -> None:
         super().__init__()
         self._check_fn = check_fn
+        # Inert unless supplied, like check_fn and group_namer: the real one
+        # opens a modal dialog, and a suite that popped one would hang rather
+        # than fail.
+        self._confirm_close = confirm_close if confirm_close is not None else ask_before_closing
         self.worker: PostingWorker | None = None
         self.worker_events: "queue.Queue" = queue.Queue()
         self.group_namer = group_namer if group_namer is not None else LiveGroupNamer()
@@ -384,11 +390,67 @@ class App(QMainWindow):
             if publish_view is not None:
                 publish_view.refresh_schedules()
 
+    def unfinished_work(self) -> str | None:
+        """What closing the window would stop, phrased for a person.
+
+        None when nothing is waiting, which is the common case and must not
+        cost the user a dialog.
+        """
+        batches = self.task_repo.unfinished_count()
+        repeats = sum(1 for s in self.schedule_repo.list() if s.state == SCHEDULE_ACTIVE)
+        if not batches and not repeats:
+            return None
+
+        parts = []
+        if batches:
+            parts.append(f"{batches} batch{'es' if batches != 1 else ''} still to go out")
+        if repeats:
+            parts.append(f"{repeats} repeating post{'s' if repeats != 1 else ''}")
+        return " and ".join(parts)
+
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt's name
+        """Warn before closing, because closing is what stops the posting.
+
+        The worker is this window's thread: closing stopped it silently, so a
+        daily repeat set up and then closed away simply never ran again, with
+        nothing on screen to say so. Only asked when something is actually
+        waiting -- an empty queue closes without a word.
+        """
         if self.worker is not None:
+            waiting = self.unfinished_work()
+            if waiting is not None and not self._confirm_close(self, waiting):
+                event.ignore()
+                return
             self.worker.stop()
         self.db.close()
         super().closeEvent(event)
+
+
+def ask_before_closing(parent, waiting: str) -> bool:
+    """The one dialog the app raises of its own accord, and why it is allowed.
+
+    Status never gets a dialog -- that rule stands, and it exists so the app
+    cannot interrupt someone working in another window. This cannot: it only
+    appears because the user just clicked the close button on this window, so
+    the app already has focus and the user is looking straight at it. Same
+    reasoning as the media file picker in Compose.
+    """
+    box = QMessageBox(parent)
+    box.setIcon(QMessageBox.Warning)
+    box.setWindowTitle("Posting stops when this closes")
+    box.setText("Nothing is posted while the app is shut.")
+    box.setInformativeText(
+        f"You have {waiting}. None of it will go out until you open the app "
+        "again — the scheduler runs in this window, not in the background."
+    )
+    stay = box.addButton("Leave it open", QMessageBox.RejectRole)
+    go = box.addButton("Close anyway", QMessageBox.AcceptRole)
+    box.setDefaultButton(stay)
+    box.exec()
+    # Positively "they chose to close", not "they did not choose to stay":
+    # Escape and the title-bar X both leave clickedButton() at the reject
+    # button or None, and either way the window should stay open.
+    return box.clickedButton() is go
 
 
 def run() -> int:

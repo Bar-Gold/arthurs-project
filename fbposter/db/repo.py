@@ -96,8 +96,19 @@ class GroupRepo:
         if ref is None:
             raise InvalidGroupURL(f"Not a Facebook group URL: {raw!r}")
 
-        if self.get_by_identifier(ref.identifier) is not None:
-            raise DuplicateGroup(f"Group {ref.identifier} is already in the list.")
+        existing = self.get_by_identifier(ref.identifier)
+        if existing is not None:
+            if not existing.archived:
+                raise DuplicateGroup(f"Group {ref.identifier} is already in the list.")
+            # Removing a group archives it, so the row is still here holding
+            # every post ever made to it. Pasting the URL again is how the user
+            # undoes a removal, and it has to bring the history back with it --
+            # returning a fresh empty group would be the repeated-text guard
+            # going blank, which is the thing archiving exists to prevent.
+            self.db.write("UPDATE groups SET archived = 0 WHERE id = ?", (existing.id,))
+            restored = self.get(existing.id)
+            assert restored is not None
+            return restored
 
         default_cooldown = SettingsRepo(self.db).get_int("default_cooldown_hours", 8)
         try:
@@ -120,7 +131,33 @@ class GroupRepo:
         return stored
 
     def remove(self, group_id: int) -> None:
-        self.db.write("DELETE FROM groups WHERE id = ?", (group_id,))
+        """Take a group out of the list without destroying what went to it.
+
+        This was a DELETE, and `task_targets.group_id` is ON DELETE CASCADE --
+        so removing a group took every post ever made to it along with it, and
+        that is exactly the window `recent_bodies` reads for
+        `guards.check_repeat_text`. Remove a group and add it back (to correct
+        a name, say) and the guard went blank: the advert that group had
+        already been sent could go to it again, which is the ban vector this
+        whole app is built around. Two clicks in the UI, no warning, nothing
+        on screen to show it had happened.
+
+        Archiving hides the row and keeps the history. `list()` already
+        excludes archived groups, so the screens need no change; `add_from_url`
+        un-archives, so pasting the URL again is the undo.
+        """
+        self.db.write("UPDATE groups SET archived = 1 WHERE id = ?", (group_id,))
+
+    def active(self, group_id: int) -> "Group | None":
+        """The group, but only if it is still in the user's list.
+
+        `get()` deliberately still finds an archived group, because the queue
+        has to name a group it posted to last week. Anything deciding whether
+        to *post* must ask this instead -- an archived group is one the user
+        removed, and before archiving existed such a group was simply gone.
+        """
+        group = self.get(group_id)
+        return None if group is None or group.archived else group
 
     def set_name(self, group_id: int, name: str) -> None:
         """Store the human-readable name read off the group's page."""
@@ -657,6 +694,17 @@ class TaskRepo:
             return True
         except sqlite3.Error:
             return False
+
+    def unfinished_count(self) -> int:
+        """Batches still due to go out: queued, waiting for a slot, or mid-run.
+
+        Read when the window is closing, because closing it stops the worker.
+        """
+        row = self.db.query_one(
+            "SELECT COUNT(*) AS n FROM tasks WHERE state IN (?, ?)",
+            (TASK_PENDING, TASK_RUNNING),
+        )
+        return int(row["n"]) if row else 0
 
     def unfinished_for_schedule(self, schedule_id: int) -> int:
         """Batches from this schedule that have not gone out yet.

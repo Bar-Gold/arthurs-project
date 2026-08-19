@@ -13,7 +13,13 @@ from datetime import timedelta
 import pytest
 
 from fbposter.db import Database
-from fbposter.db.models import TARGET_DONE, TARGET_PENDING, utcnow
+from fbposter.db.models import (
+    TARGET_DONE,
+    TARGET_PENDING,
+    TASK_DONE,
+    TASK_RUNNING,
+    utcnow,
+)
 from fbposter.db.repo import GroupRepo, SettingsRepo, TaskRepo, TemplateRepo
 from fbposter.db.schema import DEFAULT_SETTINGS, LATEST_VERSION, current_version
 from fbposter.errors import DuplicateGroup, InvalidGroupURL
@@ -395,12 +401,18 @@ class TestTasks:
         tasks.cancel(task.id)
         assert tasks.get(task.id).state == "cancelled"
 
-    def test_deleting_a_group_removes_its_targets(self, db, groups):
+    def test_removing_a_group_keeps_what_was_posted_to_it(self, db, groups):
+        """This used to assert the opposite, and the opposite was dangerous.
+
+        `task_targets.group_id` is ON DELETE CASCADE, so a DELETE here took
+        every post ever made to that group with it -- and that is the window
+        `recent_bodies` reads for the repeated-text guard.
+        """
         group = groups.add_from_url("https://www.facebook.com/groups/one")
         tasks = TaskRepo(db)
         task = tasks.create("body", [(group.id, "body")])
         groups.remove(group.id)
-        assert tasks.targets_for(task.id) == []
+        assert len(tasks.targets_for(task.id)) == 1
 
 
 class TestClaimingAndReleasing:
@@ -534,3 +546,92 @@ class TestThreading:
         assert errors == []
         assert seen == [2]
         assert len(groups.list()) == 2
+
+
+class TestRemovingAGroupIsNotForgettingIt:
+    """Remove and re-add a group -- to correct its name, say -- and the
+    repeated-text guard used to go blank, so the advert that group had already
+    been sent could go to it again. Two clicks in the UI, no warning, and the
+    one protection the app has against a restriction silently off.
+    """
+
+    def posted(self, db, groups, body="Selling a road bike"):
+        group = groups.add_from_url("https://www.facebook.com/groups/one")
+        tasks = TaskRepo(db)
+        task = tasks.create(body, [(group.id, body)])
+        target = tasks.targets_for(task.id)[0]
+        tasks.claim_target(target.id)
+        tasks.mark_target(target.id, TARGET_DONE)
+        return group, body
+
+    def test_the_history_survives_the_removal(self, db, groups):
+        group, body = self.posted(db, groups)
+        groups.remove(group.id)
+        assert groups.recent_bodies(group.id) == [body]
+
+    def test_re_adding_the_same_url_brings_the_history_back(self, db, groups):
+        group, body = self.posted(db, groups)
+        groups.remove(group.id)
+        again = groups.add_from_url("https://www.facebook.com/groups/one")
+        assert again.id == group.id, "a second row would be a second blank history"
+        assert groups.recent_bodies(again.id) == [body]
+
+    def test_a_removed_group_is_off_the_list(self, db, groups):
+        group, _ = self.posted(db, groups)
+        groups.remove(group.id)
+        assert groups.list() == []
+        assert [g.id for g in groups.list(include_archived=True)] == [group.id]
+
+    def test_re_adding_puts_it_back_on_the_list(self, db, groups):
+        group, _ = self.posted(db, groups)
+        groups.remove(group.id)
+        groups.add_from_url("https://www.facebook.com/groups/one")
+        assert [g.id for g in groups.list()] == [group.id]
+
+    def test_a_group_still_on_the_list_cannot_be_added_twice(self, db, groups):
+        groups.add_from_url("https://www.facebook.com/groups/one")
+        with pytest.raises(DuplicateGroup):
+            groups.add_from_url("https://www.facebook.com/groups/one")
+
+    def test_active_refuses_a_removed_group_but_get_still_finds_it(self, db, groups):
+        """The split the worker depends on: the queue has to be able to name a
+        group it posted to last week, but nothing may post to one the user has
+        taken off the list."""
+        group, _ = self.posted(db, groups)
+        groups.remove(group.id)
+        assert groups.active(group.id) is None
+        assert groups.get(group.id) is not None
+        groups.add_from_url("https://www.facebook.com/groups/one")
+        assert groups.active(group.id) is not None
+
+    def test_active_on_a_group_that_never_existed(self, db, groups):
+        assert groups.active(9999) is None
+
+
+class TestCountingWhatIsStillDue:
+    """Read when the window is closing, because closing stops the worker."""
+
+    def test_pending_and_running_batches_count(self, db, groups):
+        group = groups.add_from_url("https://www.facebook.com/groups/one")
+        tasks = TaskRepo(db)
+        assert tasks.unfinished_count() == 0
+        first = tasks.create("a", [(group.id, "a")])
+        assert tasks.unfinished_count() == 1
+        tasks.create("b", [(group.id, "b")])
+        assert tasks.unfinished_count() == 2
+        tasks.mark_task(first.id, TASK_RUNNING)
+        assert tasks.unfinished_count() == 2
+
+    def test_a_finished_batch_does_not(self, db, groups):
+        group = groups.add_from_url("https://www.facebook.com/groups/one")
+        tasks = TaskRepo(db)
+        task = tasks.create("a", [(group.id, "a")])
+        tasks.mark_task(task.id, TASK_DONE)
+        assert tasks.unfinished_count() == 0
+
+    def test_nor_does_a_cancelled_one(self, db, groups):
+        group = groups.add_from_url("https://www.facebook.com/groups/one")
+        tasks = TaskRepo(db)
+        task = tasks.create("a", [(group.id, "a")])
+        tasks.cancel(task.id)
+        assert tasks.unfinished_count() == 0
