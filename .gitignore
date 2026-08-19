@@ -3,8 +3,11 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 
-# Machine-local Claude Code permissions
+# Machine-local Claude Code setup: permissions, and the vendored skill/agent
+# bundles. Tooling, not this project's code.
 .claude/settings.local.json
+.claude/skills/
+.claude/agents/
 
 # Local database and any media staged for posting
 *.db
