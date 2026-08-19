@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 
+from fbposter import clock
 from fbposter.db.models import TARGET_DONE, utcnow
 from fbposter.db.schema import DEFAULT_SETTINGS
 from fbposter.ui import preview as preview_module
@@ -1195,13 +1196,18 @@ class TestAddToQueue:
         view.textbox.insert("1.0", "body")
 
         # start == end is treated as "no restriction", so use a real 1h window
-        # that the current hour cannot be inside.
-        from datetime import datetime
-
-        hour = datetime.now().hour
+        # that the current hour cannot be inside. The hour has to come from
+        # clock.py: the guard judges in Israel time, and a machine set to any
+        # other zone would otherwise have its own hour compared against a
+        # window built for a different one.
+        hour = clock.local_hour(utcnow())
         closed = (hour + 5) % 24
         app.settings_repo.set("posting_window_start_hour", closed)
-        app.settings_repo.set("posting_window_end_hour", (closed + 1) % 24 or 24)
+        # Plain modulo, never "or 24": at 18:00 local the window closes at 24,
+        # which is not an hour sane_hour() will accept, so it fell back to 23 --
+        # meeting start at 23 and reading as "no restriction". The post was let
+        # through and this test failed for one hour a day.
+        app.settings_repo.set("posting_window_end_hour", (closed + 1) % 24)
 
         assert view.add_to_queue() is False
         assert app.task_repo.list_recent() == []
