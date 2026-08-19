@@ -13,7 +13,7 @@ from datetime import timedelta
 import pytest
 
 from fbposter.db import Database
-from fbposter.db.models import TARGET_DONE, utcnow
+from fbposter.db.models import TARGET_DONE, TARGET_PENDING, utcnow
 from fbposter.db.repo import GroupRepo, SettingsRepo, TaskRepo, TemplateRepo
 from fbposter.db.schema import DEFAULT_SETTINGS, LATEST_VERSION, current_version
 from fbposter.errors import DuplicateGroup, InvalidGroupURL
@@ -401,6 +401,86 @@ class TestTasks:
         task = tasks.create("body", [(group.id, "body")])
         groups.remove(group.id)
         assert tasks.targets_for(task.id) == []
+
+
+class TestClaimingAndReleasing:
+    """release_target is the mirror of claim_target and has to be as careful:
+    it exists for the one failure that happens before the browser is touched,
+    and it must not be able to drag anything else back into the queue."""
+
+    def setup_target(self, db, groups):
+        group = groups.add_from_url("https://www.facebook.com/groups/one")
+        tasks = TaskRepo(db)
+        task = tasks.create("body", [(group.id, "a")])
+        return tasks, tasks.targets_for(task.id)[0]
+
+    def test_a_claimed_target_can_be_handed_back(self, db, groups):
+        tasks, target = self.setup_target(db, groups)
+        assert tasks.claim_target(target.id)
+
+        assert tasks.release_target(target.id)
+        back = tasks.targets_for(target.task_id)[0]
+        assert back.state == TARGET_PENDING
+
+    def test_it_is_not_recorded_as_attempted(self, db, groups):
+        """It was not attempted. Nothing was typed and nothing was published."""
+        tasks, target = self.setup_target(db, groups)
+        tasks.claim_target(target.id)
+        tasks.release_target(target.id)
+
+        assert tasks.targets_for(target.task_id)[0].attempted_at is None
+
+    def test_an_unclaimed_target_is_not_touched(self, db, groups):
+        tasks, target = self.setup_target(db, groups)
+        assert tasks.release_target(target.id) is False
+
+    def test_a_finished_target_cannot_be_resurrected(self, db, groups):
+        tasks, target = self.setup_target(db, groups)
+        tasks.claim_target(target.id)
+        tasks.mark_target(target.id, TARGET_DONE, posted=True)
+
+        assert tasks.release_target(target.id) is False
+        assert tasks.targets_for(target.task_id)[0].state == TARGET_DONE
+
+    def test_it_can_be_claimed_again_afterwards(self, db, groups):
+        tasks, target = self.setup_target(db, groups)
+        tasks.claim_target(target.id)
+        tasks.release_target(target.id)
+
+        assert tasks.claim_target(target.id), "the batch could not resume"
+
+
+class TestBatchesUnderWay:
+    """active_batches drives the keep-awake request, and the `before` bound is
+    the difference between a laptop that sleeps overnight and one that does
+    not."""
+
+    def running_batch(self, db, groups, resume_at=None):
+        group = groups.add_from_url("https://www.facebook.com/groups/one")
+        tasks = TaskRepo(db)
+        task = tasks.create("body", [(group.id, "a")])
+        tasks.mark_task(task.id, "running", started=True)
+        if resume_at is not None:
+            tasks.set_resume_at(task.id, resume_at)
+        return tasks
+
+    def test_a_batch_with_nothing_scheduled_counts(self, db, groups):
+        tasks = self.running_batch(db, groups)
+        assert tasks.active_batches(utcnow()) == 1
+
+    def test_a_batch_resuming_soon_counts(self, db, groups):
+        now = utcnow()
+        tasks = self.running_batch(db, groups, now + timedelta(minutes=20))
+        assert tasks.active_batches(now + timedelta(minutes=30)) == 1
+
+    def test_a_batch_deferred_to_the_morning_does_not(self, db, groups):
+        now = utcnow()
+        tasks = self.running_batch(db, groups, now + timedelta(hours=9))
+        assert tasks.active_batches(now + timedelta(minutes=30)) == 0
+
+    def test_without_a_bound_every_running_batch_counts(self, db, groups):
+        tasks = self.running_batch(db, groups, utcnow() + timedelta(hours=9))
+        assert tasks.active_batches() == 1
 
 
 class TestCountsFeedingTheGuards:

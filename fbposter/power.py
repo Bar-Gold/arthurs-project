@@ -1,4 +1,4 @@
-"""Keeping the machine awake while a batch is in flight.
+"""Keeping the machine awake while a batch is in flight -- and knowing when we cannot.
 
 A batch legitimately takes one to three hours, almost all of it spent waiting
 between groups. If Windows suspends halfway through, the remaining groups do
@@ -7,12 +7,21 @@ not go out and the schedule is silently wrong.
 Only *system* sleep is held off, never the display: the user should still get
 their screen turning off, and a lit monitor for three hours would be its own
 kind of interference.
+
+**What `SetThreadExecutionState` cannot do is the more important half.** It
+suppresses the *idle timer* and nothing else. Closing a laptop lid, picking
+Sleep from the Start menu, and shutting down all suspend the machine straight
+through it, mid-batch and all. So on a laptop this API is not the answer --
+the power plan is, and `scripts/setup_always_on.ps1` is what sets it. The job
+left here is to stop an idle machine dozing off mid-batch, and to notice when
+that plan does not apply because the thing is running on battery.
 """
 
 from __future__ import annotations
 
 import ctypes
 import os
+from ctypes import wintypes
 
 # https://learn.microsoft.com/windows/win32/api/winbase/nf-winbase-setthreadexecutionstate
 ES_CONTINUOUS = 0x80000000
@@ -20,6 +29,11 @@ ES_SYSTEM_REQUIRED = 0x00000001
 
 KEEP_AWAKE = ES_CONTINUOUS | ES_SYSTEM_REQUIRED
 RELEASE = ES_CONTINUOUS
+
+# GetSystemPowerStatus.ACLineStatus. 255 is "unknown" and is a real answer:
+# desktops, virtual machines and drivers that decline to say all return it.
+AC_OFFLINE = 0
+AC_ONLINE = 1
 
 
 def _default_setter():
@@ -30,6 +44,47 @@ def _default_setter():
         return ctypes.windll.kernel32.SetThreadExecutionState
     except Exception:
         return None
+
+
+class SYSTEM_POWER_STATUS(ctypes.Structure):
+    """https://learn.microsoft.com/windows/win32/api/winbase/ns-winbase-system_power_status"""
+
+    _fields_ = [
+        ("ACLineStatus", ctypes.c_ubyte),
+        ("BatteryFlag", ctypes.c_ubyte),
+        ("BatteryLifePercent", ctypes.c_ubyte),
+        ("SystemStatusFlag", ctypes.c_ubyte),
+        ("BatteryLifeTime", wintypes.DWORD),
+        ("BatteryFullLifeTime", wintypes.DWORD),
+    ]
+
+
+def read_ac_line_status() -> int | None:
+    """Windows' own answer, or None where the question cannot be asked."""
+    if os.name != "nt":
+        return None
+    try:
+        status = SYSTEM_POWER_STATUS()
+        if not ctypes.windll.kernel32.GetSystemPowerStatus(ctypes.byref(status)):
+            return None
+        return int(status.ACLineStatus)
+    except Exception:
+        return None
+
+
+def on_battery(reader=read_ac_line_status) -> bool | None:
+    """True on battery, False on mains, None when it cannot be established.
+
+    Three states rather than two, and the third one is why this is not a plain
+    bool. Warning someone about a battery they do not have would be worse than
+    saying nothing, so an unknown answer stays unknown and nobody is told.
+    """
+    status = reader()
+    if status == AC_OFFLINE:
+        return True
+    if status == AC_ONLINE:
+        return False
+    return None
 
 
 class SleepBlocker:

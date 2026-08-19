@@ -32,11 +32,14 @@ from fbposter.db.models import (
     TASK_RUNNING,
 )
 from fbposter.db.repo import GroupRepo, SettingsRepo, TaskRepo
-from fbposter.errors import AutomationHalted, PostNotVerified
+from fbposter.errors import AutomationHalted, ConnectionFailed, PostNotVerified
 from fbposter.power import SleepBlocker
 from fbposter.worker import (
+    CONNECTION_GIVE_UP,
+    CONNECTION_RETRY,
     FOLLOW_UP_GIVE_UP,
     FOLLOW_UP_PER_SWEEP,
+    KEEP_AWAKE_HORIZON,
     MISSED_GRACE,
     PostingWorker,
 )
@@ -129,6 +132,10 @@ def add_groups(groups, count=2):
 
 def _explode(*_args, **_kwargs):
     raise RuntimeError("the database fell over")
+
+
+def _raise_connection_failed(*_args, **_kwargs):
+    raise ConnectionFailed("nothing is listening on port 9222")
 
 
 def drain(worker, limit=40):
@@ -600,6 +607,340 @@ class TestSleepInhibition:
         drain(worker)
         worker._sync_power()
         assert not worker.blocker.held
+
+    def test_the_gap_between_groups_still_counts_as_under_way(self, db, repos):
+        """Suspending during the gap strands the rest of the batch just as
+        surely as suspending mid-post, so the gap is not a chance to sleep."""
+        groups, tasks, _ = repos
+        one, two = add_groups(groups)
+        task = tasks.create(BODY, [(one.id, "a"), (two.id, "b")])
+
+        ticker = Clock()
+        worker = make_worker(db, FakePoster(), ticker, gap_seconds=(1500, 1500))
+        worker.run_once()
+        assert tasks.get(task.id).resume_at is not None
+
+        worker._sync_power()
+        assert worker.blocker.held, "machine could sleep during the inter-group gap"
+
+    def test_a_batch_deferred_to_the_morning_lets_the_machine_sleep(self, db, repos):
+        """It stays `running` all night with resume_at set to 08:00. Counting
+        that as work in progress held the machine awake for nine hours of
+        deliberate waiting -- on a laptop, the whole night's battery."""
+        groups, tasks, _ = repos
+        one, two = add_groups(groups)
+        task = tasks.create(BODY, [(one.id, "a"), (two.id, "b")])
+
+        ticker = Clock(clock.parse_local("2026-08-10 22:50"))
+        worker = make_worker(db, FakePoster(), ticker)
+        worker.run_once()   # posts to the first group
+        ticker.advance(minutes=30)
+        worker.run_once()   # window shut: defers to the morning
+
+        stored = tasks.get(task.id)
+        assert stored.state == TASK_RUNNING
+        assert clock.to_local(stored.resume_at).hour == 8
+
+        worker._sync_power()
+        assert not worker.blocker.held, "held awake all night for nothing"
+
+    def test_it_takes_hold_again_when_the_window_reopens(self, db, repos):
+        groups, tasks, _ = repos
+        one, two = add_groups(groups)
+        tasks.create(BODY, [(one.id, "a"), (two.id, "b")])
+
+        ticker = Clock(clock.parse_local("2026-08-10 22:50"))
+        worker = make_worker(db, FakePoster(), ticker)
+        worker.run_once()
+        ticker.advance(minutes=30)
+        worker.run_once()
+        worker._sync_power()
+        assert not worker.blocker.held
+
+        ticker.now = clock.parse_local("2026-08-11 07:45")  # inside the horizon
+        worker._sync_power()
+        assert worker.blocker.held
+
+
+class TestRunningOnBattery:
+    """The keep-awake request only suppresses the idle timer, and the power
+    plan that stops a closed lid suspending the machine is mains-only on
+    purpose. Unplugged, a batch can be cut off with the app none the wiser."""
+
+    def battery_worker(self, db, answer):
+        worker = make_worker(db)
+        worker._on_battery = lambda: answer
+        return worker
+
+    def test_it_says_so_when_a_batch_starts_on_battery(self, db, repos):
+        groups, tasks, _ = repos
+        one, two = add_groups(groups)
+        tasks.create(BODY, [(one.id, "a"), (two.id, "b")])
+
+        worker = self.battery_worker(db, True)
+        worker.run_once()
+        worker._sync_power()
+        assert "power" in kinds(worker)
+
+    def test_it_says_it_once(self, db, repos):
+        groups, tasks, _ = repos
+        one, two = add_groups(groups)
+        tasks.create(BODY, [(one.id, "a"), (two.id, "b")])
+
+        worker = self.battery_worker(db, True)
+        worker.run_once()
+        for _ in range(5):
+            worker._sync_power()
+        assert kinds(worker).count("power") == 1
+
+    def test_nothing_is_said_on_mains(self, db, repos):
+        groups, tasks, _ = repos
+        one, two = add_groups(groups)
+        tasks.create(BODY, [(one.id, "a"), (two.id, "b")])
+
+        worker = self.battery_worker(db, False)
+        worker.run_once()
+        worker._sync_power()
+        assert "power" not in kinds(worker)
+
+    def test_an_unknown_answer_warns_nobody(self, db, repos):
+        """A desktop and a driver that declines to answer both report unknown,
+        and telling someone to plug in a laptop they do not have is worse than
+        saying nothing."""
+        groups, tasks, _ = repos
+        one, two = add_groups(groups)
+        tasks.create(BODY, [(one.id, "a"), (two.id, "b")])
+
+        worker = self.battery_worker(db, None)
+        worker.run_once()
+        worker._sync_power()
+        assert "power" not in kinds(worker)
+
+    def test_the_default_worker_asks_nothing(self, db):
+        """Wired up by the app, inert in the suite -- otherwise the answer
+        would depend on whether the developer's machine was plugged in."""
+        assert make_worker(db)._on_battery() is None
+
+    def test_the_app_wires_the_real_one_up(self):
+        """An inert default is only safe while production overrides it."""
+        import inspect
+
+        from fbposter.qtui import app as qt_app
+
+        source = inspect.getsource(qt_app.App.start_worker)
+        assert "on_battery=power.on_battery" in source
+
+
+class TestChromeGoingAwayIsNotABatchLost:
+    """ConnectionFailed comes out of session.attach(), before a page exists --
+    so nothing was typed and nothing can have been published. It is the one
+    failure it is safe to wait out, and halting on it threw away a whole
+    scheduled batch every time Windows Update restarted the machine."""
+
+    def broken(self, db, group, ticker=None):
+        poster = FakePoster(raises={group.url: ConnectionFailed("port 9222 shut")})
+        return poster, make_worker(db, poster, ticker or Clock())
+
+    def test_the_group_goes_back_in_the_queue(self, db, repos):
+        groups, tasks, _ = repos
+        one, _ = add_groups(groups)
+        task = tasks.create(BODY, [(one.id, BODY)])
+
+        _, worker = self.broken(db, one)
+        worker.run_once()
+
+        target = tasks.targets_for(task.id)[0]
+        assert target.state == TARGET_PENDING, "failed a group it never attempted"
+        assert target.attempted_at is None
+        assert tasks.get(task.id).state != TASK_HALTED
+
+    def test_it_tries_again_later(self, db, repos):
+        groups, tasks, _ = repos
+        one, _ = add_groups(groups)
+        task = tasks.create(BODY, [(one.id, BODY)])
+
+        ticker = Clock()
+        _, worker = self.broken(db, one, ticker)
+        worker.run_once()
+
+        resume = tasks.get(task.id).resume_at
+        assert resume is not None and resume > ticker.now
+
+    def test_the_batch_carries_on_once_chrome_is_back(self, db, repos):
+        groups, tasks, _ = repos
+        one, _ = add_groups(groups)
+        task = tasks.create(BODY, [(one.id, BODY)])
+
+        ticker = Clock()
+        poster, worker = self.broken(db, one, ticker)
+        worker.run_once()
+        assert tasks.targets_for(task.id)[0].state == TARGET_PENDING
+
+        poster.raises = {}
+        ticker.advance(seconds=CONNECTION_RETRY.total_seconds() + 1)
+        drain(worker)
+
+        assert tasks.targets_for(task.id)[0].state == TARGET_DONE
+        assert tasks.get(task.id).state == TASK_DONE
+
+    def test_it_is_announced_once_not_every_five_minutes(self, db, repos):
+        """Repeating the same sentence through an overnight outage is how a
+        real warning stops being read."""
+        groups, tasks, _ = repos
+        one, _ = add_groups(groups)
+        tasks.create(BODY, [(one.id, BODY)])
+
+        ticker = Clock()
+        _, worker = self.broken(db, one, ticker)
+        for _ in range(6):
+            worker.run_once()
+            ticker.advance(seconds=CONNECTION_RETRY.total_seconds() + 1)
+
+        assert kinds(worker).count("deferred") == 1
+
+    def test_it_gives_up_eventually(self, db, repos):
+        """A batch waiting for a browser that is never coming back should not
+        sit in the queue looking alive."""
+        groups, tasks, _ = repos
+        one, _ = add_groups(groups)
+        task = tasks.create(BODY, [(one.id, BODY)])
+
+        ticker = Clock()
+        _, worker = self.broken(db, one, ticker)
+        worker.run_once()
+
+        ticker.advance(seconds=CONNECTION_GIVE_UP.total_seconds() + 60)
+        worker.run_once()
+
+        assert tasks.get(task.id).state == TASK_HALTED
+        assert "Chrome" in tasks.targets_for(task.id)[0].error
+
+    def test_the_patience_starts_over_after_a_good_post(self, db, repos):
+        groups, tasks, _ = repos
+        one, two = add_groups(groups)
+        task = tasks.create(BODY, [(one.id, "a"), (two.id, "b")])
+
+        ticker = Clock()
+        poster, worker = self.broken(db, one, ticker)
+        worker.run_once()                       # first group: Chrome is down
+
+        poster.raises = {}
+        ticker.advance(seconds=CONNECTION_RETRY.total_seconds() + 1)
+        worker.run_once()                       # first group: posted
+
+        # Long past the give-up horizon measured from that first outage.
+        ticker.advance(seconds=CONNECTION_GIVE_UP.total_seconds() + 60)
+        poster.raises = {two.url: ConnectionFailed("gone again")}
+        worker.run_once()
+
+        assert tasks.get(task.id).state != TASK_HALTED, "old outage still counting"
+
+    def test_the_machine_stays_awake_for_the_retry(self, db, repos):
+        """One rule decides this and it is the horizon in _sync_power: the
+        retry is five minutes away, so it counts. Worth pinning, because the
+        obvious reading -- "no browser, nothing to stay awake for" -- would
+        have the machine asleep at the moment Chrome came back."""
+        groups, tasks, _ = repos
+        one, _ = add_groups(groups)
+        tasks.create(BODY, [(one.id, BODY)])
+
+        _, worker = self.broken(db, one)
+        worker.run_once()
+        worker._sync_power()
+        assert worker.blocker.held
+        assert CONNECTION_RETRY < KEEP_AWAKE_HORIZON
+
+
+class TestRecoveryWaitsForChrome:
+    """Recovery runs seconds after a restart -- exactly when Chrome is least
+    likely to be up. "Could not look" must not be recorded as "looked and
+    found nothing"."""
+
+    def interrupted(self, db, repos):
+        groups, tasks, _ = repos
+        (one,) = add_groups(groups, 1)
+        task = tasks.create(BODY, [(one.id, BODY)])
+        target = tasks.targets_for(task.id)[0]
+        tasks.claim_target(target.id)
+        return task, target
+
+    def test_an_uncheckable_target_is_not_condemned(self, db, repos):
+        _, tasks, _ = repos
+        task, target = self.interrupted(db, repos)
+
+        poster = FakePoster()
+        poster.verify = _raise_connection_failed
+        worker = make_worker(db, poster)
+        worker.recover()
+
+        assert tasks.targets_for(task.id)[0].state == TARGET_RUNNING
+        assert tasks.get(task.id).state != TASK_HALTED
+
+    def test_it_comes_round_again(self, db, repos):
+        _, tasks, _ = repos
+        task, _ = self.interrupted(db, repos)
+
+        poster = FakePoster(verify_result=True)
+        poster.verify = _raise_connection_failed
+        ticker = Clock()
+        worker = make_worker(db, poster, ticker)
+        worker.recover()
+        assert worker._recovery_deferred
+
+        # Chrome comes back; the next tick picks the recovery up again.
+        poster.verify = lambda group_url, body: True
+        ticker.advance(seconds=CONNECTION_RETRY.total_seconds() + 1)
+        worker.run_once()
+
+        assert tasks.targets_for(task.id)[0].state == TARGET_DONE
+
+    def test_it_is_announced_once(self, db, repos):
+        self.interrupted(db, repos)
+
+        poster = FakePoster()
+        poster.verify = _raise_connection_failed
+        ticker = Clock()
+        worker = make_worker(db, poster, ticker)
+        for _ in range(4):
+            worker.recover()
+            ticker.advance(seconds=CONNECTION_RETRY.total_seconds() + 1)
+
+        assert kinds(worker).count("error") == 1
+
+    def test_it_does_not_wait_for_ever(self, db, repos):
+        """The task stays `running` while recovery waits, so the machine is
+        held awake for it. Waiting for a browser that is never coming back
+        would keep a laptop awake for ever too."""
+        _, tasks, _ = repos
+        task, _ = self.interrupted(db, repos)
+
+        poster = FakePoster()
+        poster.verify = _raise_connection_failed
+        ticker = Clock()
+        worker = make_worker(db, poster, ticker)
+        worker.recover()
+        assert tasks.targets_for(task.id)[0].state == TARGET_RUNNING
+
+        ticker.advance(seconds=CONNECTION_GIVE_UP.total_seconds() + 60)
+        worker.run_once()
+
+        assert tasks.targets_for(task.id)[0].state == TARGET_FAILED
+        assert tasks.get(task.id).state == TASK_HALTED
+
+    def test_an_ordinary_failure_still_escalates(self, db, repos):
+        """Only "the browser is not there" is patient. Anything else means the
+        check ran and came back unusable, which is the user's problem to look
+        at before the words go out again."""
+        _, tasks, _ = repos
+        task, _ = self.interrupted(db, repos)
+
+        poster = FakePoster()
+        poster.verify = _explode
+        worker = make_worker(db, poster)
+        worker.recover()
+
+        assert tasks.targets_for(task.id)[0].state == TARGET_FAILED
+        assert tasks.get(task.id).state == TASK_HALTED
 
 
 class TestLifecycle:

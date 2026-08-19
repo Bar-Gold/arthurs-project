@@ -6,7 +6,16 @@ than the effect.
 
 from __future__ import annotations
 
-from fbposter.power import ES_CONTINUOUS, ES_SYSTEM_REQUIRED, KEEP_AWAKE, SleepBlocker
+from fbposter.power import (
+    AC_OFFLINE,
+    AC_ONLINE,
+    ES_CONTINUOUS,
+    ES_SYSTEM_REQUIRED,
+    KEEP_AWAKE,
+    SleepBlocker,
+    on_battery,
+    read_ac_line_status,
+)
 
 
 class Recorder:
@@ -100,3 +109,27 @@ class TestUnavailablePlatform:
         blocker.acquire()
         assert not blocker.held
         blocker.release()
+
+
+class TestOnBattery:
+    """Three answers, not two. The third is why this is not a plain bool."""
+
+    def test_mains(self):
+        assert on_battery(reader=lambda: AC_ONLINE) is False
+
+    def test_battery(self):
+        assert on_battery(reader=lambda: AC_OFFLINE) is True
+
+    def test_unknown_is_not_a_battery(self):
+        """255 is what a desktop, a virtual machine and a driver that declines
+        to answer all report. Telling that user to plug in a laptop they do not
+        have would be worse than saying nothing."""
+        assert on_battery(reader=lambda: 255) is None
+
+    def test_no_answer_at_all(self):
+        assert on_battery(reader=lambda: None) is None
+
+    def test_the_real_reader_never_raises(self):
+        """It is read on the worker thread mid-batch; an exception there would
+        take the posting with it."""
+        assert read_ac_line_status() in (None, AC_ONLINE, AC_OFFLINE, 255)

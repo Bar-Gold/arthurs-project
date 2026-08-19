@@ -331,11 +331,26 @@ class TaskRepo:
         )
         return [Task.from_row(row) for row in rows]
 
-    def active_batches(self) -> int:
-        """Batches under way. Drives the keep-awake request."""
-        row = self.db.query_one(
-            "SELECT COUNT(*) AS n FROM tasks WHERE state = ?", (TASK_RUNNING,)
-        )
+    def active_batches(self, before: datetime | None = None) -> int:
+        """Batches under way. Drives the keep-awake request.
+
+        `before` narrows it to the ones that will actually do something by
+        then, and that bound is the whole point. A batch that ran out of
+        posting window at 23:00 stays `running` with `resume_at` set to 08:00
+        the next morning -- counting it held the machine awake all night for
+        work nine hours away. On a desktop that is a wasted night; on a laptop
+        it is the battery.
+        """
+        if before is None:
+            row = self.db.query_one(
+                "SELECT COUNT(*) AS n FROM tasks WHERE state = ?", (TASK_RUNNING,)
+            )
+        else:
+            row = self.db.query_one(
+                "SELECT COUNT(*) AS n FROM tasks WHERE state = ? "
+                "  AND (resume_at IS NULL OR resume_at <= ?)",
+                (TASK_RUNNING, to_iso(before)),
+            )
         return int(row["n"]) if row else 0
 
     def next_pending_target(self, task_id: int) -> TaskTarget | None:
@@ -365,6 +380,28 @@ class TaskRepo:
                 "UPDATE task_targets SET state = ?, attempted_at = ? "
                 "WHERE id = ? AND state = ?",
                 (TARGET_RUNNING, to_iso(utcnow()), target_id, TARGET_PENDING),
+            )
+            return cursor.rowcount == 1
+
+    def release_target(self, target_id: int) -> bool:
+        """Hand a claimed target back, unattempted.
+
+        The mirror of `claim_target`, and conditional for the same reason:
+        only a worker holding the claim may give it up, so this can never drag
+        a finished target back into the queue.
+
+        It exists for the one failure that happens before the browser is
+        touched at all -- Chrome not reachable over CDP. Nothing was typed and
+        nothing was published, so failing the group would be recording a
+        defeat that never took place; `attempted_at` is cleared for the same
+        reason. Anything that happens *after* a page exists keeps the old
+        behaviour and halts, because by then it might have posted.
+        """
+        with self.db.transaction() as connection:
+            cursor = connection.execute(
+                "UPDATE task_targets SET state = ?, attempted_at = NULL "
+                "WHERE id = ? AND state = ?",
+                (TARGET_PENDING, target_id, TARGET_RUNNING),
             )
             return cursor.rowcount == 1
 

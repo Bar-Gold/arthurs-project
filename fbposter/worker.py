@@ -66,6 +66,21 @@ MISSED_GRACE = timedelta(hours=2)
 
 TICK_SECONDS = 5.0
 
+# How far ahead a batch has to be doing something for the machine to be held
+# awake for it. Comfortably past the longest inter-group gap (25 minutes), so
+# every real gap is covered -- but a batch deferred to tomorrow morning because
+# the window closed is not, and the machine is free to sleep through the night.
+KEEP_AWAKE_HORIZON = timedelta(minutes=30)
+
+# Chrome is not reachable over CDP. Nothing has been typed when this happens,
+# so unlike every other failure it is safe to wait and try again: after a
+# Windows Update restart, a Chrome crash, or simply the first minute after
+# logging in, the browser is legitimately absent for a while. Giving up
+# eventually, rather than waiting for ever, keeps a dead batch from sitting in
+# the queue looking alive.
+CONNECTION_RETRY = timedelta(minutes=5)
+CONNECTION_GIVE_UP = timedelta(hours=2)
+
 # How often the finished-batch history is pruned. Housekeeping, not a deadline.
 PRUNE_EVERY = timedelta(days=1)
 
@@ -173,6 +188,7 @@ class PostingWorker:
         sleep: Callable[[float], None] = time.sleep,
         humanizer: Humanizer | None = None,
         blocker: SleepBlocker | None = None,
+        on_battery: Callable[[], bool | None] = lambda: None,
         tick_seconds: float = TICK_SECONDS,
     ) -> None:
         self.db = db
@@ -186,12 +202,27 @@ class PostingWorker:
         self._sleep = sleep
         self.human = humanizer or Humanizer()
         self.blocker = blocker or SleepBlocker()
+        # Inert by default and wired up by the app, like every other seam here.
+        # A default that read the real battery would make the suite's answer
+        # depend on whether the developer's machine happened to be plugged in.
+        self._on_battery = on_battery
         self.tick_seconds = tick_seconds
 
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._paused = threading.Event()
         self._busy = False
+        self._battery_warned = False
+        # When Chrome first went missing, per batch. In memory rather than in
+        # the database on purpose: a restart is itself a fresh chance for the
+        # browser to be there, so the patience starting over is the right
+        # behaviour rather than a lost detail.
+        self._connection_trouble: dict[int, Any] = {}
+        self._connection_announced: set[int] = set()
+        self._recovery_deferred = False
+        self._recovery_announced = False
+        self._next_recovery_at = None
+        self._recovery_trouble = None
 
     # -- lifecycle ---------------------------------------------------------
     @property
@@ -224,6 +255,11 @@ class PostingWorker:
         if thread is not None and thread.is_alive():
             thread.join(timeout=timeout)
         self._thread = None
+        # Belt and braces. The execution state is per *thread*, so this call --
+        # made from the UI thread -- cannot clear the worker thread's request;
+        # what clears it is `_loop` releasing on its way out, and Windows
+        # dropping it when the thread ends. This keeps the object's own idea of
+        # itself honest for the case where the join above timed out.
         self.blocker.release()
 
     def pause(self) -> None:
@@ -264,17 +300,41 @@ class PostingWorker:
         """Hold off sleep only while a batch is genuinely under way.
 
         The gap between groups counts: suspending during it would strand the
-        rest of the batch just as surely as suspending mid-post.
+        rest of the batch just as surely as suspending mid-post. A batch
+        deferred to tomorrow morning does not -- holding a machine awake for
+        nine hours of deliberate waiting is a cost with nothing bought by it.
         """
-        if self.tasks.active_batches() > 0:
+        if self.tasks.active_batches(self._now() + KEEP_AWAKE_HORIZON) > 0:
             self.blocker.acquire()
+            self._warn_if_on_battery()
         else:
             self.blocker.release()
+            self._battery_warned = False
+
+    def _warn_if_on_battery(self) -> None:
+        """Say so once per batch, because the keep-awake request is not enough.
+
+        SetThreadExecutionState suppresses the idle timer and nothing else, and
+        the power plan that stops a closed lid suspending the machine is set
+        for mains only -- deliberately, because nobody wants a laptop that
+        refuses to sleep in a bag. Unplugged, the batch can therefore be cut
+        off with the app none the wiser, and the only useful thing to do is say
+        so while it can still be fixed by reaching for the charger.
+        """
+        if self._battery_warned or self._on_battery() is not True:
+            return
+        self._battery_warned = True
+        self.emit(
+            "power",
+            "Posting on battery — Windows can still suspend the machine and cut "
+            "the batch short. Plug in to be sure it finishes.",
+        )
 
     # -- one iteration -----------------------------------------------------
     def run_once(self) -> bool:
         """Advance the queue by at most one step. Returns True if it did."""
         now = self._now()
+        self._retry_recovery(now)
         self._maybe_prune(now)
         self._follow_up_pending(now)
         if self._materialise_schedules(now):
@@ -324,7 +384,24 @@ class PostingWorker:
             return False
         return now - task.scheduled_for > MISSED_GRACE
 
+    def _retry_recovery(self, now) -> None:
+        """Another go at a recovery Chrome was not up for.
+
+        Only ever runs when a previous attempt deferred, so the ordinary path
+        -- recovery once, at start-up -- is untouched.
+        """
+        if not self._recovery_deferred:
+            return
+        if self._next_recovery_at is not None and now < self._next_recovery_at:
+            return
+        self._recovery_deferred = False
+        try:
+            self.recover()
+        except Exception as exc:
+            self.emit("error", f"Recovery failed: {exc}")
+
     def _finish(self, task: Task) -> None:
+        self._forget_connection_trouble(task.id)
         self.tasks.set_resume_at(task.id, None)
         self.tasks.mark_task(task.id, TASK_DONE, finished=True)
         self.emit("batch_done", "Batch finished.", task.id)
@@ -674,6 +751,20 @@ class PostingWorker:
 
         try:
             outcome = self.poster.post(request)
+        except ConnectionFailed as exc:
+            # The one failure that is safe to wait out. It is raised by
+            # session.attach() before a page even exists, so nothing was typed
+            # and nothing can have been published -- the reasoning that makes
+            # every other failure terminal does not apply.
+            #
+            # Halting here threw away a whole scheduled batch whenever Chrome
+            # happened to be down: after a Windows Update restart, after a
+            # browser crash, or in the minute between the machine logging in
+            # and Chrome finishing its start-up. On an unattended machine that
+            # is the difference between a batch that goes out late and a batch
+            # that never goes out at all.
+            self._defer_for_connection(task, target, exc)
+            return True
         except AutomationHalted as exc:
             self._halt(task, target, str(exc))
             return True
@@ -694,6 +785,10 @@ class PostingWorker:
             raise
         finally:
             self._busy = False
+
+        # Chrome answered, so whatever trouble it was having is behind us and
+        # the next outage gets the full two hours of patience again.
+        self._forget_connection_trouble(task.id)
 
         if outcome.pending:
             # Treated as posted for every safety purpose: the cooldown starts
@@ -751,8 +846,58 @@ class PostingWorker:
         )
         return True
 
+    def _defer_for_connection(
+        self, task: Task, target: TaskTarget, exc: ConnectionFailed
+    ) -> None:
+        """Put the group back and wait for Chrome, rather than failing it.
+
+        The claim is handed back first, so the target is `pending` again and
+        the batch picks up exactly where it was. It is not marked attempted:
+        it was not attempted.
+        """
+        self.tasks.release_target(target.id)
+        first = self._connection_trouble.setdefault(task.id, self._now())
+
+        if self._now() - first > CONNECTION_GIVE_UP:
+            self._forget_connection_trouble(task.id)
+            hours = int(CONNECTION_GIVE_UP.total_seconds() // 3600)
+            self._halt(
+                task,
+                target,
+                f"Chrome has not been reachable for {hours} hours, so this batch "
+                "stopped waiting for it. Nothing was posted. Start Chrome with "
+                "'main.py start' and queue the batch again.",
+            )
+            return
+
+        # No blocker.release() here on purpose. _sync_power runs after every
+        # tick and decides on one rule -- is this batch going to do something
+        # within KEEP_AWAKE_HORIZON -- and a five-minute retry is. Releasing
+        # here would be undone a moment later, which is worse than not doing
+        # it: it reads like a decision when nothing decides it.
+        self.tasks.set_resume_at(task.id, self._now() + CONNECTION_RETRY)
+
+        # Announced once, not every five minutes. Repeating the same sentence a
+        # hundred times through an overnight outage is how a real warning stops
+        # being read.
+        if task.id not in self._connection_announced:
+            self._connection_announced.add(task.id)
+            self.emit(
+                "deferred",
+                f"Chrome is not reachable ({exc}). Nothing was posted; the batch "
+                "waits and tries again shortly.",
+                task.id,
+            )
+
+    def _forget_connection_trouble(self, task_id: int) -> None:
+        """Both halves, always together -- a stale 'already announced' would
+        silence the next outage on this batch entirely."""
+        self._connection_trouble.pop(task_id, None)
+        self._connection_announced.discard(task_id)
+
     def _halt(self, task: Task, target: TaskTarget, message: str) -> None:
         """Stop the whole batch. Never retry, never continue to the next group."""
+        self._forget_connection_trouble(task.id)
         self.tasks.mark_target(target.id, TARGET_FAILED, error=message)
         self.tasks.set_resume_at(task.id, None)
         self.tasks.mark_task(task.id, TASK_HALTED, error=message, finished=True)
@@ -760,6 +905,50 @@ class PostingWorker:
         self.emit("halted", message, task.id, target.id)
 
     # -- crash recovery ----------------------------------------------------
+    def _recovery_waiting_too_long(self) -> bool:
+        if self._recovery_trouble is None:
+            self._recovery_trouble = self._now()
+        return self._now() - self._recovery_trouble > CONNECTION_GIVE_UP
+
+    def _defer_recovery(self, exc: ConnectionFailed) -> None:
+        self._recovery_deferred = True
+        self._next_recovery_at = self._now() + CONNECTION_RETRY
+        if self._recovery_announced:
+            return
+        self._recovery_announced = True
+        self.emit(
+            "error",
+            "A batch was interrupted and cannot be checked until Chrome is up "
+            f"({exc}). Nothing has been given up on.",
+        )
+
+    def _escalate_unchecked(self, target: TaskTarget, exc: Exception) -> None:
+        """Hand an unresolvable interruption to the user.
+
+        The batch stops rather than guessing. "It probably did not post" is the
+        guess that produces a duplicate, and a duplicate is the worst thing
+        this app can do.
+        """
+        self.tasks.mark_target(
+            target.id,
+            TARGET_FAILED,
+            error=(
+                "Interrupted mid-post and could not be checked "
+                f"({exc}). Look at the group before queueing this again — "
+                "posting it twice is worse than not posting it."
+            ),
+        )
+        self.tasks.mark_task(
+            target.task_id, TASK_HALTED, error="Interrupted; needs checking.",
+            finished=True,
+        )
+        self.emit(
+            "halted",
+            "A batch was interrupted and needs checking.",
+            target.task_id,
+            target.id,
+        )
+
     def recover(self) -> None:
         """Resolve targets left mid-flight by a crash.
 
@@ -777,21 +966,27 @@ class PostingWorker:
 
             try:
                 already_posted = self.poster.verify(group.url, target.body)
+            except ConnectionFailed as exc:
+                # "Could not look", not "looked and found nothing". Condemning
+                # a target here would sentence it on the strength of Chrome
+                # being down -- which is precisely the state of a machine in
+                # the first seconds after a restart, when this runs. It stays
+                # `running` and recovery comes round again; leaving it claimed
+                # is the cautious direction, because nothing else will touch it
+                # while it sits there.
+                #
+                # Bounded, though. The task stays `running` while it waits, so
+                # the machine is held awake for it -- waiting for ever on a
+                # browser that is never coming back would keep a laptop awake
+                # for ever too. Past the horizon it escalates exactly as it
+                # always did.
+                if self._recovery_waiting_too_long():
+                    self._escalate_unchecked(target, exc)
+                    continue
+                self._defer_recovery(exc)
+                return
             except Exception as exc:
-                self.tasks.mark_target(
-                    target.id,
-                    TARGET_FAILED,
-                    error=(
-                        "Interrupted mid-post and could not be checked "
-                        f"({exc}). Look at the group before queueing this again — "
-                        "posting it twice is worse than not posting it."
-                    ),
-                )
-                self.tasks.mark_task(
-                    target.task_id, TASK_HALTED, error="Interrupted; needs checking.",
-                    finished=True,
-                )
-                self.emit("halted", "A batch was interrupted and needs checking.", target.task_id, target.id)
+                self._escalate_unchecked(target, exc)
                 continue
 
             if already_posted:
@@ -812,3 +1007,9 @@ class PostingWorker:
                     target.task_id,
                     target.id,
                 )
+
+        # A pass that got to the end resolved everything it found, so the next
+        # interruption starts with a clean slate -- full patience, and a warning
+        # that will be spoken again rather than swallowed as a repeat.
+        self._recovery_trouble = None
+        self._recovery_announced = False
