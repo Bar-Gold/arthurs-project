@@ -28,7 +28,7 @@ from fbposter import chrome
 from fbposter.errors import FBPosterError
 
 from .. import theme
-from ..widgets import card
+from ..widgets import card, clear
 
 
 class GroupsView(QWidget):
@@ -41,6 +41,8 @@ class GroupsView(QWidget):
     def __init__(self, app) -> None:
         super().__init__()
         self.app = app
+        # What the rows currently show; None means nothing has been drawn yet.
+        self._snapshot_shown = None
         self._naming = False
         self._checkboxes: dict[int, QCheckBox] = {}
 
@@ -69,8 +71,9 @@ class GroupsView(QWidget):
         self.url_entry.setAccessibleName("Facebook group URL")
         self.url_entry.returnPressed.connect(self.add_group)
         entry.addWidget(self.url_entry, 1)
+        # Not #Primary -- see the note on the Compose attach button. The accent
+        # here belongs to "Next: when to send".
         add = QPushButton("Add group")
-        add.setObjectName("Primary")
         add.clicked.connect(self.add_group)
         entry.addWidget(add)
         outer.addLayout(entry)
@@ -84,9 +87,11 @@ class GroupsView(QWidget):
         select_all = QPushButton("Select all")
         select_all.clicked.connect(lambda: self.set_all(True))
         tools.addWidget(select_all)
-        clear = QPushButton("Clear")
-        clear.clicked.connect(lambda: self.set_all(False))
-        tools.addWidget(clear)
+        # Not named `clear`: that shadows widgets.clear, the helper every
+        # rebuild in this file depends on.
+        clear_button = QPushButton("Clear")
+        clear_button.clicked.connect(lambda: self.set_all(False))
+        tools.addWidget(clear_button)
         outer.addLayout(tools)
 
         self.area = QScrollArea()
@@ -182,13 +187,20 @@ class GroupsView(QWidget):
         if self._naming:
             return
         missing = self.app.group_repo.missing_names()
-        if not missing or chrome.probe() is None:
+        if not missing:
             return
 
         self._naming = True
         urls = [group.url for group in missing]
 
         def work():
+            # The probe belongs on this thread, not the one drawing the window.
+            # It is a synchronous HTTP call to the debug port -- 14ms when
+            # Chrome answers, and up to PROBE_TIMEOUT_S (a full second) of a
+            # frozen window when something holds the port without replying.
+            # This screen ran it on every single show.
+            if chrome.probe() is None:
+                return {}
             return self.app.group_namer.names_for(urls)
 
         def done(found):
@@ -208,15 +220,27 @@ class GroupsView(QWidget):
         self.app.run_in_background(work, done, failed)
 
     # -- rendering ---------------------------------------------------------
-    def refresh(self) -> None:
-        while self.rows.count():
-            item = self.rows.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.deleteLater()
-        self._checkboxes = {}
+    def _snapshot(self, groups) -> tuple:
+        """Everything a row draws. Rebuilding twelve of them cost 30ms on
+        every visit to this screen, to redraw the identical list."""
+        selected = self.app.selected_groups
+        return tuple(
+            (g.id, g.display_name, g.cooldown_hours, g.id in selected)
+            for g in groups
+        )
 
+    def refresh(self, force: bool = False) -> None:
         groups = self.app.group_repo.list()
+        snapshot = self._snapshot(groups)
+        if not force and snapshot == self._snapshot_shown and self._checkboxes:
+            # The count still gets restated: it is one setText, and it also
+            # reaches Compose, which needs to hear about the selection.
+            self.refresh_count()
+            return
+        self._snapshot_shown = snapshot
+
+        clear(self.rows)
+        self._checkboxes = {}
         if not groups:
             note = QLabel("No groups yet. Paste a group URL above.")
             note.setObjectName("Muted")

@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .. import config
+from .. import config, power
 from ..automation.groupinfo import LiveGroupNamer
 from ..db import Database
 from ..db.repo import GroupRepo, ScheduleRepo, SettingsRepo, TaskRepo, TemplateRepo
@@ -204,8 +204,11 @@ class App(QMainWindow):
         inner.setContentsMargins(theme.PAD_S, theme.PAD_S, theme.PAD_S, theme.PAD_S)
         self.pill_label = QLabel()
         inner.addWidget(self.pill_label)
+        # Deliberately not #Primary. Exactly one accent-filled button belongs on
+        # screen at a time -- the next step in the flow -- and this is a utility
+        # that sits on every screen. Filled, it outranked the step it was
+        # sitting next to on all four.
         self.check_button = QPushButton("Check connection")
-        self.check_button.setObjectName("Primary")
         self.check_button.clicked.connect(self.check_connection)
         inner.addWidget(self.check_button)
         column.addWidget(box)
@@ -320,7 +323,9 @@ class App(QMainWindow):
         """Start the one posting worker. Never called from __init__."""
         if self.worker is not None:
             return
-        self.worker = PostingWorker(self.db, events=self.worker_events)
+        self.worker = PostingWorker(
+            self.db, events=self.worker_events, on_battery=power.on_battery
+        )
         self.worker.start()
         self._refresh_worker_row()
 
@@ -364,6 +369,9 @@ class App(QMainWindow):
             # will. An "info" toast reads as "that went fine".
             "pending": "warning",
             "declined": "warning",
+            # Nothing has gone wrong yet, but it is about to unless the user
+            # does something -- which is exactly what a warning is for.
+            "power": "warning",
         }.get(event.kind, "info")
         self.toast(event.message, level)
         queue_view = self.views.get("queue")

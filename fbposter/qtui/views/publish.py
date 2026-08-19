@@ -46,7 +46,7 @@ from fbposter.text import strip_invisible
 from fbposter.db.models import SCHEDULE_ACTIVE, SCHEDULE_PAUSED, utcnow
 
 from .. import theme
-from ..widgets import card, row
+from ..widgets import card, clear, row
 
 RIGHT_COLUMN_WIDTH = 340
 WORDING_MIN_HEIGHT = 80
@@ -119,6 +119,8 @@ class PublishView(QWidget):
     def __init__(self, app) -> None:
         super().__init__()
         self.app = app
+        # The recipient rows as drawn; None means nothing has been drawn yet.
+        self._recipients_shown = None
         self.mode = NOW
         self._wordings: list[QTextEdit] = []
         self._time_rows: list[QTimeEdit] = []
@@ -261,15 +263,34 @@ class PublishView(QWidget):
         self.filler = QWidget()
         column.addWidget(self.filler, 1)
 
-    def refresh_recipients(self) -> None:
-        while self.recipient_box.count():
-            item = self.recipient_box.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.deleteLater()
+    def _recipient_plan(self, selected) -> list[tuple[str, bool]]:
+        """The rows as (name, reworded) -- what to draw, not the drawing."""
+        plan = []
+        for group_id in selected:
+            group = self.app.group_repo.get(group_id)
+            if group is None:
+                continue
+            plan.append((group.display_name, self.compose.has_rewrite(group_id)))
+        return plan
 
+    def refresh_recipients(self) -> None:
         selected = self.selected_group_ids()
         body = self.base_body()
+
+        # The snippet is a setText and always runs; only the rows are guarded.
+        snippet = " ".join(body.split())[:SNIPPET_CHARS]
+        self.preview_note.setText(
+            f"“{snippet}…”" if snippet else "Nothing written yet — start on Compose."
+        )
+
+        # None never equals a list, so the first call always draws -- including
+        # the empty case, which has its own "no groups picked" note.
+        plan = self._recipient_plan(selected)
+        if plan == self._recipients_shown:
+            return
+        self._recipients_shown = plan
+
+        clear(self.recipient_box)
         if not selected:
             note = QLabel("No groups picked — choose them on the Groups screen.")
             note.setObjectName("Muted")
@@ -288,11 +309,6 @@ class PublishView(QWidget):
                 tag.setObjectName("Muted")
                 line.addWidget(tag)
             self.recipient_box.addWidget(holder)
-
-        snippet = " ".join(body.split())[:SNIPPET_CHARS]
-        self.preview_note.setText(
-            f"“{snippet}…”" if snippet else "Nothing written yet — start on Compose."
-        )
 
     # -- right column: when ------------------------------------------------
     def _build_right(self, parent: QHBoxLayout) -> None:
@@ -336,8 +352,11 @@ class PublishView(QWidget):
         picker_layout.addWidget(self.slot)
         column.addWidget(picker)
 
-        column.addStretch(1)
-
+        # The summary and the button that acts on it sit directly under the
+        # card they describe. They used to be anchored to the bottom of the
+        # window with the stretch above them, which in Now and Once modes --
+        # where the panel is one line -- left a void most of the screen tall
+        # between the choice and the button that carries it out.
         self.summary = QLabel("")
         self.summary.setObjectName("Muted")
         self.summary.setWordWrap(True)
@@ -351,6 +370,10 @@ class PublishView(QWidget):
         back = QPushButton("← Back to groups")
         back.clicked.connect(lambda: self.app.show_view("groups"))
         column.addWidget(back)
+
+        # The slack goes below everything, so the column reads top-down and
+        # grows downwards when Repeat opens.
+        column.addStretch(1)
 
     def _build_now_panel(self) -> QWidget:
         panel = row()
@@ -712,12 +735,7 @@ class PublishView(QWidget):
         self.refresh_schedules()
 
     def refresh_schedules(self) -> None:
-        while self.schedule_box.count():
-            item = self.schedule_box.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.deleteLater()
-
+        clear(self.schedule_box)
         schedules = self.app.schedule_repo.list()
         if not schedules:
             note = QLabel("Nothing repeating yet.")

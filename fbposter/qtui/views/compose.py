@@ -40,7 +40,7 @@ from fbposter.db.models import utcnow
 from fbposter.guards import PlannedTarget, evaluate_batch
 
 from .. import theme
-from ..widgets import card, row
+from ..widgets import card, clear, row
 
 IMAGE_FILTER = "Images (*.jpg *.jpeg *.png *.gif *.webp);;All files (*.*)"
 RIGHT_COLUMN_WIDTH = 330
@@ -87,6 +87,8 @@ class ComposeView(QWidget):
         self._base_body = ""
         self._bodies: dict[int, str] = {}
         self._editing: int | None = None  # None == the "All groups" tab
+        # The strip as currently drawn, so an unchanged one is not rebuilt.
+        self._tabs_shown: list[tuple[int | None, str]] | None = None
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -186,17 +188,29 @@ class ComposeView(QWidget):
         holder_layout.addLayout(footer)
         column.addWidget(holder, 1)
 
+        # The attach button and the file list are one unit, so Preview can
+        # stand them down together. In Preview the pictures are *in* the post
+        # already -- listing them again underneath is a second telling, and it
+        # was taking the height that stopped the post fitting on screen.
+        self.attach_holder = row()
+        attach_column = QVBoxLayout(self.attach_holder)
+        attach_column.setContentsMargins(0, 0, 0, 0)
+        attach_column.setSpacing(theme.PAD_XS)
+
         attach = QHBoxLayout()
+        # Not #Primary: the accent on this screen belongs to "Next: pick
+        # groups", and two filled buttons in one column read as two main
+        # actions.
         button = QPushButton("Attach images")
-        button.setObjectName("Primary")
         button.clicked.connect(self._pick_files)
         attach.addWidget(button)
         attach.addStretch(1)
-        column.addLayout(attach)
+        attach_column.addLayout(attach)
 
         self.attachment_box = QVBoxLayout()
         self.attachment_box.setSpacing(theme.PAD_XS)
-        column.addLayout(self.attachment_box)
+        attach_column.addLayout(self.attachment_box)
+        column.addWidget(self.attach_holder)
         self._render_attachments()
         self.refresh_tabs()
 
@@ -208,6 +222,10 @@ class ComposeView(QWidget):
         holder.setFixedWidth(RIGHT_COLUMN_WIDTH)
         holder.setLayout(column)
         parent.addWidget(holder)
+        # Hidden in Preview mode, which is why it is kept: templates and the
+        # recipient summary are writing tools, and holding a third of the
+        # window for them left the preview itself in half a screen.
+        self.sidebar_holder = holder
 
         templates = card()
         inner = QVBoxLayout(templates)
@@ -338,18 +356,13 @@ class ComposeView(QWidget):
         """Chosen on the Groups screen; this view only reads them."""
         return self.app.selected_group_ids()
 
-    def refresh_tabs(self) -> None:
-        while self.tab_bar.count():
-            item = self.tab_bar.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.deleteLater()
+    def _tab_plan(self) -> list[tuple[int | None, str]]:
+        """The strip as (group id, label) pairs -- what to draw, not drawing.
 
-        if self._editing is not None and self._editing not in self.selected_group_ids():
-            self._editing = None
-            self._show(self._base_body)
-
-        self._add_tab(None, ALL_GROUPS_TAB)
+        Which tab is *filled* is deliberately not in here; see
+        `_mark_active_tab`, which is why it cannot be.
+        """
+        plan: list[tuple[int | None, str]] = [(None, ALL_GROUPS_TAB)]
         for group_id in self.selected_group_ids():
             group = self.app.group_repo.get(group_id)
             if group is None:
@@ -359,11 +372,56 @@ class ComposeView(QWidget):
                 label = label[: TAB_LABEL_CHARS - 1] + "…"
             if self.has_rewrite(group_id):
                 label = f"● {label}"
-            self._add_tab(group_id, label)
+            plan.append((group_id, label))
+        return plan
+
+    def refresh_tabs(self) -> None:
+        if self._editing is not None and self._editing not in self.selected_group_ids():
+            self._editing = None
+            self._show(self._base_body)
+
+        # Ticking a box on the Groups screen calls this once per click, and
+        # rebuilding the strip is ~9ms of widget construction. Skipping it when
+        # the same tabs would come out is what keeps ticking through a long
+        # list feeling instant. Everything after the guard still runs on every
+        # call: marking the active tab (which the guard cannot govern -- see
+        # below), a setVisible, and a no-op in Write mode.
+        plan = self._tab_plan()
+        if plan != self._tabs_shown:
+            self._tabs_shown = plan
+            clear(self.tab_bar)
+            for target, label in plan:
+                self._add_tab(target, label)
+        self._mark_active_tab()
 
         showing = self._editing is not None and self.has_rewrite(self._editing)
         self.reset_button.setVisible(showing)
         self.refresh_preview()
+
+    def _mark_active_tab(self) -> None:
+        """Fill the tab whose wording the editor is holding. Always.
+
+        Outside the rebuild guard, and it is the one thing on this strip that
+        cannot live inside it. Switching tabs changes `_editing` without
+        changing a single label, so a guard keyed on the labels skips the
+        rebuild and the highlight stays on the tab the user has just left. And
+        the buttons are checkable and in no exclusive group, so Qt toggles the
+        one clicked *before* select_tab is reached: clicking a second tab lit
+        two at once, and clicking the tab you were already on switched its own
+        highlight off, leaving nothing lit at all. Neither touches the labels,
+        so neither is a cache-key problem -- the fill simply is not something a
+        guard on the contents can govern.
+
+        It matters because the filled tab is the only thing on screen saying
+        whose words are in the editor, and typing into the base text clears
+        every per-group rewrite. A strip pointing at the wrong tab is how
+        someone loses wording they had already written.
+        """
+        for index, (target, _label) in enumerate(self._tabs_shown or ()):
+            item = self.tab_bar.itemAt(index)
+            button = item.widget() if item is not None else None
+            if button is not None:
+                button.setChecked(target == self._editing)
 
     def _add_tab(self, target: int | None, label: str) -> None:
         button = QPushButton(label)
@@ -375,12 +433,21 @@ class ComposeView(QWidget):
 
     # -- preview -----------------------------------------------------------
     def set_mode(self, mode: str) -> None:
-        if mode == "preview":
+        """Write and Preview are two different jobs, and want different room.
+
+        Preview answers one question -- "will this read well when it lands?" --
+        and it answers it better with the window to itself. The right rail is
+        for writing, so it stands down; the post is then centred in the space
+        the way a feed centres it, instead of being pinned into the left half.
+        """
+        preview = mode == "preview"
+        if preview:
             self.capture()
-            self.slot.setCurrentWidget(self.preview)
+        self.sidebar_holder.setVisible(not preview)
+        self.attach_holder.setVisible(not preview)
+        self.slot.setCurrentWidget(self.preview if preview else self.editor)
+        if preview:
             self.refresh_preview()
-        else:
-            self.slot.setCurrentWidget(self.editor)
 
     def preview_heading(self) -> tuple[str, str]:
         if self._editing is None:
@@ -485,12 +552,7 @@ class ComposeView(QWidget):
             self._render_attachments()
 
     def _render_attachments(self) -> None:
-        while self.attachment_box.count():
-            item = self.attachment_box.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.deleteLater()
-
+        clear(self.attachment_box)
         self.refresh_preview()
         if not self.attachments:
             note = QLabel("No images attached.")
@@ -735,18 +797,7 @@ class PostPreview(QWidget):
 
     def _redraw(self) -> None:
         heading, subheading, text, media = self._last
-        while self.body.count():
-            item = self.body.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                # setParent(None) as well as deleteLater(): taking a widget out
-                # of a layout does not unparent it, so until the event loop
-                # turns it is still a child of the holder and still paints, at
-                # its old geometry. That is what put a second, stale copy of
-                # the collage underneath the new one.
-                widget.setParent(None)
-                widget.deleteLater()
-
+        clear(self.body)
         self._body_text = ""
         self._rendered_width = self.post_width()
 
@@ -761,6 +812,9 @@ class PostPreview(QWidget):
 
         row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
+        # A stretch on both sides. A feed centres its column; pinned to the
+        # left edge of a wide pane the post reads as a stray panel.
+        row.addStretch(1)
         row.addWidget(self._post(heading, subheading, text, media))
         row.addStretch(1)
         holder = QWidget()

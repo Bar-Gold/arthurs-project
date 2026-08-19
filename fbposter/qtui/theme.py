@@ -8,6 +8,14 @@ it is built.
 
 from __future__ import annotations
 
+from pathlib import Path
+
+# Qt stylesheets take a file path, not a data URI. Forward slashes on Windows
+# too -- a backslash is an escape character inside a stylesheet, so a native
+# path silently fails to load and the tick just never appears.
+ASSETS = Path(__file__).parent / "assets"
+CHECK_ICON = (ASSETS / "check.svg").as_posix()
+
 FONT_FAMILY = "Segoe UI"
 FONT_MONO = "Consolas"
 
@@ -136,8 +144,11 @@ def stylesheet() -> str:
     }}
     QFrame#Divider {{ background: {c["BORDER"]}; border: none; }}
     /* Without this a label inside a card paints the window colour behind
-       itself and shows up as a grey band across the surface. */
-    QLabel, QCheckBox, QWidget#Row {{ background: transparent; }}
+       itself and shows up as a grey band across the surface. QStackedWidget is
+       here for the same reason and was missing: both mode switchers live
+       inside a card, and the Publish one drew a grey slab across the white
+       "When" panel wherever its page did not cover it. */
+    QLabel, QCheckBox, QWidget#Row, QStackedWidget {{ background: transparent; }}
     QLabel#Title {{ font-size: {SIZE_TITLE}px; font-weight: 600; }}
     QLabel#Subtitle, QLabel#Muted {{ color: {c["TEXT_MUTED"]}; font-size: {SIZE_SMALL}px; }}
     QLabel#SectionHeading {{ font-size: {SIZE_SMALL}px; font-weight: 600; }}
@@ -184,7 +195,14 @@ def stylesheet() -> str:
         border-color: {c["ACCENT"]};
         color: {c["TEXT_ON_ACCENT"]};
     }}
-    QPushButton#Link {{ border: none; color: {c["DANGER"]}; padding: 7px 10px; }}
+    /* Quiet until you reach for it. These are the destructive actions, and
+       there is one on every row -- painted red by default, the most dangerous
+       thing on the screen was also the first thing the eye landed on, four
+       times over. Red on hover still says what it does, at the moment it
+       matters. */
+    QPushButton#Link {{ border: none; color: {c["TEXT_MUTED"]}; padding: 7px 10px; }}
+    QPushButton#Link:hover {{ background: transparent; color: {c["DANGER"]}; }}
+    QPushButton#Link:focus {{ border: 2px solid {c["ACCENT"]}; padding: 5px 8px; }}
 
     /* Keyboard focus has to be visible. A custom stylesheet replaces the
        platform focus rectangle, so without these rules tabbing through the
@@ -230,4 +248,25 @@ def stylesheet() -> str:
     }}
     QScrollBar::add-line, QScrollBar::sub-line {{ height: 0; width: 0; }}
     QCheckBox {{ spacing: 8px; }}
+    /* Left to the platform, the two states did not look like one control:
+       unchecked drew an empty rounded box, checked drew a bare grey tick with
+       no box at all -- so the *selected* row was the fainter of the two, which
+       is backwards on a screen whose whole job is picking groups. Filling the
+       box with the accent puts the emphasis on chosen, where it belongs.
+
+       If the SVG ever fails to load the box still fills with the accent, so
+       the state stays unambiguous; only the tick is lost. */
+    QCheckBox::indicator {{
+        width: 18px;
+        height: 18px;
+        border: 1px solid {c["BORDER"]};
+        border-radius: 4px;
+        background: {c["SURFACE"]};
+    }}
+    QCheckBox::indicator:hover {{ border-color: {c["ACCENT"]}; }}
+    QCheckBox::indicator:checked {{
+        background: {c["ACCENT"]};
+        border-color: {c["ACCENT"]};
+        image: url({CHECK_ICON});
+    }}
     """

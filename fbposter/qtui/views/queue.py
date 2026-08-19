@@ -22,7 +22,7 @@ from fbposter.db.models import (
 )
 
 from .. import theme
-from ..widgets import card
+from ..widgets import card, clear
 
 STATE_COLOURS = {
     "done": "SUCCESS",
@@ -48,6 +48,9 @@ class QueueView(QWidget):
         super().__init__()
         self.app = app
         self.show_all = False
+        # What is currently drawn. None means "nothing yet", so the first
+        # refresh always builds.
+        self._snapshot_shown = None
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -123,13 +126,43 @@ class QueueView(QWidget):
     def retention_hours(self) -> int:
         return self.app.settings_repo.get_int("queue_retention_hours", 24)
 
-    def refresh(self) -> None:
-        while self.rows.count():
-            item = self.rows.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.deleteLater()
+    def _group_name(self, group_id: int) -> str:
+        group = self.app.group_repo.get(group_id)
+        return group.display_name if group is not None else str(group_id)
 
+    def _schedule_name(self, schedule_id) -> str:
+        if schedule_id is None:
+            return ""
+        schedule = self.app.schedule_repo.get(schedule_id)
+        return schedule.display_name if schedule else "repeating post"
+
+    def _snapshot(self, tasks, hidden: int, hours: int) -> tuple:
+        """Everything this screen draws, as one comparable value.
+
+        Rebuilding 25 batch cards cost 106ms, and the screen paid it on every
+        visit and again on every worker event -- so during a batch, which is
+        exactly when someone is watching this screen, it was rebuilding
+        several times a minute to draw the identical thing. The queries behind
+        this are microseconds; the widgets are the expense.
+        """
+        rows = []
+        for task in tasks:
+            targets = self.app.task_repo.targets_for(task.id)
+            rows.append((
+                task.id,
+                task.state,
+                task.error,
+                task.body,
+                task.scheduled_for,
+                self._schedule_name(task.schedule_id),
+                tuple(
+                    (t.id, t.state, t.error, self._group_name(t.group_id))
+                    for t in targets
+                ),
+            ))
+        return (self.show_all, hidden, hours, tuple(rows))
+
+    def refresh(self, force: bool = False) -> None:
         now = utcnow()
         hours = self.retention_hours()
         if self.show_all:
@@ -138,6 +171,15 @@ class QueueView(QWidget):
         else:
             tasks = self.app.task_repo.list_for_queue(now, hours)
             hidden = self.app.task_repo.count_older_than(now, hours)
+
+        # Nothing visible has changed, so nothing is redrawn. `force` is the
+        # escape hatch for a repaint that the data cannot describe -- a theme
+        # change, say.
+        snapshot = self._snapshot(tasks, hidden, hours)
+        if not force and snapshot == self._snapshot_shown:
+            return
+        self._snapshot_shown = snapshot
+        clear(self.rows)
 
         # Nothing is deleted -- this is a view filter. The bodies stay in the
         # database because the repeated-text guard reads them to refuse sending
@@ -202,8 +244,15 @@ class QueueView(QWidget):
             group = self.app.group_repo.get(target.group_id)
             name = group.display_name if group else str(target.group_id)
             row = QHBoxLayout()
+            # Indented under the batch header, so a row reads as one of its
+            # groups rather than as a sibling of it.
+            row.setContentsMargins(theme.PAD_M, 0, 0, 0)
+            row.setSpacing(theme.PAD_S)
             label = QLabel(name)
-            row.addWidget(label, 1)
+            # The status sits beside the name rather than at the far edge of a
+            # full-width card. Stretching the name pushed the two roughly 600px
+            # apart, and they stopped reading as one fact about one group.
+            row.addWidget(label)
             label_text = (
                 "Awaiting admin approval"
                 if target.state == TARGET_AWAITING_APPROVAL
@@ -214,6 +263,7 @@ class QueueView(QWidget):
                 f"color: {theme.C[STATE_COLOURS.get(target.state, 'TEXT_MUTED')]};"
             )
             row.addWidget(outcome)
+            row.addStretch(1)
             if target.state == TARGET_AWAITING_APPROVAL:
                 # An override, not a chore: the worker follows these up on its
                 # own every few hours. They are here for the post an admin
