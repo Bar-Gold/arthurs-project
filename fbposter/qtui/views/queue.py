@@ -22,7 +22,7 @@ from fbposter.db.models import (
 )
 
 from .. import theme
-from ..widgets import card, clear
+from ..widgets import card, clear, replace_at
 
 STATE_COLOURS = {
     "done": "SUCCESS",
@@ -51,6 +51,9 @@ class QueueView(QWidget):
         # What is currently drawn. None means "nothing yet", so the first
         # refresh always builds.
         self._snapshot_shown = None
+        # The same thing per card, parallel to the widgets in self.rows, so a
+        # refresh can redraw only the batches that actually changed.
+        self._cards_shown = None
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -126,41 +129,33 @@ class QueueView(QWidget):
     def retention_hours(self) -> int:
         return self.app.settings_repo.get_int("queue_retention_hours", 24)
 
-    def _group_name(self, group_id: int) -> str:
-        group = self.app.group_repo.get(group_id)
-        return group.display_name if group is not None else str(group_id)
-
-    def _schedule_name(self, schedule_id) -> str:
+    def _schedule_name(self, schedule_id, names) -> str:
         if schedule_id is None:
             return ""
-        schedule = self.app.schedule_repo.get(schedule_id)
-        return schedule.display_name if schedule else "repeating post"
+        return names.get(schedule_id) or "repeating post"
 
-    def _snapshot(self, tasks, hidden: int, hours: int) -> tuple:
-        """Everything this screen draws, as one comparable value.
+    def _card_snapshot(self, task, targets, schedule_names) -> tuple:
+        """Everything one card draws, as one comparable value.
 
-        Rebuilding 25 batch cards cost 106ms, and the screen paid it on every
+        Rebuilding 25 batch cards cost 127ms, and the screen paid it on every
         visit and again on every worker event -- so during a batch, which is
         exactly when someone is watching this screen, it was rebuilding
-        several times a minute to draw the identical thing. The queries behind
-        this are microseconds; the widgets are the expense.
+        several times a minute, usually to redraw 24 identical cards beside
+        the one that had changed.
+
+        A target's group name comes off the target row, which `targets_for`
+        already joined. Looking it up through GroupRepo cost a query per group
+        per refresh -- 150 of them here -- to recompute a string already held.
         """
-        rows = []
-        for task in tasks:
-            targets = self.app.task_repo.targets_for(task.id)
-            rows.append((
-                task.id,
-                task.state,
-                task.error,
-                task.body,
-                task.scheduled_for,
-                self._schedule_name(task.schedule_id),
-                tuple(
-                    (t.id, t.state, t.error, self._group_name(t.group_id))
-                    for t in targets
-                ),
-            ))
-        return (self.show_all, hidden, hours, tuple(rows))
+        return (
+            task.id,
+            task.state,
+            task.error,
+            task.body,
+            task.scheduled_for,
+            self._schedule_name(task.schedule_id, schedule_names),
+            tuple((t.id, t.state, t.error, t.group_label) for t in targets),
+        )
 
     def refresh(self, force: bool = False) -> None:
         now = utcnow()
@@ -172,14 +167,29 @@ class QueueView(QWidget):
             tasks = self.app.task_repo.list_for_queue(now, hours)
             hidden = self.app.task_repo.count_older_than(now, hours)
 
+        # Three queries for the whole screen rather than two per batch and one
+        # per group. Still a fresh read every time -- nothing is remembered
+        # between refreshes, because a stale read would be a wrong screen.
+        targets = self.app.task_repo.targets_for_tasks([task.id for task in tasks])
+        schedule_names = (
+            self.app.schedule_repo.names_by_id()
+            if any(task.schedule_id is not None for task in tasks)
+            else {}
+        )
+
+        cards = [
+            self._card_snapshot(task, targets.get(task.id, ()), schedule_names)
+            for task in tasks
+        ]
         # Nothing visible has changed, so nothing is redrawn. `force` is the
         # escape hatch for a repaint that the data cannot describe -- a theme
         # change, say.
-        snapshot = self._snapshot(tasks, hidden, hours)
+        snapshot = (self.show_all, hidden, hours, tuple(cards))
         if not force and snapshot == self._snapshot_shown:
             return
+        drawn = self._cards_shown
         self._snapshot_shown = snapshot
-        clear(self.rows)
+        self._cards_shown = list(cards)
 
         # Nothing is deleted -- this is a view filter. The bodies stay in the
         # database because the repeated-text guard reads them to refuse sending
@@ -192,6 +202,7 @@ class QueueView(QWidget):
         )
 
         if not tasks:
+            clear(self.rows)
             note = QLabel(
                 "Nothing recent. Older batches are under “All”."
                 if hidden
@@ -202,11 +213,34 @@ class QueueView(QWidget):
             self.rows.addStretch(1)
             return
 
+        # The same batches in the same order: swap out only the cards whose own
+        # snapshot moved. During a batch that is one card per worker event
+        # rather than all of them.
+        same_batches = (
+            not force
+            and drawn is not None
+            and len(drawn) == len(cards)
+            and all(before[0] == after[0] for before, after in zip(drawn, cards))
+        )
+        if same_batches:
+            for index, (before, after) in enumerate(zip(drawn, cards)):
+                if before != after:
+                    task = tasks[index]
+                    replace_at(
+                        self.rows,
+                        index,
+                        self._card(task, targets.get(task.id, ()), schedule_names),
+                    )
+            return
+
+        clear(self.rows)
         for task in tasks:
-            self.rows.addWidget(self._card(task))
+            self.rows.addWidget(
+                self._card(task, targets.get(task.id, ()), schedule_names)
+            )
         self.rows.addStretch(1)
 
-    def _card(self, task) -> QWidget:
+    def _card(self, task, targets, schedule_names) -> QWidget:
         box = card()
         layout = QVBoxLayout(box)
         layout.setContentsMargins(theme.PAD_M, theme.PAD_S, theme.PAD_M, theme.PAD_S)
@@ -219,8 +253,7 @@ class QueueView(QWidget):
             else "Post now"
         )
         if task.schedule_id is not None:
-            schedule = self.app.schedule_repo.get(task.schedule_id)
-            when = f"{when} · {schedule.display_name if schedule else 'repeating post'}"
+            when = f"{when} · {self._schedule_name(task.schedule_id, schedule_names)}"
         snippet = " ".join(task.body.split())[:SNIPPET_CHARS]
         title = QLabel(f"{when} — {snippet}")
         title.setStyleSheet("font-weight: 600;")
@@ -240,9 +273,9 @@ class QueueView(QWidget):
             header.addWidget(cancel)
         layout.addLayout(header)
 
-        for target in self.app.task_repo.targets_for(task.id):
-            group = self.app.group_repo.get(target.group_id)
-            name = group.display_name if group else str(target.group_id)
+        for target in targets:
+            # The name is already on the row: targets_for joins groups.
+            name = target.group_label
             row = QHBoxLayout()
             # Indented under the batch header, so a row reads as one of its
             # groups rather than as a sibling of it.

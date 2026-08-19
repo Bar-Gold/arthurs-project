@@ -10,14 +10,26 @@ from __future__ import annotations
 import enum
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any, Iterator, Mapping, Sequence
-
-from playwright.sync_api import BrowserContext
-from playwright.sync_api import Error as PlaywrightError
-from playwright.sync_api import sync_playwright
+from typing import TYPE_CHECKING, Any, Iterator, Mapping, Sequence
 
 from . import config, strings
 from .errors import CheckpointError, ConnectionFailed
+
+if TYPE_CHECKING:  # annotations only -- `from __future__ import annotations`
+    from playwright.sync_api import BrowserContext
+
+# Playwright is imported inside `attach()`, not here.
+#
+# It is the single most expensive import in the app at ~830ms, and every path
+# that reaches it -- the worker thread and the background group-name lookup --
+# is already off the thread drawing the window. Imported at module level it was
+# paid at launch instead, by the UI, before the window appeared; deferred, the
+# first attach carries it on a thread where nothing is waiting on it and the
+# next action is a post with a ten-minute gap in front of it.
+#
+# Keep it that way: importing `playwright` anywhere at module scope in this
+# package puts the cost straight back on startup, wherever it is written.
+# tests/test_qtui_performance.py pins that nothing does.
 
 
 class UrlVerdict(enum.Enum):
@@ -63,6 +75,9 @@ def classify_url(url: str) -> UrlVerdict:
 def attach(endpoint: str | None = None) -> Iterator[BrowserContext]:
     """Yield the browser context of the already-running Chrome."""
     endpoint = endpoint or config.cdp_endpoint()
+    from playwright.sync_api import Error as PlaywrightError
+    from playwright.sync_api import sync_playwright
+
     with sync_playwright() as playwright:
         try:
             browser = playwright.chromium.connect_over_cdp(endpoint)

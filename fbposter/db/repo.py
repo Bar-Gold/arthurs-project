@@ -306,6 +306,32 @@ class TaskRepo:
         )
         return [TaskTarget.from_row(row) for row in rows]
 
+    def targets_for_tasks(self, task_ids: Sequence[int]) -> dict[int, list[TaskTarget]]:
+        """The same rows as `targets_for`, for many batches in one query.
+
+        The Queue screen reads every target twice on every refresh -- once to
+        decide whether anything changed, once to draw. One query per batch was
+        fine at three batches and is 25 round trips at 25, on the thread
+        drawing the window, several times a minute while a batch runs.
+
+        This is emphatically *not* a cache: it reads the same rows the loop
+        would have read, at the same moment, and the answer is thrown away
+        when the refresh ends. A stale read would be a wrong screen.
+        """
+        if not task_ids:
+            return {}
+        marks = ",".join("?" * len(task_ids))
+        rows = self.db.query(
+            "SELECT t.*, g.identifier AS group_identifier, g.name AS group_name "
+            "FROM task_targets t JOIN groups g ON g.id = t.group_id "
+            f"WHERE t.task_id IN ({marks}) ORDER BY t.task_id, t.position",
+            tuple(task_ids),
+        )
+        grouped: dict[int, list[TaskTarget]] = {task_id: [] for task_id in task_ids}
+        for row in rows:
+            grouped[row["task_id"]].append(TaskTarget.from_row(row))
+        return grouped
+
     def cancel(self, task_id: int) -> None:
         self.db.write(
             "UPDATE tasks SET state = ?, finished_at = ? WHERE id = ?",
@@ -656,6 +682,18 @@ class ScheduleRepo:
 
     def __init__(self, db: Database) -> None:
         self.db = db
+
+    def names_by_id(self) -> dict[int, str]:
+        """Every schedule's display name, in one query.
+
+        The Queue labels each batch with the schedule that made it. Fetching
+        each one through `get()` cost two queries per card -- the row, then its
+        group ids, which the label does not use at all.
+        """
+        return {
+            row["id"]: (row["name"] or f"Schedule {row['id']}")
+            for row in self.db.query("SELECT id, name FROM schedules")
+        }
 
     def _group_ids(self, schedule_id: int) -> list[int]:
         return [

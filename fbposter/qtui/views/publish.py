@@ -263,15 +263,19 @@ class PublishView(QWidget):
         self.filler = QWidget()
         column.addWidget(self.filler, 1)
 
-    def _recipient_plan(self, selected) -> list[tuple[str, bool]]:
-        """The rows as (name, reworded) -- what to draw, not the drawing."""
-        plan = []
-        for group_id in selected:
-            group = self.app.group_repo.get(group_id)
-            if group is None:
-                continue
-            plan.append((group.display_name, self.compose.has_rewrite(group_id)))
-        return plan
+    def _recipient_plan(self, selected) -> list[tuple[int, str, bool]]:
+        """The rows as (id, name, reworded) -- what to draw, not the drawing.
+
+        One query for every group rather than one per recipient. This runs on
+        every refresh, ahead of the guard, so it is the read that never gets
+        skipped; it is still a fresh read, just not a round trip per row.
+        """
+        names = {group.id: group.display_name for group in self.app.group_repo.list()}
+        return [
+            (group_id, names[group_id], self.compose.has_rewrite(group_id))
+            for group_id in selected
+            if group_id in names
+        ]
 
     def refresh_recipients(self) -> None:
         selected = self.selected_group_ids()
@@ -296,15 +300,12 @@ class PublishView(QWidget):
             note.setObjectName("Muted")
             note.setWordWrap(True)
             self.recipient_box.addWidget(note)
-        for group_id in selected:
-            group = self.app.group_repo.get(group_id)
-            if group is None:
-                continue
+        for group_id, name, reworded in plan:
             holder = row()
             line = QHBoxLayout(holder)
             line.setContentsMargins(0, 0, 0, 0)
-            line.addWidget(QLabel(group.display_name), 1)
-            if self.compose.has_rewrite(group_id):
+            line.addWidget(QLabel(name), 1)
+            if reworded:
                 tag = QLabel("reworded")
                 tag.setObjectName("Muted")
                 line.addWidget(tag)

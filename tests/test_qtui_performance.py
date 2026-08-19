@@ -11,8 +11,12 @@ rebuilt, and that a changed one still is.
 from __future__ import annotations
 
 import inspect
+from pathlib import Path
 
 import pytest
+
+ROOT = Path(__file__).resolve().parent.parent
+PACKAGE = ROOT / "fbposter"
 
 
 def widgets_in(layout) -> list:
@@ -76,12 +80,34 @@ class TestTheQueueIsNotRebuiltForNothing:
         assert widgets_in(view.rows) != before
 
     def test_switching_scope_rebuilds(self, stocked):
-        app, _ = stocked
+        """Recent and All hold different batches, so the list is redrawn.
+
+        This used to assert that the widgets were new objects, which held only
+        because every refresh rebuilt everything. A scope switch that happens
+        to show the same batches in the same order now reuses their cards --
+        correctly, since a card renders one batch and renders it the same way
+        in either scope. So this ages a finished batch out of Recent to make
+        the two scopes genuinely differ, and checks what the user would see.
+        """
+        from datetime import timedelta
+
+        from fbposter.db.models import TASK_DONE, to_iso, utcnow
+
+        app, made = stocked
+        old = app.task_repo.create("An older batch.", [(made[2].id, "An older batch.")])
+        app.db.write(
+            "UPDATE tasks SET state = ?, finished_at = ? WHERE id = ?",
+            (TASK_DONE, to_iso(utcnow() - timedelta(hours=48)), old.id),
+        )
+
         view = app.views["queue"]
         view.refresh()
-        before = widgets_in(view.rows)
+        recent = widgets_in(view.rows)
         view.set_scope(True)
-        assert widgets_in(view.rows) != before
+        every = widgets_in(view.rows)
+
+        assert len(every) > len(recent), "All showed no more than Recent"
+        assert "hidden" not in view.hidden_label.text(), "still claims to be hiding one"
 
     def test_force_rebuilds_anyway(self, stocked):
         app, _ = stocked
@@ -289,3 +315,153 @@ class TestNothingSlowRunsOnTheDrawingThread:
         assert marker, "the background worker went away"
         assert "chrome.probe" not in head, "the probe still runs before the thread"
         assert "chrome.probe" in tail, "the probe guard was dropped entirely"
+
+
+class TestOnlyTheChangedBatchIsRedrawn:
+    """A worker event changes one target. The screen used to rebuild every
+    card for it -- 127ms on the thread drawing the window, on every event,
+    which is exactly when someone is watching the Queue.
+
+    The snapshot is now kept per card, so a refresh replaces the batches whose
+    own row moved and leaves the rest of the widgets alone.
+    """
+
+    @pytest.fixture
+    def batches(self, qt_app):
+        """Several batches, so "only one was redrawn" can be told apart."""
+        groups = []
+        for index in range(3):
+            group = qt_app.group_repo.add_from_url(
+                f"https://www.facebook.com/groups/many{index}"
+            )
+            qt_app.group_repo.set_name(group.id, f"Many Group {index}")
+            groups.append(group)
+        body = "Selling a road bike, 54cm frame."
+        tasks = [
+            qt_app.task_repo.create(body, [(group.id, body) for group in groups])
+            for _ in range(5)
+        ]
+        view = qt_app.views["queue"]
+        view.refresh(force=True)
+        return qt_app, view, tasks
+
+    def position_of(self, app, task_id: int) -> int:
+        from fbposter.db.models import utcnow
+
+        shown = app.task_repo.list_for_queue(utcnow(), view_hours(app))
+        return [task.id for task in shown].index(task_id)
+
+    def test_one_target_changing_replaces_exactly_one_card(self, batches):
+        from fbposter.db.models import TARGET_DONE
+
+        app, view, tasks = batches
+        before = widgets_in(view.rows)
+
+        changed = tasks[2]
+        target = app.task_repo.targets_for(changed.id)[0]
+        app.task_repo.mark_target(target.id, TARGET_DONE, posted=True)
+        view.refresh()
+
+        after = widgets_in(view.rows)
+        assert len(after) == len(before), "the list changed length"
+        replaced = [
+            index for index, (a, b) in enumerate(zip(before, after)) if a is not b
+        ]
+        assert len(replaced) == 1, f"redrew {len(replaced)} cards for one target"
+        assert replaced[0] == self.position_of(app, changed.id)
+
+    def test_the_replaced_card_shows_the_new_state(self, batches):
+        """Reuse is only correct if the one card that did change is right."""
+        from PySide6.QtWidgets import QLabel
+
+        from fbposter.db.models import TARGET_DONE
+
+        app, view, tasks = batches
+        changed = tasks[2]
+        target = app.task_repo.targets_for(changed.id)[0]
+        app.task_repo.mark_target(target.id, TARGET_DONE, posted=True)
+        view.refresh()
+
+        card = widgets_in(view.rows)[self.position_of(app, changed.id)]
+        shown = [label.text() for label in card.findChildren(QLabel)]
+        assert any("Done" in text for text in shown), shown
+        assert any("Many Group" in text for text in shown), "lost the group names"
+
+    def test_an_untouched_card_still_shows_its_groups(self, batches):
+        """A reused widget is the old one, so it has to still be complete."""
+        from PySide6.QtWidgets import QLabel
+
+        from fbposter.db.models import TARGET_DONE
+
+        app, view, tasks = batches
+        target = app.task_repo.targets_for(tasks[2].id)[0]
+        app.task_repo.mark_target(target.id, TARGET_DONE, posted=True)
+        view.refresh()
+
+        untouched = widgets_in(view.rows)[self.position_of(app, tasks[0].id)]
+        shown = [label.text() for label in untouched.findChildren(QLabel)]
+        assert sum("Many Group" in text for text in shown) == 3, shown
+
+    def test_a_new_batch_rebuilds_the_list(self, batches):
+        """The reuse path is only taken when the same batches are in the same
+        order. A new one at the top shifts every card down."""
+        app, view, _ = batches
+        before = widgets_in(view.rows)
+
+        group = app.group_repo.list()[0]
+        app.task_repo.create("A brand new batch.", [(group.id, "A brand new batch.")])
+        view.refresh()
+
+        after = widgets_in(view.rows)
+        assert len(after) == len(before) + 1
+        assert all(widget not in before for widget in after), "reused a shifted card"
+
+
+def view_hours(app) -> int:
+    return app.views["queue"].retention_hours()
+
+
+class TestPlaywrightIsNotImportedAtLaunch:
+    """`playwright.sync_api` is the most expensive import in the app at ~830ms.
+
+    Everything that reaches it -- the worker thread, the background group-name
+    lookup -- is already off the thread drawing the window, so it is imported
+    at the point of use. At module scope it was paid at startup instead, by the
+    UI, before the window appeared.
+    """
+
+    def test_opening_the_app_does_not_import_playwright(self):
+        import subprocess
+        import sys
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import sys; import fbposter.qtui.app; "
+                "print('playwright.sync_api' in sys.modules)",
+            ],
+            capture_output=True,
+            text=True,
+            cwd=str(ROOT),
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "False", (
+            "importing the window pulled Playwright in with it, which puts "
+            "~830ms back on startup"
+        )
+
+    def test_nothing_imports_playwright_at_module_scope(self):
+        """A grep, because the cost comes back silently wherever it is written
+        and only a stopwatch would notice."""
+        offenders = []
+        for path in sorted(PACKAGE.rglob("*.py")):
+            for number, line in enumerate(
+                path.read_text(encoding="utf-8").splitlines(), 1
+            ):
+                if line.startswith(("import playwright", "from playwright")):
+                    offenders.append(f"{path.name}:{number}")
+        assert offenders == [], (
+            f"{offenders} import Playwright at module scope; import it inside "
+            "the function that uses it"
+        )

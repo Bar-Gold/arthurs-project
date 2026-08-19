@@ -58,3 +58,25 @@ def row(parent: QWidget | None = None) -> QWidget:
     holder = QWidget(parent)
     holder.setObjectName("Row")
     return holder
+
+
+def replace_at(layout: QLayout, index: int, widget: QWidget) -> None:
+    """Swap one widget in a layout for another, removing the old one properly.
+
+    Same hazard as `clear()`: `takeAt()` alone leaves the old widget a child of
+    the same parent, still painting, at Qt's default 640x480 because no layout
+    manages it any more. Every removal in this package goes through this module
+    so that mistake cannot be made a seventh time.
+
+    The Queue uses this to redraw only the batches that actually changed. It
+    rebuilt all 25 cards whenever any one target changed state -- 127ms on the
+    thread drawing the window, on every worker event, which is precisely when
+    someone is watching that screen.
+    """
+    item = layout.takeAt(index)
+    if item is not None:
+        old = item.widget()
+        if old is not None:
+            old.setParent(None)
+            old.deleteLater()
+    layout.insertWidget(index, widget)
