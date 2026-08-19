@@ -25,6 +25,8 @@ from fbposter.qtui.views.compose import (
     PostPreview,
     avatar,
     cover,
+    image_size,
+    load_tile,
 )
 
 pytest.importorskip("PIL", reason="Pillow is needed to write test images")
@@ -247,3 +249,93 @@ class TestRerendering:
         show(preview, text=HEBREW, media=[pics["wide"]])
         show(preview, text="", media=[])
         assert preview.tiles == []
+
+
+@pytest.fixture
+def big_photo(tmp_path):
+    """A photo the size a phone takes them, stored sideways like a phone does.
+
+    The real one that started this was 5712x4284 and 8.33MB; this is the same
+    shape, small enough to keep the suite quick.
+    """
+    from PIL import Image
+
+    path = tmp_path / "phone.jpg"
+    image = Image.new("RGB", (2400, 1800), (120, 90, 60))
+    exif = Image.Exif()
+    exif[274] = 6                     # Orientation: rotate 90 clockwise
+    image.save(path, exif=exif, quality=80)
+    return path
+
+
+class TestABigPhotoIsNotDecodedWhole:
+    """`QPixmap(path)` decodes every pixel. The real 24-megapixel photo took
+    ~600ms, the preview paid it once to measure the picture and again to draw
+    it, and it paid the pair again on every redraw -- a resize, a switch to
+    Preview, a walk to Groups and back. Loading a template and stepping between
+    screens cost over a second a time.
+    """
+
+    def test_the_decode_is_scaled_to_the_tile(self, qt_application, big_photo):
+        tile = load_tile(big_photo, 240, 250)
+        assert not tile.isNull(), "the photo did not load at all"
+        # Big enough to fill the box, nowhere near the stored 2400x1800.
+        assert tile.width() >= 240 and tile.height() >= 250
+        assert tile.width() * tile.height() < 2400 * 1800 / 4, (
+            f"decoded {tile.width()}x{tile.height()}: close to full resolution"
+        )
+
+    def test_the_second_ask_is_not_decoded_again(self, qt_application, big_photo):
+        first = load_tile(big_photo, 240, 250)
+        second = load_tile(big_photo, 240, 250)
+        assert first is second, "decoded the same tile twice"
+
+    def test_a_different_box_is_decoded_separately(self, qt_application, big_photo):
+        assert load_tile(big_photo, 240, 250) is not load_tile(big_photo, 480, 270)
+
+    def test_an_edited_file_is_picked_up(self, qt_application, big_photo):
+        from PIL import Image
+
+        first = load_tile(big_photo, 240, 250)
+        Image.new("RGB", (2400, 1800), (10, 200, 10)).save(big_photo, quality=80)
+        assert load_tile(big_photo, 240, 250) is not first, "served a stale picture"
+
+    def test_measuring_a_picture_does_not_decode_it(self, qt_application, big_photo):
+        """The size comes off the header. This is the read that ran per render
+        purely to work out how tall one picture should be."""
+        assert image_size(big_photo) is not None
+
+    def test_a_file_that_will_not_open_returns_nothing_and_does_not_raise(
+        self, qt_application, tmp_path
+    ):
+        """A named tile is drawn from this; the file is still going to be
+        uploaded, so showing nothing would suggest it had been dropped."""
+        assert load_tile(tmp_path / "not-there.jpg", 240, 250).isNull()
+        assert image_size(tmp_path / "not-there.jpg") is None
+
+        broken = tmp_path / "broken.jpg"
+        broken.write_bytes(b"this is not a picture")
+        assert load_tile(broken, 240, 250).isNull()
+        assert image_size(broken) is None
+
+
+class TestTheOrientationTheCameraRecorded:
+    """A phone stores a portrait photo sideways with "rotate 90" in the header.
+    Facebook applies that when it renders, so a preview that ignored it was
+    answering the wrong question -- and, worse, laid the picture out with its
+    width and height the wrong way round.
+    """
+
+    def test_a_sideways_photo_is_measured_upright(self, qt_application, big_photo):
+        size = image_size(big_photo)
+        assert size.width() < size.height(), (
+            f"{size.width()}x{size.height()}: still the stored landscape shape"
+        )
+
+    def test_the_tile_fills_the_box_it_was_asked_for(self, qt_application, big_photo):
+        """Whatever the rotation, cover() must still get something it can crop
+        to the exact slot without upscaling."""
+        tile = load_tile(big_photo, 240, 250)
+        assert tile.width() >= 240 and tile.height() >= 250
+        shown = cover(tile, 240, 250)
+        assert (shown.width(), shown.height()) == (240, 250)

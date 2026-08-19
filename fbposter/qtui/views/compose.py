@@ -15,8 +15,8 @@ from __future__ import annotations
 from datetime import timedelta
 from pathlib import Path
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QPainter, QPixmap
+from PySide6.QtCore import QSize, Qt
+from PySide6.QtGui import QColor, QImageIOHandler, QImageReader, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QButtonGroup,
     QComboBox,
@@ -633,6 +633,106 @@ class ComposeView(QWidget):
         return True
 
 
+# Decoded tiles, keyed on the file and the box it was drawn for. Bounded,
+# because a preview is redrawn on every resize and mode switch.
+_TILE_CACHE: dict[tuple, QPixmap] = {}
+_TILE_CACHE_LIMIT = 64
+
+
+def _file_key(path: Path) -> tuple | None:
+    """Identity of the file as it is right now, or None if it is not there."""
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return (str(path), stat.st_mtime_ns, stat.st_size)
+
+
+def _oriented_size(reader: QImageReader):
+    """The size the picture is *shown* at, with its EXIF rotation applied.
+
+    A phone photo is stored landscape with "rotate 90" in its header. The
+    header size is therefore the wrong way round for anything that has to lay
+    the picture out, so the axes are swapped for the quarter-turn cases.
+    """
+    size = reader.size()
+    if not size.isValid() or size.width() <= 0 or size.height() <= 0:
+        return None
+    # The Transformation flags are a bitfield; bit 2 is the quarter turn.
+    if reader.transformation().value & QImageIOHandler.TransformationRotate90.value:
+        return QSize(size.height(), size.width())
+    return size
+
+
+def image_size(path: Path):
+    """The picture's size as displayed, read from the header.
+
+    `QPixmap(path)` decodes the entire image. A phone photo is 24 megapixels
+    and takes **~600ms** to decode, and the preview was paying that merely to
+    ask how tall the picture is. QImageReader reads the header instead.
+    """
+    try:
+        reader = QImageReader(str(path))
+        reader.setAutoTransform(True)
+        return _oriented_size(reader)
+    except Exception:
+        return None
+
+
+def load_tile(path: Path, width: int, height: int) -> QPixmap:
+    """The picture, decoded at roughly the size it will be drawn at.
+
+    Three things were wrong with `QPixmap(str(path))` here, and one 8MB holiday
+    photo made all three obvious: it decoded 24 megapixels to fill a 480x270
+    box, it did that again for every redraw -- a resize, a switch to Preview,
+    a walk to another screen and back -- and `_single_height` did it a second
+    time per render just to read the aspect ratio.
+
+    JPEG decoders can scale while decoding, which is far cheaper than decoding
+    full size and scaling afterwards, so the reader is told the size wanted.
+    The result is cached against the file's mtime, so an edited picture is
+    still picked up. Never raises: an unreadable file returns a null pixmap and
+    the caller draws a named tile, because the file is still going to be
+    uploaded and showing nothing would suggest it had been dropped.
+    """
+    key = _file_key(path)
+    if key is None:
+        return QPixmap()
+    cache_key = key + (width, height)
+    cached = _TILE_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    try:
+        reader = QImageReader(str(path))
+        # Facebook applies the EXIF rotation when it renders, so a preview that
+        # did not would be answering the wrong question. It also means the size
+        # to scale against is the rotated one.
+        reader.setAutoTransform(True)
+        natural = _oriented_size(reader)
+        if natural is not None:
+            # Enough to fill the box; cover() crops the overflow afterwards,
+            # which is cheap once the decode is already this small.
+            scale = max(width / natural.width(), height / natural.height())
+            if scale < 1.0:
+                # setScaledSize is in stored orientation, so swap back for a
+                # quarter turn -- otherwise a portrait photo decodes to the
+                # wrong shape and cover() has to crop most of it away.
+                target = QSize(round(natural.width() * scale), round(natural.height() * scale))
+                if reader.transformation().value & QImageIOHandler.TransformationRotate90.value:
+                    target = QSize(target.height(), target.width())
+                reader.setScaledSize(target)
+        image = reader.read()
+        pixmap = QPixmap.fromImage(image) if not image.isNull() else QPixmap()
+    except Exception:
+        pixmap = QPixmap()
+
+    if len(_TILE_CACHE) >= _TILE_CACHE_LIMIT:
+        _TILE_CACHE.clear()
+    _TILE_CACHE[cache_key] = pixmap
+    return pixmap
+
+
 def cover(pixmap: QPixmap, width: int, height: int) -> QPixmap:
     """Scale to fill the box and crop the overflow, centred.
 
@@ -691,7 +791,7 @@ class MediaTile(QLabel):
         self.setFixedSize(width, height)
         self.setAlignment(Qt.AlignCenter)
 
-        pixmap = QPixmap(str(self.path))
+        pixmap = load_tile(self.path, width, height)
         self.readable = not pixmap.isNull()
         if not self.readable:
             self.setText(f"{self.path.name}\n(no preview)")
@@ -927,10 +1027,10 @@ class PostPreview(QWidget):
         only picture in a post to a fixed box would misrepresent it -- but a
         very tall one is capped so it does not push everything else off screen.
         """
-        pixmap = QPixmap(str(path))
-        if pixmap.isNull() or pixmap.width() == 0:
+        size = image_size(path)
+        if size is None:
             return PAIR_HEIGHT
-        natural = int(width * pixmap.height() / pixmap.width())
+        natural = int(width * size.height() / size.width())
         return max(MIN_SINGLE_HEIGHT, min(MAX_SINGLE_HEIGHT, natural))
 
     def _footer(self) -> QWidget:
