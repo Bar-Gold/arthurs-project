@@ -33,6 +33,18 @@
 .PARAMETER SkipTask
     Change the power settings but do not register the logon task.
 
+.PARAMETER SkipPower
+    Register the logon task but leave every power setting alone. This is what
+    the installer passes when the client asked to start the app at logon but
+    not to keep the machine awake -- a laptop that never sleeps is a decision
+    they have to make deliberately.
+
+.PARAMETER AppPath
+    Full path to the packaged FacebookAutoPoster.exe. Supplied by the installer,
+    where there is no source checkout and no .venv to find: without it the task
+    is built around pythonw.exe and main.py, which is right for a developer
+    machine and wrong for a client's.
+
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File scripts\setup_always_on.ps1
 
@@ -43,6 +55,8 @@
 param(
     [switch]$Revert,
     [switch]$SkipTask,
+    [switch]$SkipPower,
+    [string]$AppPath = "",
     [string]$TaskName = "FacebookLocalAutoPoster"
 )
 
@@ -169,6 +183,10 @@ if ($Revert) {
 
 # --- apply ------------------------------------------------------------------
 
+if ($SkipPower) {
+    Write-Host "`nLeaving every power setting exactly as it is." -ForegroundColor Cyan
+} else {
+
 Write-Host "`nSetting this machine up to post with the lid closed." -ForegroundColor Cyan
 Write-Host "Mains power only -- on battery nothing changes.`n"
 
@@ -232,20 +250,46 @@ foreach ($item in $Wanted) {
     }
 }
 
+}  # end of the power half
+
 # --- the logon task ---------------------------------------------------------
 
 if (-not $SkipTask) {
     Write-Host "`nStart the app at logon:"
-    $python = Find-Python
-    if ($null -eq $python) {
-        Write-Bad "No .venv found under $RepoPath -- create it first:"
-        Write-Step "python -m venv .venv"
-        Write-Step ".\.venv\Scripts\python.exe -m pip install -r requirements.txt"
-        $failed++
+    # A packaged install has no .venv and no main.py; the installer hands over
+    # the .exe instead. Falling back to Python keeps this script working
+    # unchanged on a developer checkout.
+    if ($AppPath -ne "") {
+        if (-not (Test-Path $AppPath)) {
+            Write-Bad "No such application: $AppPath"
+            $failed++
+            $python = $null
+        } else {
+            $python = $AppPath
+        }
     } else {
-        $mainPy = Join-Path $RepoPath "main.py"
-        $action = New-ScheduledTaskAction -Execute $python `
-            -Argument "`"$mainPy`" start" -WorkingDirectory $RepoPath
+        $python = Find-Python
+    }
+    if ($null -eq $python) {
+        if ($AppPath -eq "") {
+            Write-Bad "No .venv found under $RepoPath -- create it first:"
+            Write-Step "python -m venv .venv"
+            Write-Step ".\.venv\Scripts\python.exe -m pip install -r requirements.txt"
+            $failed++
+        }
+    } else {
+        if ($AppPath -ne "") {
+            # The packaged .exe opens the window and starts Chrome itself, so
+            # it takes no arguments at all.
+            $action = New-ScheduledTaskAction -Execute $python `
+                -WorkingDirectory (Split-Path -Parent $python)
+            $runs = $python
+        } else {
+            $mainPy = Join-Path $RepoPath "main.py"
+            $action = New-ScheduledTaskAction -Execute $python `
+                -Argument "`"$mainPy`" start" -WorkingDirectory $RepoPath
+            $runs = "$python `"$mainPy`" start"
+        }
 
         # A short delay so the desktop and the network are up first; Chrome
         # launched into a half-started session is the one thing that makes
@@ -280,7 +324,7 @@ if (-not $SkipTask) {
                 -Description "Starts the Facebook Local Auto-Poster after logon." `
                 -Force | Out-Null
             Write-Good "Registered '$TaskName' (45s after logon)."
-            Write-Step "Runs: $python `"$mainPy`" start"
+            Write-Step "Runs: $runs"
         } catch {
             Write-Bad "Could not register the task: $($_.Exception.Message)"
             $failed++

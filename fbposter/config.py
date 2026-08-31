@@ -30,6 +30,22 @@ CDP_HOST = "127.0.0.1"
 # rendering entirely, which breaks element interaction.
 OFFSCREEN_POSITION = "-32000,-32000"
 
+# The same place, as numbers, for CDP's Browser.setWindowBounds. The login flow
+# moves the existing window on-screen and back rather than restarting Chrome,
+# because a restart would drop whatever the automation was doing and there is
+# no reliable way to close a window the user cannot see.
+OFFSCREEN_BOUNDS = {"left": -32000, "top": -32000, "windowState": "normal"}
+
+# Where the login window lands: inset from the corner and comfortably big
+# enough for Facebook's login form, on any monitor the client is likely to own.
+LOGIN_WINDOW_BOUNDS = {
+    "left": 80,
+    "top": 60,
+    "width": 1180,
+    "height": 860,
+    "windowState": "normal",
+}
+
 LAUNCH_TIMEOUT_S = 30.0
 POLL_INTERVAL_S = 0.25
 PROBE_TIMEOUT_S = 1.0

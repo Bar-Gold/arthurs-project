@@ -35,7 +35,8 @@ def check_connection() -> ConnectionResult:
     if chrome.probe() is None:
         return ConnectionResult(
             ConnectionState.CHROME_DOWN,
-            "Chrome is not running. Start it with 'main.py launch'.",
+            "Chrome is not running. Use the Start Chrome button beside the "
+            "connection light.",
         )
 
     try:

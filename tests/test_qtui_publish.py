@@ -397,7 +397,14 @@ class TestManagingRepeatingPosts:
 
 class TestTheWindowItself:
     def test_every_view_builds(self, qt_app):
-        assert set(qt_app.views) == {"compose", "publish", "groups", "queue"}
+        # "welcome" is built like the rest but deliberately kept out of the
+        # sidebar -- setup is something you finish, not a step you return to.
+        assert set(qt_app.views) == {
+            "compose", "publish", "groups", "queue", "welcome"
+        }
+
+    def test_the_wizard_is_not_a_sidebar_step(self, qt_app):
+        assert "welcome" not in qt_app.nav_buttons
 
     def test_constructing_it_does_not_start_the_worker(self, qt_app):
         assert qt_app.worker is None

@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .. import config, power
+from .. import config, login, onboarding, power
 from ..automation.groupinfo import LiveGroupNamer
 from ..db import Database
 from ..db.models import SCHEDULE_ACTIVE
@@ -37,11 +37,27 @@ from .views.compose import ComposeView
 from .views.groups import GroupsView
 from .views.publish import PublishView
 from .views.queue import QueueView
+from .views.welcome import WelcomeView
 from .widgets import card
 
 APP_TITLE = "Facebook Local Auto-Poster"
 
+# Set the first time the connection check comes back CONNECTED. Until then
+# the window opens on the setup wizard, because until then the app cannot
+# actually do the thing it exists to do. A stored fact rather than a live
+# check: deciding this at construction time would mean probing the debug
+# port on the thread drawing the window, which is up to a full second of
+# frozen grey before anything appears.
+SETUP_COMPLETE_KEY = "setup_complete"
+
 WORKER_POLL_MS = 700
+# One automatic retry of the startup connection check, and only one.
+# The logon task starts the app 45 seconds after sign-in, which is while
+# Windows is still bringing the network up -- and the check ends in a real
+# page load, so it can fail for a reason that fixes itself. A single
+# delayed retry covers that without becoming a poll: nothing here should
+# ever open Facebook on a timer.
+STARTUP_RECHECK_MS = 15_000
 TOAST_MS = 4500
 
 # The order is the flow: what to say, who to say it to, when to say it, and
@@ -113,6 +129,12 @@ class App(QMainWindow):
         self.settings_repo = SettingsRepo(self.db)
         self.schedule_repo = ScheduleRepo(self.db)
         self.connection_state = ConnectionState.UNKNOWN
+        # The full result, which the setup wizard needs -- the pill only
+        # ever needed the state.
+        self.connection_result: ConnectionResult | None = None
+        # Armed by begin_startup_checks and spent by the first result, so
+        # a window a test builds never schedules a timer.
+        self._startup_retry_pending = False
 
         # Which groups this post is going to. It lives on the window rather
         # than in a view because three screens need to agree on it: Groups
@@ -146,7 +168,17 @@ class App(QMainWindow):
         self._pump.timeout.connect(self._drain_worker_events)
         self._pump.start(WORKER_POLL_MS)
 
-        self.show_view(NAV_ITEMS[0][0])
+        self.show_view(self._opening_view())
+
+    def _opening_view(self) -> str:
+        """The setup wizard until the app has connected once, then Compose.
+
+        Reading a stored setting rather than checking Chrome: the check is slow
+        enough to be visible, and this runs before the window is on screen.
+        """
+        if self.settings_repo.get(SETUP_COMPLETE_KEY) == "1":
+            return NAV_ITEMS[0][0]
+        return "welcome"
 
     # -- layout ------------------------------------------------------------
     def _build_sidebar(self, layout: QHBoxLayout) -> None:
@@ -217,6 +249,16 @@ class App(QMainWindow):
         self.check_button = QPushButton("Check connection")
         self.check_button.clicked.connect(self.check_connection)
         inner.addWidget(self.check_button)
+
+        # Appears only when something is actually wrong, and says what it will
+        # do about it. Before this the pill reported "Chrome not running" and
+        # the detail told the user to run a terminal command, which is not a
+        # thing the person this app was built for is ever going to do.
+        self.fix_button = QPushButton()
+        self.fix_button.setVisible(False)
+        self.fix_button.clicked.connect(lambda: self.show_view("welcome"))
+        inner.addWidget(self.fix_button)
+
         column.addWidget(box)
         self._set_connection(ConnectionState.UNKNOWN, announce=False)
 
@@ -231,6 +273,11 @@ class App(QMainWindow):
             view = view_class(self)
             self.views[key] = view
             self.stack.addWidget(view)
+        # Reachable, but deliberately not in the sidebar: setup is something you
+        # finish, not a step you keep coming back to. The pill's fix button and
+        # the first launch are the two ways in.
+        self.views["welcome"] = WelcomeView(self)
+        self.stack.addWidget(self.views["welcome"])
         column.addWidget(self.stack, 1)
 
         # Status lives here, never in a dialog.
@@ -308,11 +355,29 @@ class App(QMainWindow):
 
     def _on_check_result(self, result: ConnectionResult) -> None:
         self.check_button.setEnabled(True)
+        self.connection_result = result
+        if result.state is ConnectionState.CONNECTED:
+            # Only a real connection retires the wizard. Anything less and the
+            # window goes on opening there, which is where the fix is.
+            self.settings_repo.set(SETUP_COMPLETE_KEY, "1")
         self._set_connection(result.state, result.detail)
+        self._refresh_welcome()
+
+        if self._startup_retry_pending:
+            self._startup_retry_pending = False
+            if result.state is not ConnectionState.CONNECTED:
+                QTimer.singleShot(STARTUP_RECHECK_MS, self.check_connection)
 
     def _on_check_error(self, exc: Exception) -> None:
         self.check_button.setEnabled(True)
+        self.connection_result = ConnectionResult(ConnectionState.ERROR, str(exc))
         self._set_connection(ConnectionState.ERROR, str(exc))
+        self._refresh_welcome()
+
+    def _refresh_welcome(self) -> None:
+        view = self.views.get("welcome")
+        if view is not None:
+            view.refresh()
 
     def _set_connection(self, state: ConnectionState, detail: str = "",
                         announce: bool = True) -> None:
@@ -321,8 +386,31 @@ class App(QMainWindow):
         colour = theme.C[key]
         self.pill_label.setText(f"● {label}")
         self.pill_label.setStyleSheet(f"color: {colour};")
+        self._refresh_fix_button()
         if announce and detail:
             self.toast(detail, level)
+
+    def _refresh_fix_button(self) -> None:
+        """Offer the repair for whatever the pill is currently reporting.
+
+        The button only navigates -- the wizard owns every action, so there is
+        one implementation of "start Chrome" and one of "log in" rather than a
+        second copy here that can drift.
+        """
+        button = getattr(self, "fix_button", None)
+        if button is None:  # called from _build_pill before it exists
+            return
+        if self.connection_state in (
+            ConnectionState.CONNECTED,
+            ConnectionState.CHECKING,
+            ConnectionState.UNKNOWN,
+        ):
+            button.setVisible(False)
+            return
+        step = onboarding.plan(login.chrome_installed(), self.connection_result)
+        guide = onboarding.guidance(step)
+        button.setText(guide.action or "What do I do?")
+        button.setVisible(True)
 
     # -- the posting worker ------------------------------------------------
     def start_worker(self) -> None:
@@ -334,6 +422,39 @@ class App(QMainWindow):
         )
         self.worker.start()
         self._refresh_worker_row()
+
+    def begin_startup_checks(self) -> None:
+        """Get Chrome up and the connection checked, without blocking the window.
+
+        Started by run(), never by __init__, for the same reason start_worker
+        is: a test builds a window and must not thereby launch a browser.
+
+        The order matters and so does the threading. Launching Chrome waits on
+        the debugging port for up to LAUNCH_TIMEOUT_S -- thirty seconds -- so
+        doing it before the window is shown would mean thirty seconds of
+        nothing on screen, which every user reads as a crash. The window comes
+        up first, the wizard says Chrome is not running yet, and both correct
+        themselves when this lands.
+        """
+        # Arms the one automatic retry, which only the startup check gets.
+        self._startup_retry_pending = True
+
+        def work():
+            # A failure here is not worth reporting on its own: the connection
+            # check that follows says the same thing in the user's terms, and
+            # the wizard offers the button that fixes it.
+            try:
+                login.start_chrome()
+            except Exception:
+                # Deliberately broad. run_in_background routes an exception to
+                # the on_error callback, and there is none here -- so anything
+                # escaping would skip the connection check entirely and leave
+                # the pill reading "Not checked" for ever, which is the one
+                # state that offers the user no way forward.
+                pass
+            return None
+
+        self.run_in_background(work, lambda _result: self.check_connection())
 
     def toggle_worker(self) -> None:
         if self.worker is None:
@@ -464,16 +585,23 @@ def run() -> int:
     # One app, one worker. A second copy would be a second worker on the same
     # database; TaskRepo.claim_target stops that becoming a duplicate post, but
     # two of them would still fight over Chrome and both hold the machine awake.
+    # The QApplication comes first so the refusal below can be *seen*. Packaged
+    # as a windowed .exe there is no console, so the print this used to do went
+    # nowhere: double-clicking the shortcut twice made the second copy vanish
+    # without a word, which reads as the app being broken.
+    application = QApplication(sys.argv)
+
     lock = SingleInstance()
     if not lock.acquired:
-        print(
-            "The auto-poster is already running — look for its window in the "
-            "taskbar. Running two copies would mean two schedulers on one "
-            "database, so this one will close."
+        box = QMessageBox(QMessageBox.Information, APP_TITLE,
+                          "The auto-poster is already running.")
+        box.setInformativeText(
+            "Look for its window in the taskbar. Two copies would mean two "
+            "schedulers sharing one database, so this one will close."
         )
+        box.exec()
         return 1
 
-    application = QApplication(sys.argv)
     theme.activate()
     application.setStyleSheet(theme.stylesheet())
     # Family only. Sizes belong to the stylesheet -- setting a point size here
@@ -484,4 +612,6 @@ def run() -> int:
     window.show()
     # Only the real GUI starts the scheduler; constructing an App does not.
     QTimer.singleShot(500, window.start_worker)
+    # Same rule, same reason: a window a test builds must not launch a browser.
+    QTimer.singleShot(50, window.begin_startup_checks)
     return application.exec()

@@ -53,7 +53,8 @@ HALT_MESSAGES = {
     ),
     PageVerdict.LOGIN: (
         "Facebook redirected to the login page; the session has expired. "
-        "Run 'main.py setup' and sign in again."
+        "Use the Log in to Facebook button beside the connection light to sign "
+        "in again."
     ),
     PageVerdict.RATE_LIMIT: (
         "Facebook is showing a rate-limit or temporary-block warning. Stopping the "

@@ -15,3 +15,9 @@ __pycache__/
 
 # Costume
 notes and bugs.txt
+
+# PyInstaller / Inno Setup output. The build inputs in packaging/ are tracked;
+# what they produce is not -- dist\ alone is several hundred megabytes.
+build/
+dist/
+*.spec.bak

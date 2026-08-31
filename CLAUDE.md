@@ -15,6 +15,7 @@ Most of this file is a rule that already cost a live bug. They are grouped by wh
 | `db/`, retention | Database rules; the two retentions; Queue retention |
 | `ui/` (legacy Tk) | `fbposter/ui/CLAUDE.md` — loads on its own when you open a file there |
 | tests | How the tests avoid a browser and a real clock |
+| `onboarding.py`, `login.py`, `packaging/` | Shipping it to a non-technical user |
 
 Text that reaches a post also passes Invisible characters and Hebrew, whatever screen it came from.
 
@@ -23,6 +24,8 @@ Text that reaches a post also passes Invisible characters and Hebrew, whatever s
 **All five phases are done; v1 is feature-complete.** Chrome debug-profile launcher and CDP session (1), CustomTkinter UI (2), SQLite persistence and the safety guards (3), the automation engine in `fbposter/automation/` (4), and the scheduler/worker in `fbposter/worker.py` (5).
 
 **The app now posts on its own.** Opening the GUI starts the worker, and any due batch will go out. `README.md` holds the full spec. Per-group text editing, the Compose preview, the Qt rewrite and **repeating posts** all shipped after v1; the content-variation warning is now actionable, so it should be rare rather than constant. Since then: a post a group holds for an admin is tracked as its own outcome and resolved by the app itself (`TARGET_AWAITING_APPROVAL` and `_follow_up_pending`, see the Worker rules), a dropped Chrome connection defers a batch instead of throwing it away, and `scripts/setup_always_on.ps1` covers the laptop that has to post with its lid shut (see Power). Most recently, two things that were silent are not: removing a group archives it rather than deleting its posting history out from under the repeat guard, and closing the window warns when doing so would strand a queued batch or an active schedule.
+
+**It is now shipped, not just run.** The app is packaged as an installer for a non-technical client: a first-run wizard replaces the terminal commands the app used to print, and `packaging/` builds a signed-nothing-but-working `Setup.exe`. See "Handing this to a non-technical user".
 
 ## What This Is
 
@@ -56,11 +59,18 @@ powershell -ExecutionPolicy Bypass -File scripts\setup_always_on.ps1
 powershell -ExecutionPolicy Bypass -File scripts\setup_always_on.ps1 -Revert
 ```
 
+```powershell
+# The client deliverable. Runs the suite, then PyInstaller, then Inno Setup;
+# refuses to build a release from a red suite. Output: dist\FacebookAutoPoster-Setup-*.exe
+powershell -ExecutionPolicy Bypass -File packaginguild.ps1 -Clean
+powershell -ExecutionPolicy Bypass -File packaginguild.ps1 -SkipInstaller  # .exe folder only
+```
+
 `probe` and `dry-run` are the tools for re-checking selectors whenever Facebook changes its markup. Reach for them before touching `poster.py`.
 
 `status` exits 0 when logged in, 1 when not, 2 on error (Chrome not running, etc.).
 
-There is no linter or formatter configured, and no pytest config file — the suite is the whole check. Baseline: **1119 tests, 75-150s** — the spread is machine load, not the suite; the Qt and Tk GUI files are ~80s of it on their own. A run of *five minutes or more* means something is reaching the network; see the `SilentNamer` note below.
+There is no linter or formatter configured, and no pytest config file — the suite is the whole check. Baseline: **1167 tests, 75-150s** — the spread is machine load, not the suite; the Qt and Tk GUI files are ~80s of it on their own. A run of *five minutes or more* means something is reaching the network; see the `SilentNamer` note below.
 
 **Do not add `playwright install`.** It is unnecessary and was verified so against Chrome 150: the app attaches to the user's real Chrome over CDP and never launches Playwright's bundled Chromium, so the driver shipped inside the pip package is all that is required.
 
@@ -84,13 +94,15 @@ Three layers that must stay separate:
 
 UI and worker communicate through a thread-safe queue. The tables as built are `groups`, `templates`, `tasks`, `task_targets`, `schedules`, `schedule_targets` and `settings`; `tags`, `group_tags` and `run_log` were cut (README §9 and §10) — do not write code expecting them.
 
-Core: `config.py` (paths, port, Chrome flags), `chrome.py` (find/launch Chrome, probe the debug port), `session.py` (CDP attach, `c_user` cookie check), `strings.py` (every Facebook URL and UI string, in all three languages), `clock.py` (Israel-time judgement), `power.py` (`SleepBlocker`, `on_battery`), `guards.py` (the safety rules as pure functions), `recurrence.py` (repeating-schedule rules, also pure), `groups.py` (group-URL parsing), `errors.py`, `worker.py` (`PostingWorker` and `LivePoster`).
+Core: `config.py` (paths, port, Chrome flags), `chrome.py` (find/launch Chrome, probe the debug port), `session.py` (CDP attach, `c_user` cookie check), `strings.py` (every Facebook URL and UI string, in all three languages), `clock.py` (Israel-time judgement), `power.py` (`SleepBlocker`, `on_battery`), `guards.py` (the safety rules as pure functions), `recurrence.py` (repeating-schedule rules, also pure), `groups.py` (group-URL parsing), `text.py` (the invisible-character list), `single.py` (the one-app mutex), `onboarding.py` (what setup step the user is on, pure), `login.py` (putting a visible Chrome in front of them), `errors.py`, `worker.py` (`PostingWorker` and `LivePoster`).
 
 Scripts: `scripts/setup_always_on.ps1` — the laptop power plan and the logon task. See the Power section.
 
+Packaging: `packaging/` — `fbposter.spec` (PyInstaller), `installer.iss` (Inno Setup), `build.ps1` (both, plus the suite), `entry.py`, `SETUP.md` (the client's one-pager).
+
 Automation: `automation/poster.py` (`GroupPoster` — arrive → compose → type → attach → publish → verify, plus the read-only `probe`), `detect.py` (`classify` a page as OK / checkpoint / login / rate-limit / unavailable), `humanize.py` (`Humanizer`: keystroke timing, hovers, arrival scroll, the inter-group gap), `groupinfo.py` (read a group's display name off its `h1`; cosmetic, and must never raise into a caller).
 
-UI (Qt, current): `qtui/app.py` (window, sidebar, connection pill, worker row, worker-event pump, background thread helper), `qtui/views/` (compose, groups, publish, queue — the nav order is the flow), `qtui/theme.py` (palette + one stylesheet), `qtui/widgets.py` (`card`, `row`, `clear`), `qtui/assets/`. It reuses `ui/connection.py` and every non-UI module unchanged.
+UI (Qt, current): `qtui/app.py` (window, sidebar, connection pill, worker row, worker-event pump, background thread helper), `qtui/views/` (compose, groups, publish, queue — the nav order is the flow; plus `welcome`, the first-run wizard, which is deliberately not in the sidebar), `qtui/theme.py` (palette + one stylesheet), `qtui/widgets.py` (`card`, `row`, `clear`), `qtui/assets/`. It reuses `ui/connection.py` and every non-UI module unchanged.
 
 UI (Tk, legacy — `main.py gui --tk`): `ui/app.py`, `ui/views/`, `theme.py`, `toast.py`, `background.py`, `connection.py`, `preview.py`, `textdir.py`.
 
@@ -289,7 +301,7 @@ Qt shapes text itself and needs none of it. `qtui/views/compose.py` contains **n
 The Tk widget specifics — `CTkFrame`/`CTkButton` defaults, pack order, and the whole `textdir.py` bidi apparatus — now live in **`fbposter/ui/CLAUDE.md`**, which loads on its own when you open a file in `fbposter/ui/`. None of it applies to `qtui/`. What follows holds in both windows.
 
 - **Only the main thread touches widgets.** Blocking work goes through a background thread → `queue.Queue` → a pump on the UI thread: `BackgroundRunner` and `widget.after()` in Tk, `App.run_in_background` and a `QTimer` driving `App._drain_worker_events` in Qt. The posting worker reports progress the same way and never touches a widget itself.
-- **No modal dialogs for status, ever** — use `app.toast`. There are exactly two permitted, and both share one justification: they can only appear because the user just acted on this window, so the app already has focus and they cannot interrupt anything. One is the media file picker in Compose. The other is `qtui.app.ask_before_closing`, raised only from `closeEvent`, only when `App.unfinished_work()` finds something still due — see the close rule below. Chrome's native file dialog is a different thing entirely and is never acceptable — see the Photo/video rule below.
+- **No modal dialogs for status, ever** — use `app.toast`. There are exactly three permitted, and all three share one justification: they can only appear because the user just acted, so the app already has focus and they cannot interrupt anything. One is the media file picker in Compose. The second is `qtui.app.ask_before_closing`, raised only from `closeEvent`, only when `App.unfinished_work()` finds something still due — see the close rule below. The third is the single-instance refusal in `run()`, which exists because the packaged `.exe` has no console for the `print` it used to be. Chrome's native file dialog is a different thing entirely and is never acceptable — see the Photo/video rule below.
 - **Closing the window stops the posting, so it says so first.** The worker is the window's own thread; `closeEvent` stopped it silently, so a daily repeat set up and then closed away simply never ran again with nothing on screen to show it. `App.unfinished_work()` returns a phrase naming what is still due — unfinished batches, active schedules — or `None`, and only a non-`None` answer costs the user a dialog. **The confirmation is injectable (`App(confirm_close=)`) and defaults to the real one**, exactly like `check_fn` and `group_namer`: the GUI suite closes every window it builds, so a real modal would hang the run rather than fail it. It is also skipped entirely while `self.worker is None`, which is every window a test builds.
 - **Compose owns per-group wording, and `body_for()` is the only way to read it.** `_base_body` is the shared text, `_bodies` holds per-group rewrites, `_editing` is the active tab. `body_for()` reads committed state only, so `capture()` must run first — it once returned the live editor contents when that group was active, which handed back the wrong text as soon as `_editing` was assigned before the read. Editing the base clears the rewrites (the user's choice) and toasts, and only when the text genuinely changed — a tab switch must never cost someone their wording.
 - **Anything in a view that reaches for a browser must be injectable, and the shared test App must be given a stub.** The Groups view looks up group names on its own whenever it is shown, and `chrome.probe()` succeeds on any machine with Chrome running — so before `SilentNamer` existed, the GUI suite silently opened real Facebook pages and took nearly three minutes instead of twenty seconds. Both `App`s take `check_fn=`, `db=` and `group_namer=` for this reason.
@@ -305,6 +317,46 @@ Nothing in the suite opens Chrome, hits Facebook, or waits out a real delay. Kee
 - **Qt tests run offscreen.** `tests/conftest.py` has a session-scoped `qt_application` (one `QApplication`, `QT_QPA_PLATFORM=offscreen`) and a per-test `qt_app` window on a temporary database. Offscreen is not tidiness: this app's central promise is that it never takes focus, and a suite that popped real windows would break that on the developer's own machine every time it ran. Drive views through their own methods rather than synthesised clicks. Note that `deleteLater()` widgets keep painting until the event loop turns, so anything that reads pixels needs a real loop turn first — two "duplicate row" and "giant blue rectangle" scares came from screenshotting without one.
 
 **Never call `browser.close()` on a CDP-attached browser.** That Chrome belongs to the user and holds the Facebook login. `session.attach()` is a context manager that simply drops the connection on exit; closing would take the session with it. Login is checked via the `c_user` cookie rather than the DOM — no navigation, no selectors, no language dependency.
+
+### Handing this to a non-technical user
+
+The app is shipped to a client as `dist\FacebookAutoPoster-Setup-x.y.z.exe`, built by `packaging\build.ps1`. That script runs the suite first and **refuses to build a release from a red suite**, which is the whole reason to use it rather than calling PyInstaller by hand.
+
+**The app used to answer "what now?" with terminal commands.** `ui/connection.py` said *"Start it with 'main.py launch'"* and `automation/detect.py` said *"Run 'main.py setup' and sign in again"* — both of which reach the user through the connection pill. They are good developer instructions and useless to somebody holding an `.exe` with no console behind it. `tests/test_onboarding.py::TestNothingTellsTheUserToOpenATerminal` greps the wizard copy, the halt messages and the connection details so a third one cannot be written.
+
+- **`onboarding.py` is pure and `login.py` drives the browser** — the same split `guards.py` has against `worker.py`. What the app decides to tell the user next is worth testing without Chrome, a profile directory or a Facebook session, and it is: 20 tests, half a second.
+- **One problem at a time.** `plan()` returns a single `SetupStep`, never a list. A screen reporting four problems at once is four times as intimidating and no more useful, because they have to be fixed in order anyway — there is no point mentioning Facebook when Chrome is not installed.
+- **The wizard is a view, not a dialog.** "No modal dialogs for status, ever" still holds. It is in `App.views` but deliberately **not** in `nav_buttons`: setup is something you finish, not a step you return to. The two ways back in are the first launch and the repair button under the pill.
+- **`SETUP_COMPLETE_KEY` is a stored fact, not a live check.** The window has to decide where to open *before* it is on screen, and `chrome.probe()` is up to a full second — a second of grey nothing, which reads as a crash. So the wizard shows until a connection check has come back `CONNECTED` **once**, and only `CONNECTED` retires it.
+- **Chrome is started after the window is up, never before it.** `App.begin_startup_checks()` is fired by a `QTimer` from `run()`, like `start_worker` and for the same reason — a window a test builds must not launch a browser. `chrome.launch` waits on the debug port for up to `LAUNCH_TIMEOUT_S` (**30 seconds**); in front of the window that is half a minute of nothing.
+
+**The startup check gets exactly one second chance.** `STARTUP_RECHECK_MS` (15s), armed by `begin_startup_checks` and spent by the first result. The reason is the logon task: it starts the app 45 seconds after sign-in, while Windows is still bringing the network up, and the check ends in a real page load — so it can fail for a reason that fixes itself a moment later, leaving a red pill on a machine nobody is sitting at. **One retry, never a loop**: an offline machine must not reopen Facebook every fifteen seconds for ever, and nothing in this app may open Facebook on a timer. Pressing "Check connection" by hand never arms it.
+
+**Re-login moves the window; it does not restart Chrome.** This is the part worth reading before changing it. The normal state of this app is a Chrome parked at `-32000,-32000`, so a session that expires later leaves a login form somewhere nobody can reach. Restarting Chrome is the obvious fix and the wrong one: there is no dependable way to close a window the user cannot see, and a restart mid-batch strands it. `login.open_login_window()` sends CDP `Browser.setWindowBounds` instead, and `hide_login_window()` puts it back.
+
+**Both halves of that were verified live against Chrome 151 on 2026-08-21**, because both were assumptions and either one failing leaves the client staring at an empty browser: a page created through `context.new_page()` **survives dropping the CDP connection** (the tab is a real Chrome target and Playwright does not own it), and `Browser.setWindowBounds` moves the window on screen and back off it in both directions. The check used `example.com`, never Facebook, and closed the tab it made. **Moving a window is not `bring_to_front()`** — the banned call raises a page above whatever the user is working in at a moment they did not ask for; this runs only because they just pressed a button that says a Chrome window will open.
+
+**Four things fail silently in a frozen build, and `build.ps1` checks for three of them:**
+
+| Missing | What it looks like |
+| --- | --- |
+| `playwright/driver/node.exe` (92MB) | The app opens and can never reach Chrome. Needs `collect_all("playwright")` — the driver is required even though Playwright never launches a browser here. |
+| `tzdata` | `Asia/Jerusalem` does not resolve, `clock.posting_zone()` falls back to the machine's zone, and every window decision moves by hours. |
+| `qtui/assets/check.svg` | PyInstaller does not collect `.svg` on its own. The box still fills with the accent, so only the tick is lost — on the one screen whose job is picking groups. |
+| **`PySide6.QtSvg`** | No Python code imports it, so it looks safely excludable. Qt needs its image plugin to draw the SVG the *stylesheet* references, and the failure is the same silent missing tick. It is deliberately not in the spec's `excludes`. |
+
+**`FacebookAutoPoster.exe --selftest` is the support call.** All four of the failures above are silent at runtime and none of them is describable by a non-technical client — "the tick is missing from a checkbox" is not a bug report. The selftest resolves `Asia/Jerusalem`, locates the Playwright driver, loads the theme and its SVG, looks for Chrome, and writes the result to `selftest.txt` beside the database; `--quiet` skips the dialog, which is how `build.ps1` asks the bundle to check itself. It deliberately **does not open the database** — a diagnostic that creates the thing it is inspecting is not a diagnostic.
+
+**One-folder, not one-file.** The bundle carries that 92MB `node.exe` plus Qt, and one-file re-extracts the lot to `%TEMP%` on every launch. This app sits open all day waiting for a schedule, so the unpack buys nothing.
+
+**Two Windows traps the installer has to respect:**
+
+- **It must not create `C:\FBAutomation\`.** The installer runs elevated; a directory it creates at the drive root may not be writable by a standard user afterwards — and `config.resolve_profile_dir()` returns an *existing* directory in preference to the `LOCALAPPDATA` fallback, so it would pick the unwritable one and stay there. Let the app create it on first run, as the user.
+- **There is no console, so `print()` goes nowhere.** CPython no-ops when `sys.stdout` is `None`, so nothing crashes — it just says nothing. The single-instance refusal was a `print`, which meant double-clicking the shortcut twice made the second copy vanish without a word. It is a `QMessageBox` now, and `QApplication` is constructed *before* the lock is taken so there is something to parent it to. That dialog is the **third** permitted modal, and it earns it the same way the other two do: it can only appear because the user just double-clicked.
+
+**Uninstalling leaves the user's data.** The database, the Chrome profile and therefore the Facebook login all live outside `{app}`, so a reinstall picks up every group, template and posting record, and nobody logs into Facebook again. The uninstaller says so, and always runs `setup_always_on.ps1 -Revert`.
+
+`setup_always_on.ps1` now takes **`-AppPath`** (build the logon task around the packaged `.exe` rather than hunting for a `.venv` and `main.py`) and **`-SkipPower`** (register the task, touch no power setting) — which is what the installer passes when the client wanted autostart but not a machine that never sleeps.
 
 ## Non-Interfering Operation
 
