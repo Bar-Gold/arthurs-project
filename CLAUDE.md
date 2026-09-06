@@ -62,15 +62,15 @@ powershell -ExecutionPolicy Bypass -File scripts\setup_always_on.ps1 -Revert
 ```powershell
 # The client deliverable. Runs the suite, then PyInstaller, then Inno Setup;
 # refuses to build a release from a red suite. Output: dist\FacebookAutoPoster-Setup-*.exe
-powershell -ExecutionPolicy Bypass -File packaginguild.ps1 -Clean
-powershell -ExecutionPolicy Bypass -File packaginguild.ps1 -SkipInstaller  # .exe folder only
+powershell -ExecutionPolicy Bypass -File packaging\build.ps1 -Clean
+powershell -ExecutionPolicy Bypass -File packaging\build.ps1 -SkipInstaller  # .exe folder only
 ```
 
 `probe` and `dry-run` are the tools for re-checking selectors whenever Facebook changes its markup. Reach for them before touching `poster.py`.
 
 `status` exits 0 when logged in, 1 when not, 2 on error (Chrome not running, etc.).
 
-There is no linter or formatter configured, and no pytest config file — the suite is the whole check. Baseline: **1167 tests, 75-150s** — the spread is machine load, not the suite; the Qt and Tk GUI files are ~80s of it on their own. A run of *five minutes or more* means something is reaching the network; see the `SilentNamer` note below.
+There is no linter or formatter configured, and no pytest config file — the suite is the whole check. Baseline: **1171 tests, 75-170s** — the spread is machine load, not the suite; the Qt and Tk GUI files are ~80s of it on their own. A run of *five minutes or more* means something is reaching the network; see the `SilentNamer` note below.
 
 **Do not add `playwright install`.** It is unnecessary and was verified so against Chrome 150: the app attaches to the user's real Chrome over CDP and never launches Playwright's bundled Chromium, so the driver shipped inside the pip package is all that is required.
 

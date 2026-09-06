@@ -165,7 +165,7 @@ This makes v1 roughly: *compose → pick groups from a list → post now or at o
 
 **Since v1:** per-group text editing, the Compose preview, the move from Tkinter to Qt (Tk 8.6 has no bidirectional text support, so mixed Hebrew/English lines rendered mirrored), and repeating posts.
 
-**Packaged for a client.** `packaginguild.ps1` produces `FacebookAutoPoster-Setup-x.y.z.exe`: a one-folder PyInstaller build wrapped in an Inno Setup installer, with a first-run wizard that walks a non-technical user through installing Chrome, starting it, and logging into Facebook by hand. The installer optionally registers the logon task and the mains-only always-on power plan from §5, and the uninstaller reverts both while deliberately leaving the database, the Chrome profile and therefore the Facebook login in place. The build refuses to run from a failing test suite.
+**Packaged for a client.** `packaging\build.ps1` produces `FacebookAutoPoster-Setup-x.y.z.exe`: a one-folder PyInstaller build wrapped in an Inno Setup installer, with a first-run wizard that walks a non-technical user through installing Chrome, starting it, and logging into Facebook by hand. The installer optionally registers the logon task and the mains-only always-on power plan from §5, and the uninstaller reverts both while deliberately leaving the database, the Chrome profile and therefore the Facebook login in place. The build refuses to run from a failing test suite.
 
 Post-v1, in likely order of value: a variation-suggestion helper (generate light rewordings rather than typing each by hand), video, per-group skip, tags.
 
