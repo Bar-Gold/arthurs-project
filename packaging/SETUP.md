@@ -64,6 +64,24 @@ post, give it a few different wordings and it will rotate them.
 **If a group holds your post for an admin to approve**, the app notices, says
 so on the Queue screen, and checks back later on its own.
 
+## Posting as a different Facebook account
+
+Press **Switch account**, under the connection light on the left. It will ask
+you to confirm, then open a Chrome window with the Facebook login in it — sign
+in as the other account there and press **Check again**.
+
+Your groups, templates, repeating posts and everything the app has already
+posted stay exactly as they are. Only who it posts as changes. Two things are
+worth knowing before you do it:
+
+* You will need the other account's password. The app never has it and never
+  asks for it.
+* The new account has to be a member of the groups in your list, or posts to
+  those groups will fail. Have a look at the Groups screen afterwards.
+
+If a post is going out at that moment, the app will ask you to wait until it
+has finished.
+
 ## If something looks wrong
 
 Look at the coloured dot at the bottom of the sidebar.

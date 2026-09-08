@@ -106,6 +106,40 @@ GUIDANCE: dict[SetupStep, Guidance] = {
 }
 
 
+# Changing which Facebook account the app posts as. Deliberately not a
+# SetupStep and not part of `plan()`: it is not a step towards being ready, it
+# is something you do once you already are, so a step of its own would have to
+# be one nobody is ever "on". The copy lives here anyway, with the rest of the
+# copy, so the same test greps it for terminal instructions.
+SWITCH_ACTION = "Switch account"
+# The card asks the question while it is waiting for an answer. Left saying
+# "You are all set" above a warning about signing out, it read as though the
+# app were congratulating the user and cautioning them in the same breath.
+SWITCH_HEADLINE = "Switch to a different Facebook account?"
+SWITCH_DETAIL = (
+    "Posting as somebody else? This signs the current account out of the app's "
+    "own Chrome window and opens the Facebook login, so you can sign in as "
+    "another one. Your groups, templates, repeating posts and posting history "
+    "all stay exactly as they are."
+)
+SWITCH_WARNING = (
+    "You will need the other account's password to hand. Nothing is deleted, "
+    "and the Chrome you browse in yourself is not touched — only the separate "
+    "window this app posts through."
+)
+SWITCH_CONFIRM = "Yes, sign out and switch"
+SWITCH_CANCEL = "Cancel"
+# Refused rather than queued. Dropping the cookies with a post half-typed in
+# the composer fails that post, and the batch then halts on a verification that
+# could never have succeeded.
+SWITCH_BUSY = (
+    "A post is going out right now. Wait until it has finished, then switch."
+)
+# What the pill says the moment the cookies are gone, before any check has had
+# time to come back and say the same thing.
+SWITCH_DONE = "Signed out. Log in as the other account in the Chrome window."
+
+
 def plan(chrome_installed: bool, result: ConnectionResult | None) -> SetupStep:
     """Decide the single next thing standing between the user and posting.
 

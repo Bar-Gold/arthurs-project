@@ -5,6 +5,12 @@ it cannot post yet -- Chrome missing, Chrome not started, nobody logged into
 Facebook -- and it is the only screen that offers to fix those things rather
 than reporting them.
 
+It is also the only way to change which Facebook account the app posts as.
+That is not a setup step -- it is something you do once setup is finished --
+but it belongs on the one screen that already owns the login, so there is a
+single implementation of "put a Chrome window in front of the user". The pill's
+button is what leads here once the wizard has been retired.
+
 It replaces instructions the app used to give and nobody outside this project
 could follow: "Start it with 'main.py launch'" and "Run 'main.py setup' and
 sign in again", both of which reached the user through the connection pill.
@@ -28,6 +34,7 @@ from PySide6.QtWidgets import (
 
 from fbposter import login, onboarding
 from fbposter.onboarding import RowState, SetupStep
+from fbposter.ui.connection import ConnectionResult, ConnectionState
 
 from .. import theme
 from ..widgets import card, clear, row
@@ -56,6 +63,13 @@ class WelcomeView(QWidget):
         # True once this session has moved the automation Chrome on screen for
         # a login. It is what decides whether there is a window to put back.
         self._opened_login = False
+        # True while the user is being asked to confirm an account switch, and
+        # True between pressing confirm and the sign-out landing. The second
+        # one exists because until it lands the app still believes it is
+        # connected, and the READY branch of refresh() would park the very
+        # window the login form is about to appear in.
+        self._confirming = False
+        self._switching = False
         # What is drawn. The screen redraws on a real state change and not on
         # every visit, the same guard every other view uses.
         self._shown = None
@@ -112,8 +126,32 @@ class WelcomeView(QWidget):
         self.recheck_button = QPushButton("Check again")
         self.recheck_button.clicked.connect(self.recheck)
         button_row.addWidget(self.recheck_button)
+
+        # Plain, never #Primary. It is an escape hatch offered on the one
+        # screen where nothing is wrong, and filled it would outrank the button
+        # that actually takes the user into the app.
+        self.switch_button = QPushButton(onboarding.SWITCH_ACTION)
+        self.switch_button.clicked.connect(self.begin_switch)
+        button_row.addWidget(self.switch_button)
+
+        self.confirm_button = QPushButton(onboarding.SWITCH_CONFIRM)
+        self.confirm_button.clicked.connect(self.confirm_switch)
+        button_row.addWidget(self.confirm_button)
+
+        self.cancel_button = QPushButton(onboarding.SWITCH_CANCEL)
+        self.cancel_button.clicked.connect(self.cancel_switch)
+        button_row.addWidget(self.cancel_button)
+
         button_row.addStretch(1)
         step_box.addWidget(buttons)
+
+        # Under the buttons, because it explains one of them rather than the
+        # card. Hidden entirely until the card is the "all set" one.
+        self.switch_note = QLabel()
+        self.switch_note.setObjectName("Muted")
+        self.switch_note.setWordWrap(True)
+        step_box.addWidget(self.switch_note)
+
         outer.addWidget(self.step_card)
 
         # Slack below everything, never above: anchoring the card to the bottom
@@ -143,7 +181,13 @@ class WelcomeView(QWidget):
 
     def refresh(self, force: bool = False) -> None:
         self.step = self.current_step()
-        snapshot = (self.step, self._busy)
+        if self.step is not SetupStep.READY and self._confirming:
+            # The question stops making sense the moment the answer changes --
+            # there is nothing left to sign out of. Settled before the snapshot
+            # is taken, so what is recorded as drawn is what was drawn.
+            self._confirming = False
+
+        snapshot = (self.step, self._busy, self._confirming)
         if not force and snapshot == self._shown:
             return
         self._shown = snapshot
@@ -172,22 +216,54 @@ class WelcomeView(QWidget):
         self.step_headline.setText(guide.headline)
         self.step_detail.setText(guide.detail)
 
-        if guide.done:
+        # Three shapes, and every button is stated in each of them. Working out
+        # only what changed is how a stale button gets left on screen offering
+        # something the card no longer says.
+        confirming = guide.done and self._confirming
+        if confirming:
+            # The question replaces the card rather than opening a dialog over
+            # it: "no modal dialogs" is the rule and this earns no exception.
+            # It reads better here anyway, where the warning has room to be a
+            # sentence rather than a line in a box.
+            self.step_headline.setText(onboarding.SWITCH_HEADLINE)
+            self.step_detail.setText(onboarding.SWITCH_WARNING)
+            self.action_button.setVisible(False)
+            self.recheck_button.setVisible(False)
+            self.switch_button.setVisible(False)
+            self.confirm_button.setVisible(True)
+            self.cancel_button.setVisible(True)
+            self.switch_note.setVisible(False)
+        elif guide.done:
             # Nothing left to fix, so the button stops being a repair and
-            # becomes the way into the app.
+            # becomes the way into the app -- and the one thing a finished
+            # setup might still want changing gets offered beside it.
             self.action_button.setText("Start using the app  →")
             self.action_button.setVisible(True)
             self.recheck_button.setVisible(False)
+            self.switch_button.setVisible(True)
+            self.confirm_button.setVisible(False)
+            self.cancel_button.setVisible(False)
+            self.switch_note.setText(onboarding.SWITCH_DETAIL)
+            self.switch_note.setVisible(True)
         else:
-            self.action_button.setVisible(guide.action is not None)
             self.action_button.setText(guide.action or "")
+            self.action_button.setVisible(guide.action is not None)
             self.recheck_button.setVisible(True)
+            self.switch_button.setVisible(False)
+            self.confirm_button.setVisible(False)
+            self.cancel_button.setVisible(False)
+            self.switch_note.setVisible(False)
 
         busy = self._busy
-        self.action_button.setEnabled(not busy)
-        self.recheck_button.setEnabled(not busy)
+        for button in (
+            self.action_button, self.recheck_button, self.switch_button,
+            self.confirm_button, self.cancel_button,
+        ):
+            button.setEnabled(not busy)
         if busy:
+            # Whatever is running, it is the action button that says so.
             self.action_button.setText("Working…")
+            self.action_button.setVisible(True)
 
     # -- the one button ----------------------------------------------------
     def do_action(self) -> None:
@@ -209,6 +285,37 @@ class WelcomeView(QWidget):
         self._opened_login = True
         self._run(login.open_login_window)
 
+    # -- changing account --------------------------------------------------
+    def begin_switch(self) -> None:
+        """Ask before signing anybody out. It is not a stray-click action.
+
+        The button sits beside the connection light on every screen, so the
+        second press is what separates "I want to change account" from "I was
+        aiming for Check connection".
+        """
+        if self._busy:
+            return
+        worker = self.app.worker
+        if worker is not None and worker.state == "posting":
+            # Dropping the cookies with a post half-typed into the composer
+            # fails that post, and the batch then halts on a verification that
+            # never could have succeeded. It is a wait, not a refusal.
+            self.app.toast(onboarding.SWITCH_BUSY, "warning")
+            return
+        self._confirming = True
+        self.refresh(force=True)
+
+    def cancel_switch(self) -> None:
+        self._confirming = False
+        self.refresh(force=True)
+
+    def confirm_switch(self) -> None:
+        if self._busy:
+            return
+        self._confirming = False
+        self._switching = True
+        self._run(login.switch_account)
+
     def _run(self, work) -> None:
         """Do the slow browser part off the drawing thread, then re-check."""
         self._busy = True
@@ -217,6 +324,18 @@ class WelcomeView(QWidget):
 
     def _on_done(self, _result) -> None:
         self._busy = False
+        if self._switching:
+            self._switching = False
+            # The cookies are gone, so what the last check said is now false.
+            # Recording it here rather than waiting for the round trip keeps
+            # the pill and this screen honest while the login form is already
+            # on screen -- and it has to happen before _opened_login is set,
+            # because a refresh that still believed we were connected would
+            # park the very window the user is about to type into.
+            self.app.note_connection(
+                ConnectionResult(ConnectionState.LOGGED_OUT, onboarding.SWITCH_DONE)
+            )
+            self._opened_login = True
         if self.step is SetupStep.LOGGED_OUT:
             self.app.toast(
                 "Chrome is open — log into Facebook there, then press Check again.",
@@ -227,6 +346,9 @@ class WelcomeView(QWidget):
 
     def _on_failed(self, exc: Exception) -> None:
         self._busy = False
+        # Nothing was signed out, so the screen goes back to what it was
+        # showing rather than to the half-switched state.
+        self._switching = False
         # Shown as-is. `login.py` raises text written for this person, so
         # dressing it up here would only bury it.
         self.app.toast(str(exc), "error")

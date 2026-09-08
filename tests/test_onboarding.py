@@ -103,6 +103,14 @@ class TestNothingTellsTheUserToOpenATerminal:
             for field in (guide.headline, guide.detail, guide.action or ""):
                 assert self.offenders(field) == [], f"{step}: {field!r}"
 
+    def test_the_switch_copy_is_clean(self):
+        """It reaches the same person through the same screen."""
+        for name in dir(onboarding):
+            if not name.startswith("SWITCH_"):
+                continue
+            text = getattr(onboarding, name)
+            assert self.offenders(text) == [], f"{name}: {text!r}"
+
     def test_the_halt_messages_are_clean(self):
         for verdict, message in detect.HALT_MESSAGES.items():
             assert self.offenders(message) == [], f"{verdict}: {message!r}"
@@ -131,3 +139,36 @@ class TestNothingTellsTheUserToOpenATerminal:
         to do. A button that cannot do anything is worse than none."""
         assert onboarding.guidance(SetupStep.CHROME_MISSING).action is None
         assert onboarding.guidance(SetupStep.READY).action is None
+
+
+class TestChangingWhichAccountItPostsAs:
+    """Not a setup step -- something you do once setup is finished -- but the
+    wizard owns it, because the wizard owns the login. The copy lives here so
+    it is greppable with the rest of it."""
+
+    def test_it_is_not_a_step(self):
+        """A SetupStep of its own would be one nobody is ever on: `plan()` only
+        ever reports what is standing between the user and posting."""
+        assert not any(step.value.startswith("switch") for step in SetupStep)
+
+    def test_the_promise_is_stated(self):
+        """The whole reason this is safe to press is that nothing but the
+        Facebook session changes, and the user has no way to know that unless
+        the screen says so."""
+        detail = onboarding.SWITCH_DETAIL.lower()
+        assert "groups" in detail
+        assert "history" in detail
+
+    def test_the_warning_says_what_they_will_need(self):
+        assert "password" in onboarding.SWITCH_WARNING.lower()
+
+    def test_every_piece_of_it_says_something(self):
+        for name in ("SWITCH_ACTION", "SWITCH_DETAIL", "SWITCH_WARNING",
+                     "SWITCH_CONFIRM", "SWITCH_CANCEL", "SWITCH_BUSY",
+                     "SWITCH_DONE"):
+            assert getattr(onboarding, name).strip(), name
+
+    def test_the_confirmation_is_not_the_same_words_as_the_offer(self):
+        """Two buttons reading the same thing is how somebody presses the
+        second one believing it is the first."""
+        assert onboarding.SWITCH_CONFIRM != onboarding.SWITCH_ACTION

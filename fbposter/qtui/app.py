@@ -250,10 +250,12 @@ class App(QMainWindow):
         self.check_button.clicked.connect(self.check_connection)
         inner.addWidget(self.check_button)
 
-        # Appears only when something is actually wrong, and says what it will
-        # do about it. Before this the pill reported "Chrome not running" and
-        # the detail told the user to run a terminal command, which is not a
-        # thing the person this app was built for is ever going to do.
+        # Says what it will do about whatever the pill is reporting, and does
+        # it by navigating -- the wizard owns every action. Before this the pill
+        # reported "Chrome not running" and the detail told the user to run a
+        # terminal command, which is not a thing the person this app was built
+        # for is ever going to do. When there is nothing wrong it offers the
+        # account switch, which is otherwise unreachable.
         self.fix_button = QPushButton()
         self.fix_button.setVisible(False)
         self.fix_button.clicked.connect(lambda: self.show_view("welcome"))
@@ -374,6 +376,22 @@ class App(QMainWindow):
         self._set_connection(ConnectionState.ERROR, str(exc))
         self._refresh_welcome()
 
+    def note_connection(self, result: ConnectionResult) -> None:
+        """Record something the app learned about the session without checking.
+
+        Signing out for an account switch is the case that needs it: the app
+        *knows* the session has gone the moment it drops the cookies, and
+        waiting for a round trip to say so would leave the pill green and the
+        wizard congratulating the user while a login form is already in front
+        of them.
+
+        Not announced as a toast. The screen that asked for this is showing the
+        same fact in full, and the pill has already changed colour.
+        """
+        self.connection_result = result
+        self._set_connection(result.state, result.detail, announce=False)
+        self._refresh_welcome()
+
     def _refresh_welcome(self) -> None:
         view = self.views.get("welcome")
         if view is not None:
@@ -394,18 +412,24 @@ class App(QMainWindow):
         """Offer the repair for whatever the pill is currently reporting.
 
         The button only navigates -- the wizard owns every action, so there is
-        one implementation of "start Chrome" and one of "log in" rather than a
-        second copy here that can drift.
+        one implementation of "start Chrome", one of "log in" and one of "sign
+        out and switch" rather than a second copy here that can drift. That
+        matters most for the switch, which is the one that destroys something.
         """
         button = getattr(self, "fix_button", None)
         if button is None:  # called from _build_pill before it exists
             return
-        if self.connection_state in (
-            ConnectionState.CONNECTED,
-            ConnectionState.CHECKING,
-            ConnectionState.UNKNOWN,
-        ):
+        if self.connection_state in (ConnectionState.CHECKING, ConnectionState.UNKNOWN):
+            # Nothing has been established yet, so there is nothing to offer.
             button.setVisible(False)
+            return
+        if self.connection_state is ConnectionState.CONNECTED:
+            # Nothing is wrong, so the only thing left worth offering is the one
+            # thing a working setup might still need changed: which account it
+            # posts as. Without this the wizard is unreachable once it has been
+            # retired, and the alternative is renaming a folder by hand.
+            button.setText(onboarding.SWITCH_ACTION)
+            button.setVisible(True)
             return
         step = onboarding.plan(login.chrome_installed(), self.connection_result)
         guide = onboarding.guidance(step)

@@ -15,7 +15,7 @@ Most of this file is a rule that already cost a live bug. They are grouped by wh
 | `db/`, retention | Database rules; the two retentions; Queue retention |
 | `ui/` (legacy Tk) | `fbposter/ui/CLAUDE.md` — loads on its own when you open a file there |
 | tests | How the tests avoid a browser and a real clock |
-| `onboarding.py`, `login.py`, `packaging/` | Shipping it to a non-technical user |
+| `onboarding.py`, `login.py`, `packaging/` | Shipping it to a non-technical user; Changing account |
 
 Text that reaches a post also passes Invisible characters and Hebrew, whatever screen it came from.
 
@@ -25,7 +25,7 @@ Text that reaches a post also passes Invisible characters and Hebrew, whatever s
 
 **The app now posts on its own.** Opening the GUI starts the worker, and any due batch will go out. `README.md` holds the full spec. Per-group text editing, the Compose preview, the Qt rewrite and **repeating posts** all shipped after v1; the content-variation warning is now actionable, so it should be rare rather than constant. Since then: a post a group holds for an admin is tracked as its own outcome and resolved by the app itself (`TARGET_AWAITING_APPROVAL` and `_follow_up_pending`, see the Worker rules), a dropped Chrome connection defers a batch instead of throwing it away, and `scripts/setup_always_on.ps1` covers the laptop that has to post with its lid shut (see Power). Most recently, two things that were silent are not: removing a group archives it rather than deleting its posting history out from under the repeat guard, and closing the window warns when doing so would strand a queued batch or an active schedule.
 
-**It is now shipped, not just run.** The app is packaged as an installer for a non-technical client: a first-run wizard replaces the terminal commands the app used to print, and `packaging/` builds a signed-nothing-but-working `Setup.exe`. See "Handing this to a non-technical user".
+**It is now shipped, not just run.** The app is packaged as an installer for a non-technical client: a first-run wizard replaces the terminal commands the app used to print, and `packaging/` builds a signed-nothing-but-working `Setup.exe`. The wizard also owns the one thing a finished setup might still need changing — which Facebook account it posts as. See "Handing this to a non-technical user".
 
 ## What This Is
 
@@ -70,7 +70,7 @@ powershell -ExecutionPolicy Bypass -File packaging\build.ps1 -SkipInstaller  # .
 
 `status` exits 0 when logged in, 1 when not, 2 on error (Chrome not running, etc.).
 
-There is no linter or formatter configured, and no pytest config file — the suite is the whole check. Baseline: **1171 tests, 75-170s** — the spread is machine load, not the suite; the Qt and Tk GUI files are ~80s of it on their own. A run of *five minutes or more* means something is reaching the network; see the `SilentNamer` note below.
+There is no linter or formatter configured, and no pytest config file — the suite is the whole check. Baseline: **1209 tests, 75-170s** — the spread is machine load, not the suite; the Qt and Tk GUI files are ~80s of it on their own. A run of *five minutes or more* means something is reaching the network; see the `SilentNamer` note below.
 
 **Do not add `playwright install`.** It is unnecessary and was verified so against Chrome 150: the app attaches to the user's real Chrome over CDP and never launches Playwright's bundled Chromium, so the driver shipped inside the pip package is all that is required.
 
@@ -335,6 +335,45 @@ The app is shipped to a client as `dist\FacebookAutoPoster-Setup-x.y.z.exe`, bui
 **Re-login moves the window; it does not restart Chrome.** This is the part worth reading before changing it. The normal state of this app is a Chrome parked at `-32000,-32000`, so a session that expires later leaves a login form somewhere nobody can reach. Restarting Chrome is the obvious fix and the wrong one: there is no dependable way to close a window the user cannot see, and a restart mid-batch strands it. `login.open_login_window()` sends CDP `Browser.setWindowBounds` instead, and `hide_login_window()` puts it back.
 
 **Both halves of that were verified live against Chrome 151 on 2026-08-21**, because both were assumptions and either one failing leaves the client staring at an empty browser: a page created through `context.new_page()` **survives dropping the CDP connection** (the tab is a real Chrome target and Playwright does not own it), and `Browser.setWindowBounds` moves the window on screen and back off it in both directions. The check used `example.com`, never Facebook, and closed the tab it made. **Moving a window is not `bring_to_front()`** — the banned call raises a page above whatever the user is working in at a moment they did not ask for; this runs only because they just pressed a button that says a Chrome window will open.
+
+### Changing which Facebook account it posts as
+
+`login.switch_account()` drops the profile's cookies and reopens Facebook. That
+is the entire mechanism, and it is enough because **nothing in the database is
+tied to an account** — the login cookie is only ever read as a yes/no and never
+stored — so the groups, templates, repeating posts and the whole posting history
+survive the switch untouched. Before this existed, the only way to do it was
+renaming `ChromeProfile\` by hand.
+
+- **Cookies, never Facebook's own Log out menu.** Driving that menu would be a
+  language-dependent click on obfuscated markup, in the account menu of all
+  places, where a mis-resolved selector could press something else entirely. It
+  is also the only approach that leaves nothing for the next account to inherit:
+  the "recently logged in" chooser is a cookie too.
+- **Cleared before the navigation, never after.** Cleared afterwards, the page in
+  front of the user is still the old account's feed, and the login form appears
+  only if they think to reload it themselves.
+- **Nothing is half-done.** A window that will not come on screen signs nobody
+  out, and a sign-out that fails never navigates — landing on the old account's
+  feed after being told you were signed out is how somebody posts as the wrong
+  person. `_sign_out` therefore raises rather than swallowing, unlike almost
+  everything else in `login.py`.
+- **The pill's button offers it whenever the connection is fine**, because the
+  wizard is otherwise unreachable: it retires itself the first time a check comes
+  back `CONNECTED`. The button still only navigates — the wizard owns the action
+  and the confirmation, which matters most for the one that destroys something.
+- **Two presses, and the second is not a dialog.** The confirmation replaces the
+  card rather than opening over it, so the permitted-modal list stays at three.
+  The button sits beside the connection light on every screen, and one press away
+  from signing out is too close to "Check connection".
+- **Refused outright while the worker is mid-post.** Dropping the cookies with a
+  post in the composer fails that post, and the batch then halts on a
+  verification that could never have succeeded. It is a wait, not a refusal.
+- **The app records the sign-out itself** (`App.note_connection`) instead of
+  waiting for a check to come back and say so. That is not cosmetic: until the
+  app knows, the wizard still believes it is `READY`, and the `READY` branch of
+  `WelcomeView.refresh()` parks the very login window the user is about to type
+  into. `_switching` exists for exactly that window of time.
 
 **Four things fail silently in a frozen build, and `build.ps1` checks for three of them:**
 
