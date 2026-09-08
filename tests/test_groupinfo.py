@@ -90,3 +90,45 @@ class TestLiveNamerIsSafe:
         namer = LiveGroupNamer()
         assert namer.names_for(["https://www.facebook.com/groups/1/"]) == {}
         assert namer.name_for("https://www.facebook.com/groups/1/") == ""
+
+
+class TestTheHeadingIsTheGroupsOwn:
+    """A group called "TRY" was stored as "Chats".
+
+    `document.querySelector('h1')` returns the first h1 in *document order*,
+    and Facebook's chat sidebar inserts its own h1 ahead of the group's about
+    1.75 seconds into the load. Sampled live against a real group:
+
+        750ms   h1 count=1   first='TRY'     main='TRY'
+       1750ms   h1 count=2   first='Chats'   main='TRY'
+
+    So it is not a race that waiting fixes -- the app already waited four
+    seconds, and by then the wrong answer was stable. The heading has to be
+    scoped to the main landmark.
+
+    The failure lives in a JavaScript string that no Python test can execute,
+    so what is pinned here is the selector itself.
+    """
+
+    def test_the_heading_is_read_from_inside_the_main_landmark(self):
+        from fbposter.automation.groupinfo import READ_NAME
+
+        assert '[role="main"] h1' in READ_NAME
+
+    def test_no_unscoped_h1_lookup_survives(self):
+        """The exact line that produced the bug."""
+        from fbposter.automation.groupinfo import READ_NAME
+
+        assert "querySelector('h1')" not in READ_NAME
+        assert 'querySelector("h1")' not in READ_NAME
+        assert "querySelectorAll('h1')" not in READ_NAME
+
+    def test_furniture_is_never_preferred_to_the_group(self):
+        """The shape of the real page: two headings, the group's second."""
+        page = FakePage(heading="TRY", title="(20+) TRY | Facebook")
+        assert read_name(page) == "TRY"
+
+    def test_the_title_is_the_fallback_not_some_other_heading(self):
+        """With no heading in main, the tab title is a better answer than an
+        arbitrary h1 -- an arbitrary h1 is how this bug happened."""
+        assert read_name(FakePage(heading="", title="(20+) TRY | Facebook")) == "TRY"

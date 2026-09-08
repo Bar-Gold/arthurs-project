@@ -70,7 +70,7 @@ powershell -ExecutionPolicy Bypass -File packaging\build.ps1 -SkipInstaller  # .
 
 `status` exits 0 when logged in, 1 when not, 2 on error (Chrome not running, etc.).
 
-There is no linter or formatter configured, and no pytest config file — the suite is the whole check. Baseline: **1227 tests, 75-170s** — the spread is machine load, not the suite; the Qt and Tk GUI files are ~80s of it on their own. A run of *five minutes or more* means something is reaching the network; see the `SilentNamer` note below.
+There is no linter or formatter configured, and no pytest config file — the suite is the whole check. Baseline: **1233 tests, 75-170s** — the spread is machine load, not the suite; the Qt and Tk GUI files are ~80s of it on their own. A run of *five minutes or more* means something is reaching the network; see the `SilentNamer` note below.
 
 **Do not add `playwright install`.** It is unnecessary and was verified so against Chrome 150: the app attaches to the user's real Chrome over CDP and never launches Playwright's bundled Chromium, so the driver shipped inside the pip package is all that is required.
 
@@ -100,7 +100,7 @@ Scripts: `scripts/setup_always_on.ps1` — the laptop power plan and the logon t
 
 Packaging: `packaging/` — `fbposter.spec` (PyInstaller), `installer.iss` (Inno Setup), `build.ps1` (both, plus the suite), `entry.py`, `SETUP.md` (the client's one-pager).
 
-Automation: `automation/poster.py` (`GroupPoster` — arrive → compose → type → attach → publish → verify, plus the read-only `probe`), `detect.py` (`classify` a page as OK / checkpoint / login / rate-limit / unavailable), `humanize.py` (`Humanizer`: keystroke timing, hovers, arrival scroll, the inter-group gap), `groupinfo.py` (read a group's display name off its `h1`; cosmetic, and must never raise into a caller).
+Automation: `automation/poster.py` (`GroupPoster` — arrive → compose → type → attach → publish → verify, plus the read-only `probe`), `detect.py` (`classify` a page as OK / checkpoint / login / rate-limit / unavailable), `humanize.py` (`Humanizer`: keystroke timing, hovers, arrival scroll, the inter-group gap), `groupinfo.py` (read a group's display name off the `h1` **inside `[role="main"]`**; cosmetic, and must never raise into a caller).
 
 UI (Qt, current): `qtui/app.py` (window, sidebar, connection pill, worker row, worker-event pump, background thread helper), `qtui/views/` (compose, groups, publish, queue — the nav order is the flow; plus `welcome`, the first-run wizard, which is deliberately not in the sidebar), `qtui/theme.py` (palette + one stylesheet), `qtui/widgets.py` (`card`, `row`, `clear`), `qtui/assets/`. It reuses `ui/connection.py` and every non-UI module unchanged.
 
@@ -495,6 +495,10 @@ Verified live in each language:
 | "Your content" page | `Your content` | `התוכן שלך` | `Ваш контент` |
 
 The composer trigger carries **no aria-label in any language** and is matched on visible text; the text field has no accessible name and is found as the dialog's only `textbox`.
+
+**A landmark is part of the selector, not decoration — `document.querySelector('h1')` is not the group's heading.** It returns the first `h1` in *document order*, and Facebook's chat sidebar renders its own and inserts it **ahead** of the group's about 1.75s into the load. A group called `TRY` was therefore stored as `Chats`, and it reached a client. Sampled live on 2026-09-08: at 750ms one `h1`, `'TRY'`; at 1750ms two, with `'Chats'` first. So this is **not a race that waiting fixes** — `groupinfo.py` already waited four seconds and the wrong answer is stable long before that; waiting longer makes it worse. It also only happens when the chat panel renders, which is how it survived. `READ_NAME` is scoped to `[role="main"] h1`, and there is deliberately **no "any h1" fallback** — the tab title is a better last resort than an arbitrary heading. `tests/test_groupinfo.py` pins the selector itself, because the bug lived in a JavaScript string no Python test can execute.
+
+**Fixing a name lookup does not fix the names already stored.** `GroupRepo.missing_names` only finds *empty* ones, so a wrong name is never looked at again and would sit in the Groups list for ever. Migration 008 clears `groups.name` so the Groups screen re-fetches; until it does, `display_name` falls back to the identifier, which is what a newly added group shows anyway. Safe because nothing decides anything on `name` — the repeat guard, the cooldown and the queue all key on `group_id`.
 
 **Read every string off the live site — never translate one.** Russian's post button is `Отправить` ("send"), while the obvious translation, and what research suggested, is `Опубликовать`. Shipping the plausible word would have failed at the Post click, which is the one step that cannot safely be retried. **The pending banner caught the same trap twice more**, verified 2026-08-18: the live Hebrew is `בהמתנה` where the natural translation gives `ממתין`, and the live Russian is `подтверждения` ("confirmation") where the natural translation gives `одобрения` ("approval") — a word that appears nowhere on the page. Two of the three shipped only because the researched list happened to include the right variant alongside the wrong one. To add a language: `main.py probe` a real group, dump the composer, paste what Facebook returns.
 

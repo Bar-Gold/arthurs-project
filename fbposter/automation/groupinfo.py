@@ -4,8 +4,8 @@ Purely cosmetic: it turns "2509198906266893" in the Groups list into
 "bar-test". Nothing here may raise into the caller, because failing to look up
 a name must never stop a group being added or a batch being queued.
 
-A logged-in group page carries no og:title, so the name comes from the page's
-h1, with the tab title as a fallback.
+A logged-in group page carries no og:title, so the name comes from the group
+heading, with the tab title as a fallback.
 """
 
 from __future__ import annotations
@@ -18,10 +18,28 @@ from ..groups import clean_group_title
 NAV_TIMEOUT_MS = 45_000
 RENDER_MS = 4_000
 
-# The h1 holds the group's name on its own, with none of the tab title's noise.
+# The group's heading holds its name on its own, with none of the tab title's
+# noise -- but it has to be the heading *inside the main landmark*.
+#
+# `document.querySelector('h1')` returns the first h1 in document order, and on
+# a real group page that is not the group. Facebook's chat sidebar renders its
+# own `h1` ("Chats", and whatever that word is in the account's language) and
+# inserts it *ahead* of the group's heading about 1.75s into the load, so a
+# group actually called "TRY" was stored as "Chats". Sampled live:
+#
+#     750ms   h1 count=1   first='TRY'     main='TRY'
+#    1750ms   h1 count=2   first='Chats'   main='TRY'
+#
+# So this is not a race that waiting fixes -- waiting longer makes it worse,
+# and the wrong name is stable from then on. It also only happens when the chat
+# panel renders, which is why it survived to a client. Scope to [role="main"]
+# and the group's own heading is the only one in view.
+#
+# Deliberately no "any h1" fallback: that is exactly the line that produced the
+# bug, and the tab title is a better last resort than an arbitrary heading.
 READ_NAME = """
 () => {
-  const h1 = document.querySelector('h1');
+  const h1 = document.querySelector('[role="main"] h1');
   return {
     heading: h1 ? (h1.innerText || '').trim() : '',
     title: document.title || '',

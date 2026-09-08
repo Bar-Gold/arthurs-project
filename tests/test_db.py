@@ -753,3 +753,69 @@ class TestAMigrationIsAllOrNothing:
             assert "retried" in columns
         finally:
             raw.close()
+
+
+class TestNamesReadFromTheWrongHeadingAreRepaired:
+    """A group called "TRY" was stored as "Chats" -- Facebook's chat sidebar
+    heading, which sits ahead of the group's in document order.
+
+    Fixing the lookup is not enough on its own. `missing_names` only finds
+    groups with *no* name, so a wrong one already stored would never be looked
+    at again. Migration 008 clears them so the Groups screen fetches them
+    afresh, correctly.
+    """
+
+    def test_stored_names_are_cleared_so_they_are_fetched_again(self, tmp_path):
+        from fbposter.db import schema
+
+        path = tmp_path / "names.db"
+        raw = sqlite3.connect(path, isolation_level=None)
+        try:
+            for index in range(7):
+                schema.MIGRATIONS[index](raw)
+            raw.execute("PRAGMA user_version = 7")
+            raw.execute(
+                "INSERT INTO groups (identifier, url, name, created_at) "
+                "VALUES ('1697911281266837', 'u', 'Chats', '2026-09-01')"
+            )
+        finally:
+            raw.close()
+
+        upgraded = Database(path)
+        try:
+            groups = GroupRepo(upgraded)
+            group = groups.list()[0]
+            assert group.name == ""
+            # Until it is fetched again the identifier shows, which is exactly
+            # what a newly added group shows.
+            assert group.display_name == "1697911281266837"
+            assert [g.id for g in groups.missing_names()] == [group.id]
+        finally:
+            upgraded.close()
+
+    def test_nothing_but_the_name_is_touched(self):
+        """The repeat guard, the cooldown and the queue all key on group_id,
+        so clearing a name must cost none of them anything."""
+        from fbposter.db import schema
+
+        raw = sqlite3.connect(":memory:", isolation_level=None)
+        try:
+            for index in range(7):
+                schema.MIGRATIONS[index](raw)
+            raw.execute(
+                "INSERT INTO groups (identifier, url, name, cooldown_hours, "
+                "last_posted_at, notes, created_at) "
+                "VALUES ('g1', 'u', 'Chats', 3, '2026-09-01T10:00:00+00:00', "
+                "'keep me', '2026-09-01')"
+            )
+            schema._migration_008(raw)
+            row = raw.execute("SELECT * FROM groups").fetchone()
+            columns = [d[0] for d in raw.execute("SELECT * FROM groups").description]
+            got = dict(zip(columns, row))
+            assert got["name"] == ""
+            assert got["cooldown_hours"] == 3
+            assert got["last_posted_at"] == "2026-09-01T10:00:00+00:00"
+            assert got["notes"] == "keep me"
+            assert got["identifier"] == "g1"
+        finally:
+            raw.close()

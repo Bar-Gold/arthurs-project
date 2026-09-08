@@ -266,6 +266,26 @@ def _migration_007(connection: sqlite3.Connection) -> None:
     )
 
 
+def _migration_008(connection: sqlite3.Connection) -> None:
+    """Read every group's display name again.
+
+    Names came from the first h1 on the page, which on a real group page is
+    Facebook's chat sidebar and not the group: a group called "TRY" was stored
+    as "Chats". `groupinfo.READ_NAME` is scoped to the main landmark now, but
+    that fixes only names read from here on -- `GroupRepo.missing_names` finds
+    empty names, so one already stored is never looked at again, and the wrong
+    one would sit in the Groups list for ever.
+
+    Clearing them is the whole repair: the Groups screen re-fetches on its next
+    visit, and until it does `display_name` falls back to the group's
+    identifier, which is exactly what a newly added group shows anyway.
+
+    Cosmetic only. Nothing decides anything on `name` -- the repeat guard, the
+    cooldown and the queue all key on `group_id`.
+    """
+    connection.execute("UPDATE groups SET name = ''")
+
+
 # Index i applies when user_version == i, and bumps it to i + 1.
 MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _migration_001,
@@ -275,6 +295,7 @@ MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _migration_005,
     _migration_006,
     _migration_007,
+    _migration_008,
 ]
 
 LATEST_VERSION = len(MIGRATIONS)
