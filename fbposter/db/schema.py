@@ -96,8 +96,32 @@ CREATE TABLE settings (
 """
 
 
+def _run_script(connection: sqlite3.Connection, script: str) -> None:
+    """Run a multi-statement script inside the caller's transaction.
+
+    `executescript` cannot be used for this. It commits any transaction that is
+    already open before it runs anything, so a migration built on it is not
+    atomic however carefully the caller wraps it -- which is precisely the bug
+    this exists to close: a migration that failed half way left the schema
+    changed with `user_version` unmoved, and the next launch re-ran it and died
+    on "duplicate column name". Splitting the script and executing statement by
+    statement keeps every one of them inside the BEGIN.
+
+    `sqlite3.complete_statement` does the splitting, so a semicolon inside a
+    string literal or a comment does not cut a statement in half.
+    """
+    buffer = ""
+    for line in script.splitlines(keepends=True):
+        buffer += line
+        if sqlite3.complete_statement(buffer):
+            connection.execute(buffer)
+            buffer = ""
+    if buffer.strip():  # a trailing comment, harmlessly
+        connection.execute(buffer)
+
+
 def _migration_001(connection: sqlite3.Connection) -> None:
-    connection.executescript(_MIGRATION_001)
+    _run_script(connection, _MIGRATION_001)
     connection.executemany(
         "INSERT INTO settings (key, value) VALUES (?, ?)",
         list(DEFAULT_SETTINGS.items()),
@@ -171,7 +195,7 @@ def _migration_004(connection: sqlite3.Connection) -> None:
     serial worker, the inter-group gap, crash recovery and the guards all apply
     unchanged -- instead of a second one that would have to re-earn its safety.
     """
-    connection.executescript(_MIGRATION_004)
+    _run_script(connection, _MIGRATION_004)
     # Which schedule spawned a batch, so the queue can say so and so a schedule
     # never stacks a second batch on top of one still waiting to go out.
     connection.execute("ALTER TABLE tasks ADD COLUMN schedule_id INTEGER")
@@ -261,12 +285,30 @@ def current_version(connection: sqlite3.Connection) -> int:
 
 
 def apply_migrations(connection: sqlite3.Connection) -> int:
-    """Bring the database up to LATEST_VERSION. Safe to call on every open."""
+    """Bring the database up to LATEST_VERSION. Safe to call on every open.
+
+    Each migration and the version bump that records it are one all-or-nothing
+    unit. `with connection:` was doing nothing here -- connections are opened
+    with `isolation_level=None`, so it committed a transaction that had never
+    been begun while every statement autocommitted on its own. A migration that
+    failed part way therefore left the schema changed and `user_version` where
+    it was, and the next launch re-ran the same migration and stopped on
+    "duplicate column name": an app that would not open, on the client's
+    machine, with no way back. BEGIN has to be explicit, exactly as
+    `Database.transaction()` says.
+    """
     version = current_version(connection)
     for index in range(version, LATEST_VERSION):
-        with connection:
+        connection.execute("BEGIN")
+        try:
             MIGRATIONS[index](connection)
             # No parameter binding for PRAGMA, hence the f-string; the value is
-            # a loop index, never user input.
+            # a loop index, never user input. It is written inside the
+            # transaction on purpose -- the schema change and the record of it
+            # have to survive or fail together.
             connection.execute(f"PRAGMA user_version = {index + 1}")
+        except BaseException:
+            connection.execute("ROLLBACK")
+            raise
+        connection.execute("COMMIT")
     return current_version(connection)

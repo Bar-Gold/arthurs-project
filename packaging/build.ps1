@@ -18,13 +18,18 @@
     Delete build\ and dist\ first. PyInstaller caches aggressively and a stale
     cache is the usual reason a change does not show up in the .exe.
 
+.PARAMETER Force
+    Package the bundle even though it failed its own checks. For looking at a
+    broken build, never for something a client is going to install.
+
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File packaging\build.ps1
 #>
 [CmdletBinding()]
 param(
     [switch]$SkipInstaller,
-    [switch]$Clean
+    [switch]$Clean,
+    [switch]$Force
 )
 
 $ErrorActionPreference = "Stop"
@@ -164,8 +169,20 @@ if (Test-Path $report) {
     Get-Content $report | ForEach-Object { Write-Step $_ }
 }
 
+# The same rule as the suite, for the same reason. Every one of these
+# failures is silent at runtime -- the app opens and simply never reaches
+# Chrome, or resolves the wrong time zone, or draws a checkbox with no tick --
+# and none of them is describable by a non-technical client. Warning and
+# packaging anyway put the discovery of a broken build on the person least able
+# to diagnose it.
 if ($missing -gt 0) {
-    Write-Warn "$missing expected file(s) missing -- the app may fail at runtime."
+    if ($Force) {
+        Write-Warn "$missing check(s) failed -- packaging anyway because -Force was given."
+    } else {
+        throw ("$missing check(s) failed. Not shipping a bundle that fails its own " +
+               "self test -- these failures are silent for the client. Fix it, or " +
+               "pass -Force to package it regardless.")
+    }
 }
 
 # --- stage 2: Inno Setup -----------------------------------------------------

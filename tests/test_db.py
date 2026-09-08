@@ -80,8 +80,8 @@ class TestSchema:
 
         path = tmp_path / "old.db"
         raw = sqlite3.connect(path, isolation_level=None)
-        # No explicit transaction: _migration_001 uses executescript, which
-        # implicitly commits, so wrapping it would leave nothing to commit.
+        # Called on its own here, outside apply_migrations, so it autocommits
+        # on this connection and nothing needs committing afterwards.
         schema._migration_001(raw)
         raw.execute("PRAGMA user_version = 1")
         raw.execute(
@@ -635,3 +635,121 @@ class TestCountingWhatIsStillDue:
         task = tasks.create("a", [(group.id, "a")])
         tasks.cancel(task.id)
         assert tasks.unfinished_count() == 0
+
+
+class TestAMigrationIsAllOrNothing:
+    """A half-applied migration is an app that will not open.
+
+    `apply_migrations` used `with connection:` on a connection opened
+    autocommit, which commits a transaction that was never begun -- so every
+    statement landed on its own and a migration that failed part way left its
+    first change written with `user_version` still where it was. The next
+    launch re-ran the same migration and stopped on "duplicate column name",
+    on the client's machine, with no way back.
+    """
+
+    def _database_at_the_current_version(self, tmp_path, name):
+        path = tmp_path / name
+        Database(path).close()
+        return path
+
+    def _append(self, monkeypatch, migration):
+        """Add one more migration, as a future version would."""
+        from fbposter.db import schema
+
+        monkeypatch.setattr(schema, "MIGRATIONS", list(schema.MIGRATIONS) + [migration])
+        monkeypatch.setattr(schema, "LATEST_VERSION", schema.LATEST_VERSION + 1)
+        return schema
+
+    def test_a_failed_migration_leaves_the_schema_and_the_version_alone(
+        self, tmp_path, monkeypatch
+    ):
+        import sqlite3
+
+        from fbposter.db import schema
+
+        def half_way(connection):
+            connection.execute("ALTER TABLE groups ADD COLUMN half_done TEXT")
+            raise RuntimeError("the migration fell over")
+
+        path = self._database_at_the_current_version(tmp_path, "half.db")
+        raw = sqlite3.connect(path, isolation_level=None)
+        try:
+            settled = schema.current_version(raw)
+            self._append(monkeypatch, half_way)
+
+            with pytest.raises(RuntimeError):
+                schema.apply_migrations(raw)
+
+            columns = [row[1] for row in raw.execute("PRAGMA table_info(groups)")]
+            assert "half_done" not in columns, "a failed migration left its change behind"
+            assert schema.current_version(raw) == settled
+        finally:
+            raw.close()
+
+    def test_a_script_migration_is_atomic_too(self, tmp_path, monkeypatch):
+        """The trap `executescript` sets.
+
+        It commits whatever transaction is already open before it runs a line,
+        so a migration built on it is not atomic however carefully the caller
+        wraps it -- and two of the real migrations are scripts. `_run_script`
+        exists to keep them inside the BEGIN.
+        """
+        import sqlite3
+
+        from fbposter.db import schema
+
+        def two_tables_then_trouble(connection):
+            schema._run_script(
+                connection,
+                "CREATE TABLE first_half (id INTEGER);\n"
+                "CREATE TABLE second_half (id INTEGER);\n",
+            )
+            raise RuntimeError("fell over after the script")
+
+        path = self._database_at_the_current_version(tmp_path, "script.db")
+        raw = sqlite3.connect(path, isolation_level=None)
+        try:
+            self._append(monkeypatch, two_tables_then_trouble)
+
+            with pytest.raises(RuntimeError):
+                schema.apply_migrations(raw)
+
+            tables = {
+                row[0]
+                for row in raw.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+            }
+            assert "first_half" not in tables
+            assert "second_half" not in tables
+        finally:
+            raw.close()
+
+    def test_the_next_launch_can_still_upgrade_it(self, tmp_path, monkeypatch):
+        """The consequence that actually reached the user: not the failure
+        itself, but that the database was poisoned against a second attempt."""
+        import sqlite3
+
+        from fbposter.db import schema
+
+        def broken(connection):
+            connection.execute("ALTER TABLE groups ADD COLUMN retried TEXT")
+            raise RuntimeError("the migration fell over")
+
+        def fixed(connection):
+            connection.execute("ALTER TABLE groups ADD COLUMN retried TEXT")
+
+        path = self._database_at_the_current_version(tmp_path, "retry.db")
+        raw = sqlite3.connect(path, isolation_level=None)
+        try:
+            patched = self._append(monkeypatch, broken)
+            with pytest.raises(RuntimeError):
+                schema.apply_migrations(raw)
+
+            # The fix ships and the same version is attempted again.
+            monkeypatch.setattr(schema, "MIGRATIONS", list(patched.MIGRATIONS)[:-1] + [fixed])
+            assert schema.apply_migrations(raw) == schema.LATEST_VERSION
+
+            columns = [row[1] for row in raw.execute("PRAGMA table_info(groups)")]
+            assert "retried" in columns
+        finally:
+            raw.close()

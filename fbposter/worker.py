@@ -10,6 +10,10 @@ Three properties matter more than anything else here:
 * **Every wait is an absolute instant, never a countdown.** The gap between
   groups is stored as `tasks.resume_at` and compared against the wall clock on
   each tick, so closing the app or suspending the machine cannot drift it.
+* **The gap is global, not per batch.** `settings.next_post_after` holds the
+  earliest moment *any* post may go out. One batch's `resume_at` cannot space a
+  different batch, and with two queued the second used to post straight through
+  the first one's wait.
 * **Each group's outcome is committed the moment it happens**, so a crash
   resumes a batch instead of starting it again.
 * **Nothing is ever retried automatically.** A duplicate post is the worst
@@ -56,7 +60,7 @@ from .db.models import (
 )
 from .db.repo import GroupRepo, ScheduleRepo, SettingsRepo, TaskRepo
 from .errors import AutomationHalted, ConnectionFailed, PostNotVerified
-from .guards import check_cooldown
+from .guards import check_cooldown, check_repeat_text
 from .power import SleepBlocker
 
 # A scheduled slot older than this was almost certainly missed while the
@@ -677,6 +681,18 @@ class PostingWorker:
 
     # -- guards, re-checked at the moment of posting -----------------------
     def _attempt(self, task: Task, target: TaskTarget, now) -> bool:
+        # The pacing between posts is global, and this is where that is
+        # enforced. `tasks.resume_at` spaces the groups within one batch, which
+        # is not the same thing: a second batch stayed claimable throughout the
+        # first one's wait -- `claimable()` filters the waiting task out and
+        # hands back the next one -- so two posts went out seconds apart from
+        # one account. That is the exact pattern the 10-25 minute gap exists to
+        # avoid. Nothing is marked or deferred here; the batch simply waits, as
+        # it already does between its own groups.
+        due = from_iso(self.settings.get("next_post_after", ""))
+        if due is not None and now < due:
+            return False
+
         # active(), not get(): removing a group archives it now, and a batch
         # queued before the removal must not post to a group the user has
         # taken out of the list.
@@ -727,6 +743,25 @@ class PostingWorker:
                 target.id, TARGET_SKIPPED, error=cooldown.message, attempted=True
             )
             self.emit("skipped", cooldown.message, task.id, target.id)
+            return True
+
+        repeat = check_repeat_text(
+            target.body, self.groups.recent_bodies(group.id), group.display_name
+        )
+        if repeat is not None:
+            # Checked at the door as well, but that answer goes stale: queue a
+            # post now and schedule the same wording for tomorrow, and both
+            # passed the door before either went out. The cooldown hides the
+            # near case and nothing covered the far one -- so the same words
+            # reached the same group twice, which is the actual ban vector.
+            #
+            # Skipped like a cooldown: one group, loudly, and the batch carries
+            # on. Halting a whole batch over a wording that can simply be
+            # reworded would cost the user posts they are entitled to make.
+            self.tasks.mark_target(
+                target.id, TARGET_SKIPPED, error=repeat.message, attempted=True
+            )
+            self.emit("skipped", repeat.message, task.id, target.id)
             return True
 
         return self._post(task, target, group)
@@ -847,12 +882,20 @@ class PostingWorker:
             self.groups.mark_posted(group.id)
             self.emit("posted", f"Posted to {group.display_name}.", task.id, target.id)
 
+        # One gap, written in two places. The global stamp spaces every post
+        # the app makes, including the first of the *next* batch -- a batch
+        # that ended without one left the following batch free to post the same
+        # second. `tasks.resume_at` still carries this batch's own wait,
+        # because that is what the Queue screen shows and what survives a
+        # restart.
+        gap = self.human.gap_between_groups()
+        resume = self._now() + timedelta(seconds=gap)
+        self.settings.set("next_post_after", to_iso(resume) or "")
+
         if self.tasks.remaining_targets(task.id) == 0:
             self._finish(task)
             return True
 
-        gap = self.human.gap_between_groups()
-        resume = self._now() + timedelta(seconds=gap)
         self.tasks.set_resume_at(task.id, resume)
         spacing = f"{gap / 60:.0f} min" if gap >= 60 else f"{gap:.0f}s"
         self.emit(
@@ -926,7 +969,8 @@ class PostingWorker:
             self._recovery_trouble = self._now()
         return self._now() - self._recovery_trouble > CONNECTION_GIVE_UP
 
-    def _defer_recovery(self, exc: ConnectionFailed) -> None:
+    def _defer_recovery(self, reason: str) -> None:
+        """Come back to it later, still claimed. Nothing is decided here."""
         self._recovery_deferred = True
         self._next_recovery_at = self._now() + CONNECTION_RETRY
         if self._recovery_announced:
@@ -934,11 +978,11 @@ class PostingWorker:
         self._recovery_announced = True
         self.emit(
             "error",
-            "A batch was interrupted and cannot be checked until Chrome is up "
-            f"({exc}). Nothing has been given up on.",
+            "A batch was interrupted and cannot be checked yet "
+            f"({reason}). Nothing has been given up on.",
         )
 
-    def _escalate_unchecked(self, target: TaskTarget, exc: Exception) -> None:
+    def _escalate_unchecked(self, target: TaskTarget, reason: str) -> None:
         """Hand an unresolvable interruption to the user.
 
         The batch stops rather than guessing. "It probably did not post" is the
@@ -950,7 +994,7 @@ class PostingWorker:
             TARGET_FAILED,
             error=(
                 "Interrupted mid-post and could not be checked "
-                f"({exc}). Look at the group before queueing this again — "
+                f"({reason}). Look at the group before queueing this again — "
                 "posting it twice is worse than not posting it."
             ),
         )
@@ -997,12 +1041,12 @@ class PostingWorker:
                 # for ever too. Past the horizon it escalates exactly as it
                 # always did.
                 if self._recovery_waiting_too_long():
-                    self._escalate_unchecked(target, exc)
+                    self._escalate_unchecked(target, str(exc))
                     continue
-                self._defer_recovery(exc)
+                self._defer_recovery(str(exc))
                 return
             except Exception as exc:
-                self._escalate_unchecked(target, exc)
+                self._escalate_unchecked(target, str(exc))
                 continue
 
             if already_posted:
@@ -1015,17 +1059,95 @@ class PostingWorker:
                     target.task_id,
                     target.id,
                 )
-            else:
-                self.tasks.mark_target(target.id, TARGET_PENDING)
-                self.emit(
-                    "recovered",
-                    f"{group.display_name} was interrupted before posting; requeued.",
-                    target.task_id,
-                    target.id,
-                )
+            elif not self._resolve_unfound(target, group):
+                return
 
         # A pass that got to the end resolved everything it found, so the next
         # interruption starts with a clean slate -- full patience, and a warning
         # that will be spoken again rather than swallowed as a repeat.
         self._recovery_trouble = None
         self._recovery_announced = False
+
+    def _resolve_unfound(self, target: TaskTarget, group) -> bool:
+        """Decide about a crashed target `verify()` could not find in the feed.
+
+        Not finding it is not proof it never went out, and requeueing on that
+        alone is how a duplicate happens -- the worst thing this app can do.
+        The feed is virtualised and the check is a single page load, so a slow
+        render answers "no" for a post that is live; and a group that holds
+        posts for an admin shows the author their own queued post, so a check
+        landing either side of the crash can go either way.
+
+        So the group's own list of your posts is asked before anything is sent
+        again. It is the one page that separates "queued" from "gone", and it
+        costs one more page load on a path that only runs after a crash.
+
+        Returns False when the caller must stop the pass and come back later.
+        """
+        try:
+            verdict = self.poster.pending_verdict(group.url, target.body)
+        except ConnectionFailed as exc:
+            return self._wait_or_escalate(target, str(exc))
+        except Exception as exc:
+            self._escalate_unchecked(target, str(exc))
+            return True
+
+        if verdict == "pending":
+            # It did post; the group is holding it. Treated exactly as a live
+            # pending post -- the cooldown starts and the wording counts,
+            # because it appears the moment an admin approves it.
+            self.tasks.mark_target(target.id, TARGET_AWAITING_APPROVAL, posted=True)
+            self.groups.mark_posted(group.id)
+            self.emit(
+                "recovered",
+                f"{group.display_name} was interrupted, but the post reached the "
+                "group and is waiting for an admin. Not posting it again.",
+                target.task_id,
+                target.id,
+            )
+            return True
+
+        if verdict == "approved":
+            # The pending list looked, and then found it live. The earlier
+            # verify() was a false negative, which is exactly the case this
+            # second look exists to catch.
+            self.tasks.mark_target(target.id, TARGET_DONE, posted=True)
+            self.groups.mark_posted(group.id)
+            self.emit(
+                "recovered",
+                f"{group.display_name} had already been posted to before the "
+                "interruption; not posting again.",
+                target.task_id,
+                target.id,
+            )
+            return True
+
+        if verdict == "unknown":
+            # The page never rendered. "Could not look" is not "did not post",
+            # so it stays claimed and recovery comes round again.
+            return self._wait_or_escalate(
+                target, "the group's own list of your posts would not load"
+            )
+
+        # "declined": not live, and not in the queue either. Nothing of ours is
+        # out there, which is the one answer that makes requeueing safe.
+        self.tasks.mark_target(target.id, TARGET_PENDING)
+        self.emit(
+            "recovered",
+            f"{group.display_name} was interrupted before posting; requeued.",
+            target.task_id,
+            target.id,
+        )
+        return True
+
+    def _wait_or_escalate(self, target: TaskTarget, reason: str) -> bool:
+        """Try again later, unless it has been unresolvable for too long.
+
+        Bounded for a power reason as much as a queue one: a target left
+        `running` keeps its task `running`, which holds the machine awake.
+        """
+        if self._recovery_waiting_too_long():
+            self._escalate_unchecked(target, reason)
+            return True
+        self._defer_recovery(reason)
+        return False

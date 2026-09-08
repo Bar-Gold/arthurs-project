@@ -30,6 +30,7 @@ from fbposter.db.models import (
     TASK_HALTED,
     TASK_MISSED,
     TASK_RUNNING,
+    from_iso,
 )
 from fbposter.db.repo import GroupRepo, SettingsRepo, TaskRepo
 from fbposter.errors import AutomationHalted, ConnectionFailed, PostNotVerified
@@ -558,10 +559,14 @@ class TestCrashRecovery:
         assert poster.requests == [], "posted again after recovery"
 
     def test_a_post_that_did_not_go_out_is_requeued(self, db, repos):
+        """Not in the feed *and* not in the group's own list of your posts.
+        That pair is what makes sending it again safe; the feed alone is not.
+        """
         _, tasks, _ = repos
         task, _, _ = self._interrupted(db, repos)
 
         poster = FakePoster(verify_result=False)
+        poster.verdict = "declined"
         worker = make_worker(db, poster)
         worker.recover()
 
@@ -1540,3 +1545,266 @@ class TestAGroupTakenOffTheListIsNotPostedTo:
         assert tasks.targets_for(task.id)[0].state == TARGET_DONE
         assert poster.group_urls == [one.url]
 
+
+class TestThePacingIsGlobal:
+    """The 10-25 minute gap has to hold between *all* posts, not within one
+    batch.
+
+    `tasks.resume_at` spaces one batch's own groups, and that is all it can do:
+    `claimable()` filters the waiting task out of the list and hands back the
+    next one, so a second batch posted straight through the first one's wait.
+    Two posts seconds apart from one account is the exact pattern the gap
+    exists to avoid, and it needed two queued batches to see it -- which is
+    also why the suite did not.
+    """
+
+    def _two_batches(self, repos, body_two="Something else entirely"):
+        groups, tasks, _ = repos
+        one, two = add_groups(groups)
+        first = tasks.create(BODY, [(one.id, BODY)])
+        second = tasks.create(body_two, [(two.id, body_two)])
+        return one, two, first, second
+
+    def test_a_second_batch_does_not_post_through_the_first_ones_gap(self, db, repos):
+        groups, tasks, _ = repos
+        one, two, three = add_groups(groups, 3)
+        tasks.create(BODY, [(one.id, "a"), (two.id, "b")])
+        tasks.create("newer", [(three.id, "c")])
+
+        poster = FakePoster()
+        worker = make_worker(db, poster, Clock())
+
+        worker.run_once()   # the first batch posts, then waits
+        worker.run_once()   # the second must not fill the silence
+
+        assert len(poster.requests) == 1, "a second batch posted inside the gap"
+
+    def test_the_next_batch_waits_after_one_finishes(self, db, repos):
+        """The other half of the same hole: a finished batch left nothing
+        behind to space the batch after it, so the next one posted at once."""
+        _, _, first, _ = self._two_batches(repos)
+        _, tasks, _ = repos
+
+        poster = FakePoster()
+        worker = make_worker(db, poster, Clock())
+
+        worker.run_once()
+        assert tasks.get(first.id).state == TASK_DONE
+
+        worker.run_once()
+        assert len(poster.requests) == 1, "the next batch posted with no gap"
+
+    def test_the_wait_does_end(self, db, repos):
+        """A guard that never expires would simply stop the app posting."""
+        self._two_batches(repos)
+
+        poster = FakePoster()
+        ticker = Clock()
+        worker = make_worker(db, poster, ticker)
+
+        worker.run_once()
+        ticker.advance(minutes=26)  # past the longest gap
+        worker.run_once()
+
+        assert len(poster.requests) == 2
+
+    def test_the_gap_is_a_real_one(self, db, repos):
+        self._two_batches(repos)
+        ticker = Clock()
+        worker = make_worker(db, FakePoster(), ticker)
+        worker.run_once()
+
+        _, _, settings = repos
+        due = from_iso(settings.get("next_post_after", ""))
+        assert due is not None
+        assert timedelta(minutes=10) <= due - ticker.now <= timedelta(minutes=25)
+
+    def test_a_skipped_group_costs_nobody_a_wait(self, db, repos):
+        """Skipping is not posting. A batch of groups all inside their cooldown
+        must not lock the account out of posting for another twenty minutes."""
+        groups, tasks, _ = repos
+        one, two = add_groups(groups)
+        groups.mark_posted(one.id)  # straight into its cooldown
+        tasks.create(BODY, [(one.id, BODY)])
+        tasks.create("elsewhere", [(two.id, "elsewhere")])
+
+        poster = FakePoster()
+        worker = make_worker(db, poster, Clock())
+
+        worker.run_once()   # skips the group in cooldown
+        worker.run_once()   # finishes that batch
+        worker.run_once()   # the other batch is free to post
+
+        assert len(poster.requests) == 1
+        assert poster.group_urls == [two.url]
+
+
+class TestTheWordingIsCheckedAgainAtPostingTime:
+    """The repeat guard was only ever applied at the door.
+
+    Queue a post now and schedule the same advert for tomorrow: both passed the
+    check before either had gone out, and the same words reached the same group
+    twice. The cooldown hides the near case and nothing covered the far one --
+    and repetitive content, not post count, is what gets accounts restricted.
+    """
+
+    def _already_sent(self, repos):
+        """A group that has had BODY before, with its cooldown behind it.
+
+        The history is seeded rather than posted through the worker, because
+        `mark_posted` defaults to the real clock while the fake one sits a
+        month earlier -- so a second post would be refused for the cooldown
+        before the wording was ever looked at, and the wording is the whole
+        subject here. The timestamp is set explicitly for the same reason.
+        """
+        groups, tasks, _ = repos
+        one, two = add_groups(groups)
+        history = tasks.create(BODY, [(one.id, BODY)])
+        tasks.mark_target(tasks.targets_for(history.id)[0].id, TARGET_DONE, posted=True)
+        tasks.mark_task(history.id, TASK_DONE, finished=True)
+        groups.mark_posted(one.id, when=NOON - timedelta(hours=9))
+        return one, two
+
+    def test_the_same_words_do_not_reach_the_same_group_twice(self, db, repos):
+        _, tasks, _ = repos
+        one, _ = self._already_sent(repos)
+        again = tasks.create(BODY, [(one.id, BODY)])
+
+        poster = FakePoster()
+        make_worker(db, poster, Clock()).run_once()
+
+        target = tasks.targets_for(again.id)[0]
+        assert target.state == TARGET_SKIPPED
+        assert "already been posted" in target.error
+        assert poster.requests == [], "the same text went out to the group twice"
+
+    def test_a_reworded_post_goes_out_normally(self, db, repos):
+        """The guard must not creep. Posting to a group often is fine; it is
+        repeating yourself that is not."""
+        _, tasks, _ = repos
+        one, _ = self._already_sent(repos)
+        reworded = "A different advert entirely"
+        fresh = tasks.create(reworded, [(one.id, reworded)])
+
+        poster = FakePoster()
+        make_worker(db, poster, Clock()).run_once()
+
+        assert tasks.targets_for(fresh.id)[0].state == TARGET_DONE
+        assert len(poster.requests) == 1
+
+    def test_the_rest_of_the_batch_still_goes_out(self, db, repos):
+        """One group, not the batch -- the same treatment a cooldown gets.
+        Halting over a wording that can simply be reworded would cost the user
+        posts they are entitled to make."""
+        _, tasks, _ = repos
+        one, two = self._already_sent(repos)
+        mixed = tasks.create(BODY, [(one.id, BODY), (two.id, BODY)])
+
+        ticker = Clock()
+        worker = make_worker(db, FakePoster(), ticker)
+        worker.run_once()          # the repeat is skipped
+        ticker.advance(minutes=26)  # the gap the skip did not cost
+        drain(worker)
+
+        states = {t.group_id: t.state for t in tasks.targets_for(mixed.id)}
+        assert states[one.id] == TARGET_SKIPPED
+        assert states[two.id] == TARGET_DONE
+
+    def test_it_is_said_out_loud(self, db, repos):
+        """Silently dropping a group would leave the user believing a post
+        went out that never did."""
+        _, tasks, _ = repos
+        one, _ = self._already_sent(repos)
+        tasks.create(BODY, [(one.id, BODY)])
+
+        worker = make_worker(db, FakePoster(), Clock())
+        worker.run_once()
+
+        assert "skipped" in kinds(worker)
+
+
+class TestRecoveryLooksTwiceBeforeSendingAgain:
+    """`verify()` returning False is not proof the post never went out.
+
+    The feed is virtualised and the check is one page load, so a slow render
+    answers no for a post that is live -- and a group holding posts for an
+    admin shows the author their own queued post, so a check landing either
+    side of the crash can go either way. Requeueing on that alone is how a
+    duplicate happens, and a duplicate is the worst thing this app can do.
+    """
+
+    def _interrupted(self, db, repos):
+        groups, tasks, _ = repos
+        one, _ = add_groups(groups)
+        task = tasks.create(BODY, [(one.id, BODY)])
+        target = tasks.targets_for(task.id)[0]
+        tasks.mark_target(target.id, TARGET_RUNNING, attempted=True)
+        return task, target, one
+
+    def _recovered_with(self, db, repos, verdict):
+        task, _, group = self._interrupted(db, repos)
+        poster = FakePoster(verify_result=False)
+        poster.verdict = verdict
+        worker = make_worker(db, poster)
+        worker.recover()
+        return task, group, poster, worker
+
+    def test_the_pending_list_is_asked_before_anything_is_sent_again(self, db, repos):
+        _, group, poster, _ = self._recovered_with(db, repos, "declined")
+        assert poster.verdict_calls == [group.url]
+
+    def test_a_post_the_group_is_holding_is_not_sent_again(self, db, repos):
+        _, tasks, _ = repos
+        task, _, poster, worker = self._recovered_with(db, repos, "pending")
+
+        assert tasks.targets_for(task.id)[0].state == TARGET_AWAITING_APPROVAL
+        drain(worker)
+        assert poster.requests == [], "posted again over a post awaiting an admin"
+
+    def test_a_held_post_starts_the_cooldown_like_any_other(self, db, repos):
+        """It has been submitted and appears the moment an admin approves it,
+        so it counts for every safety purpose -- exactly as a live pending
+        post does."""
+        groups, _, _ = repos
+        _, group, _, _ = self._recovered_with(db, repos, "pending")
+        assert groups.get(group.id).last_posted_at is not None
+
+    def test_a_false_negative_in_the_feed_is_caught(self, db, repos):
+        """The pending list looked, and then found it live. That is the case
+        this second look exists for."""
+        _, tasks, _ = repos
+        task, _, poster, worker = self._recovered_with(db, repos, "approved")
+
+        assert tasks.targets_for(task.id)[0].state == TARGET_DONE
+        drain(worker)
+        assert poster.requests == []
+
+    def test_a_page_that_would_not_render_decides_nothing(self, db, repos):
+        """"Could not look" is not "did not post". It stays claimed, and
+        recovery comes round again."""
+        _, tasks, _ = repos
+        task, _, poster, worker = self._recovered_with(db, repos, "unknown")
+
+        assert tasks.targets_for(task.id)[0].state == TARGET_RUNNING
+        assert worker._recovery_deferred
+        assert poster.requests == []
+
+    def test_it_does_not_wait_for_ever(self, db, repos):
+        """A target left running keeps its task running, which holds the
+        machine awake. Waiting for ever on a page that never renders would
+        hold a laptop awake for ever too."""
+        _, tasks, _ = repos
+        task, _, group = self._interrupted(db, repos)
+        poster = FakePoster(verify_result=False)
+        poster.verdict = "unknown"
+        ticker = Clock()
+        worker = make_worker(db, poster, ticker)
+
+        worker.recover()
+        ticker.advance(seconds=CONNECTION_GIVE_UP.total_seconds() + 60)
+        worker.recover()
+
+        target = tasks.targets_for(task.id)[0]
+        assert target.state == TARGET_FAILED
+        assert "twice" in target.error
+        assert tasks.get(task.id).state == TASK_HALTED
