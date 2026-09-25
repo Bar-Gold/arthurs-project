@@ -164,6 +164,29 @@ class TestWhenChromeIsNotRunningYet:
         assert methods.index("clear_cookies") < methods.index("goto")
 
 
+class TestAChromeStartedMeanwhileIsStillBroughtOnScreen:
+    """The window's keep-alive can start Chrome off-screen between the "is it
+    running?" check and the launch. launch() then finds it up and starts
+    nothing -- and the login form used to open in it unmoved, off-screen."""
+
+    def raced(self, monkeypatch):
+        context = FakeContext()
+        attaching_to(context, monkeypatch)
+        monkeypatch.setattr(chrome, "is_running", lambda *a, **k: False)
+        monkeypatch.setattr(chrome, "launch", lambda profile, visible=False: False)
+        return context
+
+    def test_the_login_window_is_moved_on_screen(self, monkeypatch):
+        context = self.raced(monkeypatch)
+        login.open_login_window()
+        assert context.bounds_sent() == config.LOGIN_WINDOW_BOUNDS
+
+    def test_so_is_the_account_switch(self, monkeypatch):
+        context = self.raced(monkeypatch)
+        login.switch_account()
+        assert context.bounds_sent() == config.LOGIN_WINDOW_BOUNDS
+
+
 class TestNothingIsHalfDone:
     def test_a_window_that_will_not_move_signs_nobody_out(self, monkeypatch):
         """Otherwise the user is looking at their own desktop with the account

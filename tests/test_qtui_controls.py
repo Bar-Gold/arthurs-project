@@ -307,3 +307,37 @@ class TestTheStylesheet:
 
     def test_an_arrow_at_its_limit_is_dimmed(self, sheet):
         assert "up-arrow:off" in sheet and "down-arrow:off" in sheet
+
+
+class TestTheCalendarYearBoxFits:
+    """Clicking the year opens a spin box, and the step-button rules reached
+    it: sized from its hint, with 68px of room for buttons, it ran off the
+    calendar's edge and covered the next-month arrow."""
+
+    def test_it_leaves_the_next_month_arrow_clear(self, qt_application):
+        from PySide6.QtWidgets import QToolButton
+
+        holder = QWidget()
+        holder.setStyleSheet(theme.stylesheet())
+        layout = QVBoxLayout(holder)
+        entry = ScheduleEntry()
+        calendar = entry.calendarWidget()
+        layout.addWidget(calendar)
+        holder.resize(320, 280)
+        holder.show()
+        holder.grab()  # lays the navigation bar out
+        qt_application.processEvents()
+
+        calendar.findChild(QToolButton, "qt_calendar_yearbutton").click()
+        qt_application.processEvents()
+        year = calendar.findChild(QSpinBox, "qt_calendar_yearedit")
+        text = year.lineEdit()
+        needed = text.fontMetrics().horizontalAdvance(text.text())
+        assert text.text().isdigit()
+        assert text.width() >= needed, f"{text.width()}px for {needed}px of year"
+        after = calendar.findChild(QToolButton, "qt_calendar_nextmonth")
+        assert year.parentWidget() is after.parentWidget()
+        assert year.geometry().right() < after.geometry().left(), (
+            f"year box {year.geometry().getRect()} covers {after.geometry().getRect()}"
+        )
+        holder.close()

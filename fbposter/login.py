@@ -54,12 +54,15 @@ def open_login_window() -> None:
     Raises FBPosterError with something the user can act on if that cannot be
     arranged -- the caller shows it as-is, so it must never mention a command.
     """
-    if not chrome.is_running():
-        # Nothing to move: launch it where they can see it in the first place.
-        chrome.launch(config.resolve_profile_dir(), visible=True)
+    if not chrome.is_running() and chrome.launch(config.resolve_profile_dir(), visible=True):
+        # Nothing to move: launched where they can see it in the first place.
         _open_facebook(move_on_screen=False)
         return
-
+    # Running -- or started off-screen by the window's keep-alive between the
+    # check above and the launch, in which case launch() found it up and
+    # started nothing. Either way it is somewhere the user cannot see, and
+    # has to be moved: opening the login form in it unmoved left the user
+    # staring at nothing.
     _open_facebook(move_on_screen=True)
 
 
@@ -75,13 +78,12 @@ def switch_account() -> None:
     Raises FBPosterError with something the user can act on if it cannot be
     arranged. The caller shows it as-is.
     """
-    if not chrome.is_running():
-        # No window to move, and the launch below produces the only session
-        # there is to end: start it where they can see it, then clear and go.
-        chrome.launch(config.resolve_profile_dir(), visible=True)
+    if not chrome.is_running() and chrome.launch(config.resolve_profile_dir(), visible=True):
+        # No window to move, and the launch above produces the only session
+        # there is to end: started where they can see it, so clear and go.
         _open_facebook(move_on_screen=False, sign_out_first=True)
         return
-
+    # Same race as open_login_window: started off-screen meanwhile, so moved.
     _open_facebook(move_on_screen=True, sign_out_first=True)
 
 

@@ -811,6 +811,12 @@ class PublishView(QWidget):
 
     # -- what is about to happen -------------------------------------------
     def refresh_summary(self) -> None:
+        # Anything edited -- a time, a day, a wording, the date -- and the
+        # offer on screen describes a post that no longer exists. It is
+        # withdrawn, and the button comes back to be judged again.
+        card = getattr(self, "override_card", None)
+        if card is not None and not card.isHidden():
+            self.dismiss_override()
         groups = self.selected_group_ids()
         count = f"{len(groups)} group{'s' if len(groups) != 1 else ''}"
 

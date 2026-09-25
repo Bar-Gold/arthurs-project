@@ -71,7 +71,7 @@ powershell -ExecutionPolicy Bypass -File packaging\build.ps1 -SkipInstaller  # .
 
 `status` exits 0 when logged in, 1 when not, 2 on error (Chrome not running, etc.).
 
-There is no linter or formatter configured, and no pytest config file — the suite is the whole check. Baseline: **1382 tests, 75-170s** — the spread is machine load, not the suite; the Qt and Tk GUI files are ~80s of it on their own. A run of *five minutes or more* means something is reaching the network; see the `SilentNamer` note below.
+There is no linter or formatter configured, and no pytest config file — the suite is the whole check. Baseline: **1386 tests, 75-170s** — the spread is machine load, not the suite; the Qt and Tk GUI files are ~80s of it on their own. A run of *five minutes or more* means something is reaching the network; see the `SilentNamer` note below.
 
 **Do not add `playwright install`.** It is unnecessary and was verified so against Chrome 150: the app attaches to the user's real Chrome over CDP and never launches Playwright's bundled Chromium, so the driver shipped inside the pip package is all that is required.
 
@@ -282,6 +282,7 @@ The app ships to a client as `dist\FacebookAutoPoster-Setup-x.y.z.exe`. How that
 - **One connection check per restart, never per tick.** A check is a real page load. It runs after a restart, and when Chrome is seen back while the pill still says it is down. Never on the timer itself.
 - **`chrome.launch` holds a lock for the whole launch.** The watcher, the startup check and the wizard's button can all ask at once. Without the lock each saw the port closed and each started a Chrome, and the second just opens another window in the first.
 - **A failed restart backs off, and gives up after `MAX_ATTEMPTS`.** The usual cause is a Chrome already open on the profile *without* the port, so every launch opens yet another window in it. Retrying every 20s would pile them up for ever. The keeper waits 1 minute, then 5, then stops and points the user at Start Chrome. Chrome being seen alive resets the count, whoever started it.
+- **A launch that finds Chrome already up means someone else started it, off-screen.** `open_login_window` and `switch_account` check `is_running()` and then launch visibly, but the keep-alive can start Chrome between the two. `launch()` then starts nothing and returns False, and they now *move* the window on screen instead of assuming theirs is the visible one. Before this, the login form opened in an off-screen window.
 - **The seams are looked up at call time** (`lambda: login.start_chrome()`), not captured in `__init__`. Tests patch `login.start_chrome` after the window exists; a captured reference ignored the patch, and on a machine without Chrome up it would have launched a real one.
 
 **Re-login moves the window; it does not restart Chrome.** This is the part worth reading before changing it. The normal state of this app is a Chrome parked at `-32000,-32000`, so a session that expires later leaves a login form somewhere nobody can reach. Restarting Chrome is the obvious fix and the wrong one: there is no dependable way to close a window the user cannot see, and a restart mid-batch strands it. `login.open_login_window()` sends CDP `Browser.setWindowBounds` instead, and `hide_login_window()` puts it back.

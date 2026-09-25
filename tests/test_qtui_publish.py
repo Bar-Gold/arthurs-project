@@ -503,3 +503,16 @@ class TestPostAnyway:
         publish.set_mode(REPEAT)
         publish.add_time("12:00")
         assert "3h apart" in publish.summary.text()
+
+    def test_editing_withdraws_the_offer(self, qt_app, views):
+        """The panel described the post as it was; after an edit it would be
+        offering to break rules for a post that no longer exists."""
+        _compose, publish = views
+        publish.set_mode(REPEAT)
+        publish.add_time("12:00")
+        publish.publish()
+        assert not publish.override_card.isHidden()
+        publish._time_rows[1].setTime(publish._time_rows[1].time().fromString("21:00", "HH:mm"))
+        assert publish.override_card.isHidden()
+        assert not publish.go_button.isHidden()
+        assert publish.publish() is True  # 09:00 and 21:00 break nothing

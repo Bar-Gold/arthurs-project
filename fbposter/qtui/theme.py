@@ -445,6 +445,31 @@ def stylesheet() -> str:
     QCalendarWidget QToolButton#qt_calendar_nextmonth {{
         qproperty-icon: url({icon("chevron-right")});
     }}
+    /* The box that opens when the year is clicked. It is a spin box, so the
+       step-button rules above reached it, and Qt sizes it from its hint: with
+       68px of room for buttons it ran off the calendar's right edge, over the
+       next-month arrow, with its own arrows cut off. Compact and buttonless
+       instead -- typed, or stepped with the arrow keys, like the rest of the
+       date. */
+    QCalendarWidget QSpinBox {{
+        padding: 2px 6px;
+        min-height: 0;
+        /* Qt sizes it from the platform's buttons, which are hidden here, and
+           it then covered the next-month arrow. */
+        max-width: 72px;
+        border-radius: {RADIUS_S}px;
+        font-weight: 600;
+    }}
+    QCalendarWidget QSpinBox:focus {{ padding: 1px 5px; }}
+    QCalendarWidget QSpinBox::up-button, QCalendarWidget QSpinBox::down-button {{
+        width: 0;
+        border: none;
+    }}
+    QCalendarWidget QSpinBox::up-arrow, QCalendarWidget QSpinBox::down-arrow {{
+        image: none;
+        width: 0;
+        height: 0;
+    }}
     QCalendarWidget QMenu {{
         background: {c["SURFACE"]};
         color: {c["TEXT"]};
