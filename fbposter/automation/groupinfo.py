@@ -16,7 +16,26 @@ from .. import session
 from ..groups import clean_group_title
 
 NAV_TIMEOUT_MS = 45_000
-RENDER_MS = 4_000
+
+# The name is read the moment the group's own heading has text, not after a
+# fixed pause. It used to wait a flat four seconds *after* the page's DOM had
+# loaded; measured live on 2026-09-25, the heading is there at DOMContentLoaded
+# (3.47s, heading at 3.50s), so every lookup spent more than half its time
+# waiting for something that had already happened.
+HEADING_TIMEOUT_MS = 12_000
+# Polled on a timer, never on animation frames: this Chrome sits off-screen,
+# and a window Chrome considers hidden may never paint a frame to poll on.
+HEADING_POLL_MS = 100
+# One more short look after the heading appears, so a heading that is still
+# being filled in is not read half-way. Cheap next to the pause it replaces.
+SETTLE_MS = 250
+
+HAS_HEADING = """
+() => {
+  const h1 = document.querySelector('[role="main"] h1');
+  return !!(h1 && (h1.innerText || '').trim());
+}
+"""
 
 # The group's heading holds its name on its own, with none of the tab title's
 # noise -- but it has to be the heading *inside the main landmark*.
@@ -54,6 +73,24 @@ class GroupNamer(Protocol):
     def name_for(self, group_url: str) -> str: ...
 
 
+def wait_for_heading(page: Any) -> bool:
+    """Wait until the group's heading has text; False if it never did.
+
+    Scoped like READ_NAME, which is what makes reading early safe: the heading
+    that arrives late and wrong ("Chats") is outside [role="main"], so it can
+    be neither what this waits for nor what READ_NAME then reads.
+    """
+    try:
+        page.wait_for_function(
+            HAS_HEADING, polling=HEADING_POLL_MS, timeout=HEADING_TIMEOUT_MS
+        )
+    except Exception:
+        # No heading in time: read_name falls back to the tab title.
+        return False
+    page.wait_for_timeout(SETTLE_MS)
+    return True
+
+
 def read_name(page: Any) -> str:
     """Extract a name from an already-loaded group page."""
     try:
@@ -85,8 +122,11 @@ class LiveGroupNamer:
                 for url in group_urls:
                     page = context.new_page()
                     try:
-                        page.goto(url, timeout=NAV_TIMEOUT_MS, wait_until="domcontentloaded")
-                        page.wait_for_timeout(RENDER_MS)
+                        # "commit", not "domcontentloaded": the heading is
+                        # watched for from the first byte, and read as soon
+                        # as it is there.
+                        page.goto(url, timeout=NAV_TIMEOUT_MS, wait_until="commit")
+                        wait_for_heading(page)
                         names[url] = read_name(page)
                     except Exception:
                         # One unreachable group must not abandon the rest.

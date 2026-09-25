@@ -111,11 +111,6 @@ class TestAddingAndRemoving:
         assert group_id not in qt_app.selected_group_ids()
         assert group_id not in qt_app.selected_groups
 
-    def test_the_cooldown_can_be_changed_here(self, qt_app, groups_view):
-        group_id = qt_app.group_repo.list()[0].id
-        groups_view.set_cooldown(group_id, 12)
-        assert qt_app.group_repo.get(group_id).cooldown_hours == 12
-
 
 class TestTheFlowBetweenScreens:
     def test_the_sidebar_reads_in_flow_order(self, qt_app):

@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 )
 
 from fbposter import clock
+from fbposter.guards import rule_labels
 from fbposter.db.models import (
     TARGET_AWAITING_APPROVAL,
     TARGET_DECLINED,
@@ -154,6 +155,7 @@ class QueueView(QWidget):
             task.body,
             task.scheduled_for,
             self._schedule_name(task.schedule_id, schedule_names),
+            task.overrides,
             tuple((t.id, t.state, t.error, t.group_label) for t in targets),
         )
 
@@ -272,6 +274,17 @@ class QueueView(QWidget):
             cancel.clicked.connect(lambda _c, tid=task.id: self.cancel(tid))
             header.addWidget(cancel)
         layout.addLayout(header)
+
+        if task.overrides:
+            # So a post at 23:40, or a second one to a group the same morning,
+            # is never a mystery afterwards: someone chose it.
+            # Tense-free: the batch may not have posted yet.
+            anyway = QLabel(
+                f"Post anyway: allowed to break the {rule_labels(task.overrides)}."
+            )
+            anyway.setStyleSheet(f"color: {theme.C['WARNING']};")
+            anyway.setWordWrap(True)
+            layout.addWidget(anyway)
 
         for target in targets:
             # The name is already on the row: targets_for joins groups.

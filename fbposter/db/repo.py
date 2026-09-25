@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from datetime import datetime, timedelta
-from typing import Any, Sequence
+from typing import Any, Iterable, Sequence
 
 from ..errors import DuplicateGroup, InvalidGroupURL
 from ..groups import parse_group_url
@@ -239,8 +239,12 @@ class TaskRepo:
         media_paths: Sequence[str] = (),
         scheduled_for: datetime | None = None,
         schedule_id: int | None = None,
+        overrides: Iterable[str] = (),
     ) -> Task:
         """Create a batch and its per-group targets atomically.
+
+        `overrides` are the rules the user chose "Post anyway" over; see
+        `guards.OVERRIDABLE`.
 
         `targets` is (group_id, body-for-that-group). A half-written batch --
         a task row with no targets, or targets without a task -- would leave the
@@ -260,8 +264,8 @@ class TaskRepo:
         with self.db.transaction() as connection:
             cursor = connection.execute(
                 "INSERT INTO tasks "
-                "(body, media_paths, scheduled_for, state, created_at, schedule_id) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
+                "(body, media_paths, scheduled_for, state, created_at, schedule_id, "
+                "overrides) VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (
                     body,
                     json.dumps([str(p) for p in media_paths]),
@@ -269,6 +273,7 @@ class TaskRepo:
                     TASK_PENDING,
                     to_iso(utcnow()),
                     schedule_id,
+                    json.dumps(sorted(overrides)),
                 ),
             )
             task_id = cursor.lastrowid
@@ -775,6 +780,7 @@ class ScheduleRepo:
         days: Sequence[int] = (),
         media_paths: Sequence[str] = (),
         next_run_at: datetime | None = None,
+        overrides: Iterable[str] = (),
     ) -> Schedule:
         """Write a schedule and its groups in one transaction.
 
@@ -793,8 +799,8 @@ class ScheduleRepo:
         with self.db.transaction() as connection:
             cursor = connection.execute(
                 "INSERT INTO schedules "
-                "(name, bodies, media_paths, times, days, state, next_run_at, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "(name, bodies, media_paths, times, days, state, next_run_at, created_at, "
+                "overrides) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     name,
                     json.dumps(list(cleaned)),
@@ -804,6 +810,7 @@ class ScheduleRepo:
                     SCHEDULE_ACTIVE,
                     to_iso(next_run_at),
                     to_iso(utcnow()),
+                    json.dumps(sorted(overrides)),
                 ),
             )
             schedule_id = cursor.lastrowid

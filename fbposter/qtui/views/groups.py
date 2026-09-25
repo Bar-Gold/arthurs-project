@@ -19,7 +19,6 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPushButton,
     QScrollArea,
-    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -29,6 +28,10 @@ from fbposter.errors import FBPosterError
 
 from .. import theme
 from ..widgets import card, clear
+
+# What a row says while its group's name is being fetched. It used to show the
+# group's number instead, which is meaningless to the person who pasted a link.
+LOOKING_UP = "Looking up the group's name…"
 
 
 class GroupsView(QWidget):
@@ -44,6 +47,15 @@ class GroupsView(QWidget):
         # What the rows currently show; None means nothing has been drawn yet.
         self._snapshot_shown = None
         self._naming = False
+        # Groups whose name is being fetched right now, or is queued to be.
+        self._looking_up: set[int] = set()
+        # A lookup asked for while one was already running. It used to be
+        # dropped, and the group it was for then showed its number until this
+        # screen was next opened -- which could be minutes.
+        self._lookup_again = False
+        # Added on this screen and still nameless: the toast names them when
+        # the name arrives, rather than announcing a number.
+        self._announce: set[int] = set()
         self._checkboxes: dict[int, QCheckBox] = {}
 
         outer = QVBoxLayout(self)
@@ -167,15 +179,21 @@ class GroupsView(QWidget):
         self.url_entry.clear()
         # A group added here was added to be posted to, so it starts ticked.
         self.app.set_group_selected(group.id, True)
-        self.refresh()
         if restored:
             self.notify(
                 f"Brought {group.display_name} back, with what it has already been sent.",
                 "success",
             )
+        elif group.name:
+            self.notify(f"Added {group.name}.", "success")
         else:
-            self.notify(f"Added {group.display_name}.", "success")
-        self._fetch_missing_names()
+            # Never "Added 1697911281266837." -- the name follows in seconds.
+            self._announce.add(group.id)
+            self.notify("Group added. Looking up its name…", "success")
+        # Before the refresh, so the new row is drawn saying it is looking up
+        # its name, and never flashes the number first.
+        self._fetch_missing_names(first=group.id)
+        self.refresh()
         return True
 
     def remove_group(self, group_id: int) -> None:
@@ -184,25 +202,42 @@ class GroupsView(QWidget):
         self.refresh()
         self.notify("Group removed. Paste its link again to bring it back.", "info")
 
-    def set_cooldown(self, group_id: int, hours: int) -> None:
-        self.app.group_repo.set_cooldown(group_id, hours)
-        self.notify("Cooldown updated.", "success")
-
     # -- names -------------------------------------------------------------
-    def _fetch_missing_names(self) -> None:
+    def look_up_missing_names(self) -> None:
+        """Called when Chrome becomes reachable, which is the first moment a
+        group added while it was still starting can have its name read."""
+        self._fetch_missing_names()
+
+    def _fetch_missing_names(
+        self, first: int | None = None, skip: frozenset[int] = frozenset()
+    ) -> None:
         """Look up display names, but never at the cost of blocking the window.
 
         Guarded on the debug port being open, because the namer is injectable
         precisely so tests never reach the live site.
+
+        `first` is a group just added: it goes to the front, ahead of any group
+        whose name could not be read before. `skip` is what an earlier sweep in
+        the same chain already tried -- a name that could not be read a moment
+        ago will not be read by asking again straight away.
         """
+        missing = [g for g in self.app.group_repo.missing_names() if g.id not in skip]
         if self._naming:
+            # Queued, not dropped; finish() runs it.
+            if missing:
+                self._lookup_again = True
+                if first is not None:
+                    self._looking_up.add(first)
             return
-        missing = self.app.group_repo.missing_names()
         if not missing:
             return
 
+        missing.sort(key=lambda group: group.id != first)
         self._naming = True
+        self._looking_up = {group.id for group in missing}
+        self.refresh()
         urls = [group.url for group in missing]
+        attempted = skip | {group.id for group in missing}
 
         def work():
             # The probe belongs on this thread, not the one drawing the window.
@@ -211,22 +246,38 @@ class GroupsView(QWidget):
             # frozen window when something holds the port without replying.
             # This screen ran it on every single show.
             if chrome.probe() is None:
-                return {}
+                return None  # not "no names": nothing could be asked at all
             return self.app.group_namer.names_for(urls)
 
         def done(found):
-            self._naming = False
-            changed = False
             for group in missing:
                 name = (found or {}).get(group.url, "")
                 if name:
                     self.app.group_repo.set_name(group.id, name)
-                    changed = True
-            if changed:
-                self.refresh()
+                    if group.id in self._announce:
+                        self.notify(f"Added {name}.", "success")
+                elif group.id in self._announce and found is None:
+                    self.notify(
+                        "Chrome isn't connected yet, so the new group shows its "
+                        "number until its name can be read.",
+                        "warning",
+                    )
+                self._announce.discard(group.id)
+            finish()
 
         def failed(_exc):
+            self._announce.difference_update(group.id for group in missing)
+            finish()
+
+        def finish():
             self._naming = False
+            self._looking_up.difference_update(attempted)
+            if self._lookup_again:
+                self._lookup_again = False
+                self._fetch_missing_names(skip=attempted)
+            if not self._naming:
+                self._looking_up.clear()
+            self.refresh()
 
         self.app.run_in_background(work, done, failed)
 
@@ -236,9 +287,14 @@ class GroupsView(QWidget):
         every visit to this screen, to redraw the identical list."""
         selected = self.app.selected_groups
         return tuple(
-            (g.id, g.display_name, g.cooldown_hours, g.id in selected)
+            (g.id, self._label(g), g.id in selected)
             for g in groups
         )
+
+    def _label(self, group) -> str:
+        if not group.name and group.id in self._looking_up:
+            return LOOKING_UP
+        return group.display_name
 
     def refresh(self, force: bool = False) -> None:
         groups = self.app.group_repo.list()
@@ -270,20 +326,20 @@ class GroupsView(QWidget):
         layout = QHBoxLayout(holder)
         layout.setContentsMargins(theme.PAD_M, theme.PAD_S, theme.PAD_S, theme.PAD_S)
 
-        box = QCheckBox(group.display_name)
+        label = self._label(group)
+        box = QCheckBox(label)
         box.setChecked(group.id in self.app.selected_groups)
-        box.setStyleSheet("font-weight: 600;")
+        box.setStyleSheet(
+            f"color: {theme.C['TEXT_MUTED']};" if label == LOOKING_UP
+            else "font-weight: 600;"
+        )
         box.toggled.connect(lambda on, gid=group.id: self.toggle(gid, on))
         self._checkboxes[group.id] = box
         layout.addWidget(box, 1)
 
-        layout.addWidget(QLabel("Cooldown"))
-        spin = QSpinBox()
-        spin.setRange(0, 720)
-        spin.setValue(group.cooldown_hours)
-        spin.setSuffix(" h")
-        spin.valueChanged.connect(lambda hours, gid=group.id: self.set_cooldown(gid, hours))
-        layout.addWidget(spin)
+        # No cooldown control. There is one rule for every group -- the
+        # default gap, 8h -- and breaking it is a choice made per post, with
+        # "Post anyway" on the Publish screen, not a setting buried in a row.
 
         remove = QPushButton("Remove")
         remove.setObjectName("Link")

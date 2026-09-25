@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -18,6 +19,14 @@ from typing import Any, Sequence
 
 from . import config
 from .errors import ChromeLaunchError, ChromeNotFoundError
+
+# One launch at a time. Several things start Chrome -- the startup check, the
+# wizard's button, the window noticing it has closed (see keepalive.py) -- and
+# two of them racing would each see the port closed and each start a Chrome on
+# the same profile. The second one then just opens another window in the
+# first. Held for the whole launch, so the loser waits, finds the port open,
+# and starts nothing.
+_LAUNCH_LOCK = threading.Lock()
 
 
 def find_chrome(candidates: Sequence[Path] | None = None) -> Path:
@@ -122,19 +131,20 @@ def launch(
     reused. `visible` controls the one difference that matters: the initial
     Facebook login needs an on-screen window, and everything after it does not.
     """
-    if is_running(port):
-        return False
+    with _LAUNCH_LOCK:
+        if is_running(port):
+            return False
 
-    chrome = find_chrome()
-    profile_dir.mkdir(parents=True, exist_ok=True)
-    args = build_args(chrome, profile_dir, port, visible=visible)
+        chrome = find_chrome()
+        profile_dir.mkdir(parents=True, exist_ok=True)
+        args = build_args(chrome, profile_dir, port, visible=visible)
 
-    subprocess.Popen(
-        args,
-        creationflags=_creation_flags(),
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        close_fds=True,
-    )
-    wait_for_cdp(port)
-    return True
+        subprocess.Popen(
+            args,
+            creationflags=_creation_flags(),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+        )
+        wait_for_cdp(port)
+        return True

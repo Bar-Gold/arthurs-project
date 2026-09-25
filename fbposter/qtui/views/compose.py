@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QStackedWidget,
+    QStyledItemDelegate,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -37,7 +38,7 @@ from PySide6.QtWidgets import (
 from fbposter import clock
 from fbposter.text import strip_invisible
 from fbposter.db.models import utcnow
-from fbposter.guards import PlannedTarget, evaluate_batch
+from fbposter.guards import OVERRIDABLE, PlannedTarget, evaluate_batch, rule_labels
 
 from .. import theme
 from ..widgets import card, clear, row
@@ -239,6 +240,9 @@ class ComposeView(QWidget):
         row = QHBoxLayout()
         self.template_picker = QComboBox()
         self.template_picker.setAccessibleName("Saved templates")
+        # The default delegate ignores the stylesheet's ::item rules, which
+        # left the open list as cramped platform rows under a styled field.
+        self.template_picker.setItemDelegate(QStyledItemDelegate(self.template_picker))
         row.addWidget(self.template_picker, 1)
         load = QPushButton("Load")
         load.clicked.connect(self.load_template)
@@ -572,11 +576,17 @@ class ComposeView(QWidget):
             self.attachment_box.addWidget(row)
 
     # -- queueing ----------------------------------------------------------
-    def add_to_queue(self, when=None) -> bool:
+    def add_to_queue(self, when=None, allow=frozenset(), on_blocked=None) -> bool:
         """Queue this post. `when` is a UTC instant, or None for "as soon as".
 
         Compose owns the content, so it owns the writing of the batch; the
         Publish screen supplies nothing but the moment.
+
+        A batch that breaks a posting rule is refused, as it always was -- but
+        when `on_blocked` is given and every rule broken is one the user may
+        override, it is handed the whole list instead, which is how Publish
+        offers "Post anyway". `allow` is what the user then accepted: those
+        rules are recorded on the batch, and the worker skips exactly them.
         """
         self.capture()
         selected = self.selected_group_ids()
@@ -616,19 +626,33 @@ class ComposeView(QWidget):
             window_start_hour=settings.get_int("posting_window_start_hour", 8),
             window_end_hour=settings.get_int("posting_window_end_hour", 23),
         )
-        if not verdict.allowed:
-            self.notify(verdict.blocked[0].message, "error")
+        refused = [v for v in verdict.blocked if v.rule not in allow]
+        if refused:
+            if on_blocked is not None and all(v.rule in OVERRIDABLE for v in refused):
+                # All of them, not only the new ones: "Post anyway" has to
+                # cover everything the batch breaks, and the user should see it.
+                on_blocked(verdict.blocked)
+            else:
+                self.notify(refused[0].message, "error")
             return False
 
+        overrides = frozenset(v.rule for v in verdict.blocked)
         self.app.task_repo.create(
             self._base_body.strip(),
             [(target.group_id, target.body) for target in planned],
             media_paths=[str(p) for p in self.attachments],
             scheduled_for=when,
+            overrides=overrides,
         )
         for warning in verdict.warnings:
             self.notify(warning, "warning")
-        if not verdict.warnings:
+        if overrides:
+            self.notify(
+                f"Queued for {len(planned)} group(s), posting anyway despite the "
+                f"{rule_labels(overrides)}.",
+                "warning",
+            )
+        elif not verdict.warnings:
             self.notify(f"Queued for {len(planned)} group(s).", "success")
         return True
 

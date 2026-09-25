@@ -60,7 +60,14 @@ from .db.models import (
 )
 from .db.repo import GroupRepo, ScheduleRepo, SettingsRepo, TaskRepo
 from .errors import AutomationHalted, ConnectionFailed, PostNotVerified
-from .guards import check_cooldown, check_repeat_text
+from .guards import (
+    COOLDOWN,
+    DAILY_CAP,
+    POSTING_WINDOW,
+    REPEAT_TEXT,
+    check_cooldown,
+    check_repeat_text,
+)
 from .power import SleepBlocker
 
 # A scheduled slot older than this was almost certainly missed while the
@@ -639,6 +646,7 @@ class PostingWorker:
                 schedule.bodies,
                 schedule.run_count + position,
                 self.groups.recent_bodies(group.id),
+                allow_repeats=REPEAT_TEXT in schedule.overrides,
             )
             if body is None:
                 stale.append(group.display_name)
@@ -671,6 +679,9 @@ class PostingWorker:
             media_paths=schedule.media_paths,
             scheduled_for=schedule.next_run_at,
             schedule_id=schedule.id,
+            # "Post anyway" on the schedule is "Post anyway" on every batch it
+            # fires; _attempt reads it off the task.
+            overrides=schedule.overrides,
         )
         self.emit(
             "scheduled",
@@ -708,9 +719,13 @@ class PostingWorker:
         cap = self.settings.get_int("daily_cap", 25)
 
         # The world moved since this was queued, so the rules are checked again
-        # here rather than trusted from enqueue time.
+        # here rather than trusted from enqueue time -- except the ones the user
+        # chose "Post anyway" over for this batch, which are skipped exactly.
+        # Without that, the worker would skip or defer the very post they had
+        # just insisted on, and "Post anyway" would mean "don't post".
+        allowed = task.overrides
         posted_today = self.tasks.posted_count_since(clock.start_of_local_day(now))
-        if posted_today + 1 > cap:
+        if DAILY_CAP not in allowed and posted_today + 1 > cap:
             resume = clock.next_window_open(
                 now + timedelta(days=1), start_hour, end_hour
             )
@@ -724,7 +739,7 @@ class PostingWorker:
             return True
 
         window_open = clock.next_window_open(now, start_hour, end_hour)
-        if window_open > now:
+        if POSTING_WINDOW not in allowed and window_open > now:
             self.tasks.set_resume_at(task.id, window_open)
             self.emit(
                 "deferred",
@@ -734,7 +749,7 @@ class PostingWorker:
             )
             return True
 
-        cooldown = check_cooldown(
+        cooldown = None if COOLDOWN in allowed else check_cooldown(
             group.last_posted_at, now, group.cooldown_hours, group.display_name
         )
         if cooldown is not None:
@@ -745,7 +760,7 @@ class PostingWorker:
             self.emit("skipped", cooldown.message, task.id, target.id)
             return True
 
-        repeat = check_repeat_text(
+        repeat = None if REPEAT_TEXT in allowed else check_repeat_text(
             target.body, self.groups.recent_bodies(group.id), group.display_name
         )
         if repeat is not None:

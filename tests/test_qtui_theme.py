@@ -61,6 +61,18 @@ class TestContrast:
             # The connection pill, which was the quietest failure of the lot.
             ("NEUTRAL", "SIDEBAR_BG"),
             ("NEUTRAL", "SURFACE"),
+            # The toast line sits on the window colour, in every level's
+            # colour. DANGER failed here at 4.39:1 and nothing checked it.
+            ("SUCCESS", "WINDOW_BG"),
+            ("WARNING", "WINDOW_BG"),
+            ("DANGER", "WINDOW_BG"),
+            # Labels on a hovered or pressed button.
+            ("TEXT", "HOVER_BG"),
+            ("TEXT", "PRESSED_BG"),
+            # "Remove" / "Delete" / "Cancel" on the tint they gain as you
+            # reach for them. The first tint chosen failed at 4.32:1.
+            ("DANGER", "DANGER_SOFT"),
+            ("DANGER", "DANGER_PRESSED_BG"),
         ],
     )
     def test_text_is_readable(self, palette_name, fg, bg):
@@ -76,6 +88,7 @@ class TestContrast:
         palette = getattr(theme, palette_name)
         assert contrast(palette["ACCENT"], palette["TEXT_ON_ACCENT"]) >= MIN_CONTRAST
         assert contrast(palette["ACCENT_HOVER"], palette["TEXT_ON_ACCENT"]) >= MIN_CONTRAST
+        assert contrast(palette["ACCENT_PRESSED"], palette["TEXT_ON_ACCENT"]) >= MIN_CONTRAST
 
     @pytest.mark.parametrize("palette_name", ["LIGHT", "DARK"])
     def test_the_focus_ring_stands_out_from_its_surface(self, palette_name):

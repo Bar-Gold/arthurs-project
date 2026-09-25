@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import queue
 import threading
+import time
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QFont
@@ -25,7 +26,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .. import config, login, onboarding, power
+from .. import chrome, config, keepalive, login, onboarding, power
 from ..automation.groupinfo import LiveGroupNamer
 from ..db import Database
 from ..db.models import SCHEDULE_ACTIVE
@@ -38,7 +39,7 @@ from .views.groups import GroupsView
 from .views.publish import PublishView
 from .views.queue import QueueView
 from .views.welcome import WelcomeView
-from .widgets import card
+from .widgets import AppStyle, card
 
 APP_TITLE = "Facebook Local Auto-Poster"
 
@@ -58,6 +59,8 @@ WORKER_POLL_MS = 700
 # delayed retry covers that without becoming a poll: nothing here should
 # ever open Facebook on a timer.
 STARTUP_RECHECK_MS = 15_000
+# How often the window looks for the background Chrome; see keepalive.py.
+CHROME_WATCH_MS = keepalive.WATCH_EVERY_S * 1000
 TOAST_MS = 4500
 
 # The order is the flow: what to say, who to say it to, when to say it, and
@@ -136,6 +139,20 @@ class App(QMainWindow):
         # a window a test builds never schedules a timer.
         self._startup_retry_pending = False
 
+        # Keeping the background Chrome alive (keepalive.py). The timer is
+        # started by begin_startup_checks, never here, for the usual reason: a
+        # window a test builds must not start a browser. The three functions
+        # are seams, so the tests can say "Chrome has gone" without it having.
+        # Looked up at call time, not captured: a test that patches
+        # login.start_chrome after the window exists must still be obeyed, or
+        # the real one runs -- and on a machine without Chrome up, launches it.
+        self._keeper = keepalive.ChromeKeeper()
+        self._watching = False
+        self._chrome_probe = lambda: chrome.probe()
+        self._chrome_installed = lambda: login.chrome_installed()
+        self._chrome_start = lambda: login.start_chrome()
+        self._monotonic = time.monotonic
+
         # Which groups this post is going to. It lives on the window rather
         # than in a view because three screens need to agree on it: Groups
         # ticks them, Compose opens a wording tab per group, and Publish sends
@@ -167,6 +184,9 @@ class App(QMainWindow):
         self._pump = QTimer(self)
         self._pump.timeout.connect(self._drain_worker_events)
         self._pump.start(WORKER_POLL_MS)
+
+        self._chrome_watch = QTimer(self)
+        self._chrome_watch.timeout.connect(self.watch_chrome)
 
         self.show_view(self._opening_view())
 
@@ -364,6 +384,12 @@ class App(QMainWindow):
             self.settings_repo.set(SETUP_COMPLETE_KEY, "1")
         self._set_connection(result.state, result.detail)
         self._refresh_welcome()
+        if result.state is ConnectionState.CONNECTED:
+            # A group added while Chrome was still starting could not have its
+            # name read, and used to show its number until the Groups screen
+            # was next opened. This is the first moment it can be read. Only
+            # nameless groups are looked up, so usually this does nothing.
+            self.views["groups"].look_up_missing_names()
 
         if self._startup_retry_pending:
             self._startup_retry_pending = False
@@ -468,17 +494,104 @@ class App(QMainWindow):
             # check that follows says the same thing in the user's terms, and
             # the wizard offers the button that fixes it.
             try:
-                login.start_chrome()
-            except Exception:
+                self._chrome_start()
+            except Exception as exc:
                 # Deliberately broad. run_in_background routes an exception to
                 # the on_error callback, and there is none here -- so anything
                 # escaping would skip the connection check entirely and leave
                 # the pill reading "Not checked" for ever, which is the one
-                # state that offers the user no way forward.
-                pass
+                # state that offers the user no way forward. Returned instead,
+                # so the keeper counts it as a failed start.
+                return exc
             return None
 
-        self.run_in_background(work, lambda _result: self.check_connection())
+        def started(problem):
+            if problem is not None:
+                self._keeper.failed(self._monotonic())
+            self.check_connection()
+
+        self.run_in_background(work, started)
+        # From here on, Chrome closing is noticed and put right.
+        self._chrome_watch.start(CHROME_WATCH_MS)
+
+    # -- keeping Chrome running --------------------------------------------
+    def watch_chrome(self) -> None:
+        """Look for the background Chrome, and start it again if it has gone.
+
+        Off the drawing thread: the look is an HTTP request to the debugging
+        port, which can take a full second when something else holds it, and a
+        restart waits up to thirty for the port to open. Never more than one
+        at a time -- a tick that arrives while the last is still looking or
+        starting simply does nothing.
+        """
+        if self._watching:
+            return
+        self._watching = True
+
+        def look():
+            if self._chrome_probe() is not None:
+                return "up"
+            if not self._chrome_installed():
+                return "missing"
+            return "down"
+
+        self.run_in_background(look, self._on_chrome_looked, self._on_chrome_look_failed)
+
+    def _on_chrome_looked(self, found: str) -> None:
+        if found == "up":
+            self._keeper.seen_running()
+            self._watching = False
+            if self.connection_state is ConnectionState.CHROME_DOWN:
+                # It came back -- the user started it, or a restart took a
+                # moment -- so the pill is stale. One check, on the change,
+                # never on the timer.
+                self.check_connection()
+            return
+        if found == "missing":
+            # Nothing to start. The wizard says to install it.
+            self._watching = False
+            return
+        now = self._monotonic()
+        if not self._keeper.may_restart(now):
+            self._watching = False
+            return
+
+        self.note_connection(
+            ConnectionResult(
+                ConnectionState.CHROME_DOWN,
+                "Chrome was closed. The app is starting it again.",
+            )
+        )
+        self.run_in_background(
+            lambda: self._chrome_start(), self._on_chrome_restarted, self._on_chrome_restart_failed
+        )
+
+    def _on_chrome_look_failed(self, _exc) -> None:
+        self._watching = False
+
+    def _on_chrome_restarted(self, _started) -> None:
+        self._watching = False
+        self._keeper.restarted()
+        self.toast("Chrome had closed, so the app started it again.", "info")
+        # Chrome is back; whether Facebook still is, only a check can say.
+        self.check_connection()
+
+    def _on_chrome_restart_failed(self, _exc) -> None:
+        self._watching = False
+        now = self._monotonic()
+        self._keeper.failed(now)
+        if self._keeper.gave_up:
+            detail = (
+                "Chrome would not start again. Close any Chrome windows the app "
+                "opened, then press Start Chrome."
+            )
+        else:
+            detail = (
+                "Chrome would not start. The app will try again "
+                f"{self._keeper.wait_text(now)}."
+            )
+        self.note_connection(ConnectionResult(ConnectionState.CHROME_DOWN, detail))
+        self.toast(detail, "warning")
 
     def toggle_worker(self) -> None:
         if self.worker is None:
@@ -567,6 +680,9 @@ class App(QMainWindow):
                 event.ignore()
                 return
             self.worker.stop()
+        # A closed window has nothing to keep Chrome running for. And a window
+        # a test closed must not go on firing this and start a real Chrome.
+        self._chrome_watch.stop()
         self.db.close()
         super().closeEvent(event)
 
@@ -627,6 +743,9 @@ def run() -> int:
         return 1
 
     theme.activate()
+    # The style before the stylesheet: the stylesheet wraps whatever style is
+    # installed when it is set.
+    application.setStyle(AppStyle())
     application.setStyleSheet(theme.stylesheet())
     # Family only. Sizes belong to the stylesheet -- setting a point size here
     # as well meant two sources of truth, and the smaller one was winning.

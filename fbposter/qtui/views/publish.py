@@ -22,9 +22,12 @@ the serial queue and the inter-group gap all apply unchanged.
 
 from __future__ import annotations
 
-from PySide6.QtCore import QDateTime, QTime, Qt
+from PySide6.QtCore import QDate, QDateTime, QTime, Qt
+from PySide6.QtGui import QColor, QTextCharFormat
 from PySide6.QtWidgets import (
+    QAbstractSpinBox,
     QButtonGroup,
+    QCalendarWidget,
     QCheckBox,
     QDateTimeEdit,
     QGridLayout,
@@ -42,6 +45,7 @@ from PySide6.QtWidgets import (
 )
 
 from fbposter import clock, recurrence
+from fbposter.guards import rule_labels
 from fbposter.text import strip_invisible
 from fbposter.db.models import SCHEDULE_ACTIVE, SCHEDULE_PAUSED, utcnow
 
@@ -49,6 +53,8 @@ from .. import theme
 from ..widgets import card, clear, row
 
 RIGHT_COLUMN_WIDTH = 340
+# Room for the column's scroll bar, so the column keeps its width when it shows.
+RIGHT_COLUMN_SCROLLBAR = 12
 WORDING_MIN_HEIGHT = 80
 DEFAULT_TIMES = ("09:00", "18:00", "21:00")
 SNIPPET_CHARS = 90
@@ -68,6 +74,16 @@ BUTTON_LABELS = {
 # section takes a mouse wheel notch straight to 2028, which is what happened.
 SCHEDULE_HORIZON_DAYS = 365
 
+# How far one step moves a time, by the section the cursor is in. Stepping by
+# seconds rather than by section is what lets the minutes carry into the hour:
+# a stock QTimeEdit steps each section on its own, so with the cursor in the
+# minutes "down" at 09:00 did nothing at all -- and every default time is on
+# the hour, so the arrow looked broken more often than not.
+STEP_SECONDS = {
+    QDateTimeEdit.MinuteSection: 60,
+    QDateTimeEdit.HourSection: 3600,
+}
+
 
 class ScheduleEntry(QDateTimeEdit):
     """The one-off date picker, with the two ways it went wrong closed off.
@@ -80,9 +96,30 @@ class ScheduleEntry(QDateTimeEdit):
 
     def __init__(self) -> None:
         super().__init__()
+        # Styled as a drop-down rather than a stepper; see theme.py.
+        self.setObjectName("DateEntry")
         self.setCalendarPopup(True)
         self.setDisplayFormat("yyyy-MM-dd HH:mm")
+        self._quiet_calendar()
         self.reset()
+
+    def _quiet_calendar(self) -> None:
+        """Take the platform's colours out of the calendar; theme.py adds ours.
+
+        Qt paints Saturday and Sunday red, from a locale default that is not
+        even Israel's weekend, and shades the day-name row grey. An empty
+        format drops the red without overriding the dimming of days that are
+        out of range.
+        """
+        calendar = self.calendarWidget()
+        calendar.setVerticalHeaderFormat(QCalendarWidget.NoVerticalHeader)
+        calendar.setGridVisible(False)
+        for day in (Qt.Saturday, Qt.Sunday):
+            calendar.setWeekdayTextFormat(day, QTextCharFormat())
+        header = QTextCharFormat()
+        header.setForeground(QColor(theme.C["TEXT_MUTED"]))
+        header.setBackground(QColor(theme.C["SURFACE"]))
+        calendar.setHeaderTextFormat(header)
 
     def reset(self) -> None:
         """Default to the current time, and bound the range around it.
@@ -103,12 +140,92 @@ class ScheduleEntry(QDateTimeEdit):
         # Land on the minutes, so the first arrow key or wheel notch moves the
         # post by a minute rather than by a year.
         self.setCurrentSection(QDateTimeEdit.MinuteSection)
+        self._dim_past_days(now.date())
+
+    def _dim_past_days(self, today: QDate) -> None:
+        """Grey out the days before today, which cannot be picked.
+
+        Qt marks an out-of-range day only by giving it the window colour as a
+        background, and the calendar is styled one colour throughout -- so the
+        past looked exactly as choosable as the future. Six weeks back covers
+        every day a month page can show.
+        """
+        calendar = self.calendarWidget()
+        calendar.setDateTextFormat(QDate(), QTextCharFormat())  # null date: clear all
+        past = QTextCharFormat()
+        past.setForeground(QColor(theme.C["BORDER_STRONG"]))
+        for back in range(1, 43):
+            calendar.setDateTextFormat(today.addDays(-back), past)
+
+    def stepBy(self, steps: int) -> None:  # noqa: N802 - Qt's name
+        """Minutes and hours carry, as a clock does; see STEP_SECONDS.
+
+        Clamped to the range, so the arrow keys can never step a post into the
+        past or past the horizon. The date sections step as Qt steps them.
+        """
+        section = self.currentSection()
+        seconds = STEP_SECONDS.get(section)
+        if seconds is None:
+            super().stepBy(steps)
+            return
+        target = self.dateTime().addSecs(steps * seconds)
+        target = max(self.minimumDateTime(), min(target, self.maximumDateTime()))
+        self.setDateTime(target)
+        self.setSelectedSection(section)
+
+    def stepEnabled(self):  # noqa: N802 - Qt's name
+        if self.currentSection() not in STEP_SECONDS:
+            return super().stepEnabled()
+        enabled = QAbstractSpinBox.StepEnabledFlag.StepNone
+        if self.dateTime() < self.maximumDateTime():
+            enabled |= QAbstractSpinBox.StepEnabledFlag.StepUpEnabled
+        if self.dateTime() > self.minimumDateTime():
+            enabled |= QAbstractSpinBox.StepEnabledFlag.StepDownEnabled
+        return enabled
 
     def wheelEvent(self, event) -> None:  # noqa: N802 - Qt's name
         """Scrolling must never change when a post goes out.
 
         The wheel is for the page, not for the field under the pointer.
         """
+        event.ignore()
+
+
+class TimeEntry(QTimeEdit):
+    """One time of day for a repeating post, with steppers that always answer.
+
+    The stock field had three ways of ignoring a click, and the user met all of
+    them: the text box lay over half of "up" (fixed in theme.py); "down" did
+    nothing with the cursor in the minutes of a time on the hour; and "up" did
+    nothing past 23. Now the minutes carry into the hour, the clock goes round
+    in both directions, and the part being stepped is highlighted, so it is
+    plain which one the arrows are moving -- the hours unless you click into
+    the minutes.
+    """
+
+    def __init__(self, hour: int, minute: int) -> None:
+        super().__init__(QTime(hour, minute))
+        self.setDisplayFormat("HH:mm")
+        # Holding a stepper speeds up, so 09:00 to 21:00 is one press, not
+        # twelve clicks.
+        self.setAccelerated(True)
+
+    def stepBy(self, steps: int) -> None:  # noqa: N802 - Qt's name
+        section = self.currentSection()
+        if section not in STEP_SECONDS:
+            section = QDateTimeEdit.HourSection
+        # QTime arithmetic wraps at midnight, which is the point.
+        self.setTime(self.time().addSecs(steps * STEP_SECONDS[section]))
+        self.setSelectedSection(section)
+
+    def stepEnabled(self):  # noqa: N802 - Qt's name
+        return (
+            QAbstractSpinBox.StepEnabledFlag.StepUpEnabled
+            | QAbstractSpinBox.StepEnabledFlag.StepDownEnabled
+        )
+
+    def wheelEvent(self, event) -> None:  # noqa: N802 - Qt's name
+        """Same rule as ScheduleEntry: scrolling the page must not move a post."""
         event.ignore()
 
 
@@ -123,8 +240,10 @@ class PublishView(QWidget):
         self._recipients_shown = None
         self.mode = NOW
         self._wordings: list[QTextEdit] = []
-        self._time_rows: list[QTimeEdit] = []
+        self._time_rows: list[TimeEntry] = []
         self._day_boxes: list[QCheckBox] = []
+        # The rules the "Post anyway" panel is currently offering to break.
+        self._offered: frozenset[str] = frozenset()
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -158,6 +277,7 @@ class PublishView(QWidget):
         # reads committed state only, so capture first or this screen would
         # publish the text from before the last edit.
         self.compose.capture()
+        self.dismiss_override()
         self.refresh_recipients()
         self.refresh_schedules()
         self.refresh_summary()
@@ -316,9 +436,17 @@ class PublishView(QWidget):
         column = QVBoxLayout()
         column.setSpacing(theme.PAD_S)
         holder = QWidget()
-        holder.setFixedWidth(RIGHT_COLUMN_WIDTH)
         holder.setLayout(column)
-        parent.addWidget(holder)
+        # Scrolls rather than squashes. Repeat mode with a long summary, or
+        # with the "Post anyway" panel open, is taller than the window, and a
+        # plain column then crushed the "When" card until its name field,
+        # times and days were drawn on top of one another.
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setFixedWidth(RIGHT_COLUMN_WIDTH + RIGHT_COLUMN_SCROLLBAR)
+        scroll.setWidget(holder)
+        parent.addWidget(scroll)
 
         picker = card()
         picker_layout = QVBoxLayout(picker)
@@ -363,9 +491,13 @@ class PublishView(QWidget):
         self.summary.setWordWrap(True)
         column.addWidget(self.summary)
 
+        self._build_override(column)
+
         self.go_button = QPushButton(BUTTON_LABELS[NOW])
         self.go_button.setObjectName("Primary")
-        self.go_button.clicked.connect(self.publish)
+        # A lambda, because clicked() would otherwise pass its `checked` flag
+        # in as publish()'s `allow`.
+        self.go_button.clicked.connect(lambda: self.publish())
         column.addWidget(self.go_button)
 
         back = QPushButton("← Back to groups")
@@ -375,6 +507,70 @@ class PublishView(QWidget):
         # The slack goes below everything, so the column reads top-down and
         # grows downwards when Repeat opens.
         column.addStretch(1)
+
+    def _build_override(self, column: QVBoxLayout) -> None:
+        """What appears in place of the post button when the rules refuse.
+
+        Not a dialog -- the app opens none for this kind of thing -- and it
+        replaces the button rather than sitting beside it, so the choice in
+        front of the user is exactly two: break these rules, or not.
+        """
+        self.override_card = card()
+        layout = QVBoxLayout(self.override_card)
+        layout.setContentsMargins(theme.PAD_M, theme.PAD_M, theme.PAD_M, theme.PAD_M)
+        layout.setSpacing(theme.PAD_S)
+        title = QLabel("This breaks the posting rules")
+        title.setObjectName("SectionHeading")
+        title.setStyleSheet(f"color: {theme.C['WARNING']};")
+        layout.addWidget(title)
+        self.override_list = QLabel("")
+        self.override_list.setWordWrap(True)
+        layout.addWidget(self.override_list)
+        why = QLabel(
+            "You can post anyway. The rules are what keeps the account from "
+            "looking automated, so break them only on purpose."
+        )
+        why.setObjectName("Muted")
+        why.setWordWrap(True)
+        layout.addWidget(why)
+        buttons = QHBoxLayout()
+        self.anyway_button = QPushButton("Post anyway")
+        self.anyway_button.setObjectName("Danger")
+        self.anyway_button.clicked.connect(lambda: self.post_anyway())
+        buttons.addWidget(self.anyway_button, 1)
+        self.keep_rules_button = QPushButton("Cancel")
+        self.keep_rules_button.clicked.connect(lambda: self.dismiss_override())
+        buttons.addWidget(self.keep_rules_button, 1)
+        layout.addLayout(buttons)
+        self.override_card.hide()
+        column.addWidget(self.override_card)
+
+    def offer_override(self, violations) -> None:
+        """Show what the post would break, and offer to post anyway."""
+        self._offered = frozenset(v.rule for v in violations)
+        self.override_list.setText("\n".join(f"•  {v.message}" for v in violations))
+        self.override_card.show()
+        self.go_button.hide()
+        # The summary says the same things; twice over, the column outgrew
+        # the window.
+        self.summary.hide()
+
+    def dismiss_override(self) -> None:
+        self._offered = frozenset()
+        self.override_card.hide()
+        self.go_button.show()
+        self.summary.show()
+
+    def post_anyway(self) -> bool:
+        """Publish again, allowed to break exactly what was on the panel.
+
+        Re-judged rather than trusted: if anything else would now be broken,
+        the panel comes back listing it, and nothing is posted on the strength
+        of a list the user did not see.
+        """
+        allowed = self._offered
+        self.dismiss_override()
+        return self.publish(allow=allowed)
 
     def _build_now_panel(self) -> QWidget:
         panel = row()
@@ -454,6 +650,8 @@ class PublishView(QWidget):
     def set_mode(self, mode: str) -> None:
         was = self.mode
         self.mode = mode
+        # An offer made for one mode says nothing about another.
+        self.dismiss_override()
         for key, button in self.mode_buttons.items():
             button.setChecked(key == mode)
         if mode == ONCE and was != ONCE:
@@ -538,35 +736,49 @@ class PublishView(QWidget):
             text = DEFAULT_TIMES[min(len(self._time_rows), len(DEFAULT_TIMES) - 1)]
         hour, minute = recurrence.parse_hhmm(text)
 
-        row = QWidget()
-        layout = QHBoxLayout(row)
+        # row(), not a bare QWidget: this sits inside the "When" card, and a
+        # bare one painted a grey band behind every time and its Remove.
+        line = row()
+        layout = QHBoxLayout(line)
         layout.setContentsMargins(0, 0, 0, 0)
-        entry = QTimeEdit()
-        entry.setDisplayFormat("HH:mm")
-        entry.setTime(QTime(hour, minute))
+        entry = TimeEntry(hour, minute)
         entry.timeChanged.connect(lambda _t: self.refresh_summary())
         layout.addWidget(entry, 1)
         remove = QPushButton("Remove")
         remove.setObjectName("Link")
-        remove.clicked.connect(lambda _c, w=row, e=entry: self._remove_time(w, e))
+        remove.clicked.connect(lambda _c, w=line, e=entry: self._remove_time(w, e))
         layout.addWidget(remove)
 
-        self.time_box.addWidget(row)
+        self.time_box.addWidget(line)
         self._time_rows.append(entry)
         self.refresh_summary()
         return True
 
-    def _remove_time(self, row: QWidget, entry: QTimeEdit) -> None:
+    def _remove_time(self, line: QWidget, entry: TimeEntry) -> None:
         if len(self._time_rows) == 1:
             self.notify("A repeating post needs at least one time of day.", "warning")
             return
         self._time_rows.remove(entry)
-        self.time_box.removeWidget(row)
-        row.deleteLater()
+        self.time_box.removeWidget(line)
+        line.deleteLater()
         self.refresh_summary()
 
     def times(self) -> list[str]:
         return [e.time().toString("HH:mm") for e in self._time_rows]
+
+    def commit_typed_times(self) -> None:
+        """Take a half-typed time at its word before acting on it.
+
+        Clicking a button used to take focus from the field, and losing focus
+        is what makes Qt read what was typed. Buttons no longer take focus on a
+        click (widgets.AppStyle), so the actions that use these values ask for
+        it themselves. Deliberately not in times(): refresh_summary() calls
+        that on every keystroke, and interpreting mid-typing would finish the
+        hour for you after its first digit.
+        """
+        for entry in self._time_rows:
+            entry.interpretText()
+        self.schedule_entry.interpretText()
 
     def days(self) -> list[int]:
         return [i for i, box in enumerate(self._day_boxes) if box.isChecked()]
@@ -626,8 +838,49 @@ class PublishView(QWidget):
         lines = [f"{report.summary} · {count}"]
         if report.next_runs:
             lines.append(f"First run {clock.format_local(report.next_runs[0])}")
-        lines.extend(report.warnings)
+        # Said before the button is pressed, from the same checks it applies.
+        lines.extend(
+            v.message
+            for v in self._schedule_violations(rule, groups, wordings, history=False)
+        )
+        note = recurrence.variation_note(len(groups), len(wordings))
+        if note is not None:
+            lines.append(note)
         self.summary.setText("\n".join(lines))
+
+    def _schedule_violations(self, rule, group_ids, wordings, history: bool = True):
+        """Every posting rule a schedule would break.
+
+        `history=False` skips each group's last post and past wordings -- a
+        query or two per group -- for the live summary, which runs on every
+        keystroke. The button always judges with them.
+        """
+        targets = []
+        for group_id in group_ids:
+            group = self.app.group_repo.get(group_id)
+            if group is None:
+                continue
+            targets.append(
+                recurrence.ScheduleTarget(
+                    name=group.display_name,
+                    last_posted_at=group.last_posted_at if history else None,
+                    recent_bodies=(
+                        tuple(self.app.group_repo.recent_bodies(group.id))
+                        if history else ()
+                    ),
+                )
+            )
+        settings = self.app.settings_repo
+        return recurrence.check_schedule(
+            rule,
+            utcnow(),
+            targets=targets,
+            wordings=wordings if history else (),
+            cooldown_hours=settings.get_int("default_cooldown_hours", 8),
+            window_start_hour=settings.get_int("posting_window_start_hour", 8),
+            window_end_hour=settings.get_int("posting_window_end_hour", 23),
+            daily_cap=settings.get_int("daily_cap", 25),
+        )
 
     def _preview(self, rule, group_count: int, variant_count: int, ahead: int = 1):
         settings = self.app.settings_repo
@@ -643,20 +896,24 @@ class PublishView(QWidget):
         )
 
     # -- doing it ----------------------------------------------------------
-    def publish(self) -> bool:
+    def publish(self, allow: frozenset[str] = frozenset()) -> bool:
+        """`allow` is set only by post_anyway(): the rules the user accepted."""
+        self.commit_typed_times()
         if self.mode == REPEAT:
-            return self.create_schedule()
+            return self.create_schedule(allow)
         try:
             when = self.scheduled_for()
         except ValueError:
             self.notify("That is not a valid date and time.", "error")
             return False
-        queued = self.compose.add_to_queue(when)
+        queued = self.compose.add_to_queue(
+            when, allow=allow, on_blocked=self.offer_override
+        )
         if queued:
             self.refresh_recipients()
         return queued
 
-    def create_schedule(self) -> bool:
+    def create_schedule(self, allow: frozenset[str] = frozenset()) -> bool:
         wordings = self.wordings()
         if not wordings:
             self.notify("Write the post on Compose first.", "error")
@@ -677,6 +934,15 @@ class PublishView(QWidget):
             self.notify(str(exc), "error")
             return False
 
+        # The same rules the worker applies each time this fires, judged now:
+        # before, a schedule that broke them was created anyway and quietly
+        # skipped or deferred run after run.
+        violations = self._schedule_violations(rule, groups, wordings)
+        if any(v.rule not in allow for v in violations):
+            self.offer_override(violations)
+            return False
+        overrides = frozenset(v.rule for v in violations)
+
         if any(self.compose.has_rewrite(group_id) for group_id in groups):
             self.notify(
                 "Per-group rewrites are not carried into a repeating post — it "
@@ -693,12 +959,20 @@ class PublishView(QWidget):
             days=list(rule.days),
             media_paths=[str(p) for p in self.compose.attachments],
             next_run_at=first,
+            overrides=overrides,
         )
 
-        report = self._preview(rule, len(groups), len(wordings))
-        for warning in report.warnings:
-            self.notify(warning, "warning")
-        if not report.warnings:
+        note = recurrence.variation_note(len(groups), len(wordings))
+        if note is not None:
+            self.notify(note, "warning")
+        elif overrides:
+            self.notify(
+                f"{schedule.display_name}: {recurrence.describe(rule)}, posting "
+                f"anyway despite the {rule_labels(overrides)}. First run "
+                f"{clock.format_local(first)}.",
+                "warning",
+            )
+        else:
             self.notify(
                 f"{schedule.display_name}: {recurrence.describe(rule)}. First run "
                 f"{clock.format_local(first)}.",
@@ -795,6 +1069,14 @@ class PublishView(QWidget):
         )
         when.setObjectName("Muted")
         layout.addWidget(when)
+
+        if schedule.overrides:
+            anyway = QLabel(
+                f"Post anyway: allowed to break the {rule_labels(schedule.overrides)}."
+            )
+            anyway.setStyleSheet(f"color: {theme.C['WARNING']};")
+            anyway.setWordWrap(True)
+            layout.addWidget(anyway)
 
         if schedule.bodies:
             snippet = " ".join(schedule.bodies[0].split())[:SNIPPET_CHARS]

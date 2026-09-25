@@ -23,6 +23,37 @@ from .text import strip_invisible
 # Sending byte-identical text to more than this many groups earns a warning.
 IDENTICAL_TEXT_WARN_THRESHOLD = 2
 
+# The rules the user may choose to break with "Post anyway". Every refusal
+# below names one of these, and a batch or schedule records which of them it
+# was allowed to break, so the worker -- which re-checks all of them at the
+# moment of posting -- honours that choice instead of skipping the post anyway.
+#
+# Nothing else is on this list, deliberately. The 10-25 minute spacing between
+# posts is pacing, not a refusal; and halting on a checkpoint, never retrying a
+# post that may have gone out, and one worker at a time are not rules the user
+# is choosing to bend, they are what keeps the account and the queue intact.
+COOLDOWN = "cooldown"
+REPEAT_TEXT = "repeat_text"
+POSTING_WINDOW = "posting_window"
+DAILY_CAP = "daily_cap"
+OVERRIDABLE = frozenset({COOLDOWN, REPEAT_TEXT, POSTING_WINDOW, DAILY_CAP})
+
+# How each rule is named to the user, in the order they are listed.
+RULE_LABELS = {
+    COOLDOWN: "cooldown between posts to a group",
+    REPEAT_TEXT: "repeated text",
+    POSTING_WINDOW: "posting hours",
+    DAILY_CAP: "daily limit",
+}
+
+
+def rule_labels(rules) -> str:
+    """ "posting hours and daily limit" -- for a toast or a queue row."""
+    names = [RULE_LABELS[rule] for rule in RULE_LABELS if rule in rules]
+    if len(names) <= 1:
+        return "".join(names)
+    return ", ".join(names[:-1]) + " and " + names[-1]
+
 
 @dataclass(frozen=True)
 class Violation:
@@ -76,7 +107,7 @@ def check_daily_cap(posted_today: int, adding: int, cap: int) -> Violation | Non
         return None
     if posted_today + adding > cap:
         return Violation(
-            "daily_cap",
+            DAILY_CAP,
             f"That would make {posted_today + adding} posts today, over the cap of {cap}.",
         )
     return None
@@ -97,7 +128,7 @@ def check_cooldown(
         remaining = ready_at - now
         hours = remaining.total_seconds() / 3600
         return Violation(
-            "cooldown",
+            COOLDOWN,
             f"{group_name} was posted to too recently; {hours:.1f}h of its "
             f"{cooldown_hours}h cooldown left.",
         )
@@ -126,7 +157,7 @@ def check_posting_window(when: datetime, start_hour: int, end_hour: int) -> Viol
     if clock.inside_window(local.hour, start_hour, end_hour):
         return None
     return Violation(
-        "posting_window",
+        POSTING_WINDOW,
         f"{local.strftime('%H:%M')} Israel time is outside the "
         f"{start_hour:02d}:00-{end_hour:02d}:00 posting window.",
     )
@@ -149,7 +180,7 @@ def check_repeat_text(
     target = normalise(body)
     if any(normalise(previous) == target for previous in recent_bodies):
         return Violation(
-            "repeat_text",
+            REPEAT_TEXT,
             f"This exact text has already been posted to {group_name}. Reword it first.",
         )
     return None

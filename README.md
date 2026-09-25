@@ -14,11 +14,11 @@ This is a low-volume, human-paced workload. The system should be tuned for *look
 
 ## 3. Technical Stack
 *   **Language:** Python 3.10+
-*   **UI Framework:** **CustomTkinter** (decided). Gives a modern, polished look with far less code than PyQt6. Since Playwright runs on a background worker thread feeding a queue, the async integration that PyQt6 offers is not needed here.
+*   **UI Framework:** **Qt, through PySide6.** CustomTkinter was the original choice and was replaced: Tk 8.6 has no bidirectional text support, so any line mixing Hebrew with English or digits rendered mirrored. Qt shapes the text itself. The old Tk window is still runnable with `main.py gui --tk`.
 *   **Browser Automation:** Playwright (Python, **sync API**) connecting to a running Chrome over CDP via `connect_over_cdp`.
-*   **Database:** SQLite (local `.db` file) for groups, tags, templates, scheduled tasks, and queue/run history.
-*   **Images:** Pillow, read only by the Compose preview to scale attachments down to thumbnails. Optional at runtime — without it the preview draws a tile per image and nothing else changes.
-*   **Threading model:** Tkinter mainloop on the main thread; one single worker thread owns Playwright and processes the queue serially. UI and worker communicate through a thread-safe queue — Playwright objects never touch the UI thread.
+*   **Database:** SQLite (local `.db` file) for groups, templates, one-off and repeating posts, and the queue with its per-group history.
+*   **Images:** Qt decodes attachments for the Compose preview itself. Pillow is read only by the legacy Tk window's preview, and is optional there — without it that preview draws a tile per image and nothing else changes.
+*   **Threading model:** Qt event loop on the main thread; one single worker thread owns Playwright and processes the queue serially. UI and worker communicate through a thread-safe queue — Playwright objects never touch the UI thread.
 
 ## 4. Chrome Session Setup (read before Phase 1)
 **Chrome 136+ refuses to open `--remote-debugging-port` when running against the default user profile.** This means the app cannot attach to the user's everyday Chrome window.
@@ -33,7 +33,7 @@ The user logs into Facebook **once** inside that profile. From then on it is a p
 
 The app must:
 *   Detect whether Chrome is already listening on the debug port before launching a second instance.
-*   Expose a **"Test Connection"** action that attaches over CDP, confirms an active Facebook session, and reports the logged-in account.
+*   Expose a **"Check connection"** action that attaches over CDP and confirms an active Facebook session. It reads the login cookie as a yes/no; which account is signed in is never recorded.
 *   Fail loudly and clearly if the session is logged out or a checkpoint/verification screen is showing — never attempt to click through one.
 
 ## 5. Non-Interfering Operation (requirement)
@@ -47,13 +47,13 @@ Requirements:
 *   Suppress Chrome's background throttling so an unfocused window still behaves normally:
     `--disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-renderer-backgrounding`
 *   Attach media with `set_input_files` on the file input element. Never trigger the native OS file-picker dialog — it is modal and does steal focus.
-*   The app's own UI must not pop modal dialogs or force itself to the foreground. Status belongs in the in-app queue view, the taskbar, or a passive Windows toast.
+*   The app's own UI must not force itself to the foreground or open a dialog to report status. Status belongs in the in-app queue view or a passive in-window toast. The only dialogs are ones the user's own action just raised: the image picker, the warning when closing the window would stop queued or repeating posts, and the notice that the app is already running.
 *   **Sleep handling:** hold off system sleep while a batch is in flight (`SetThreadExecutionState` with `ES_CONTINUOUS | ES_SYSTEM_REQUIRED`; the display may still turn off). Schedules are stored as absolute timestamps and recomputed on wake, so suspend/resume never drifts. A slot missed while the machine was asleep is surfaced to the user, not fired late in a burst.
 
 ## 6. Core Features & UI Requirements
 A left sidebar navigates between four screens, in the order the work happens — **Compose (what) → Groups (where) → Publish (when) → Queue (what happened)**; appearance follows the Windows theme. The UI stays uncluttered and readable, and never opens a modal dialog to tell the user something — status goes to a passive in-window toast.
 
-The **connection indicator lives in the sidebar**, not in a screen of its own: it is the "Test Connection" action from §4, and nothing else in the app works without it, so it is visible from everywhere.
+The **connection indicator lives in the sidebar**, not in a screen of its own: it is the "Check connection" action from §4, and nothing else in the app works without it, so it is visible from everywhere.
 
 *   **Compose**
     *   Spacious free-text input with a live character count.
@@ -95,7 +95,7 @@ The user posts as an ordinary group member, not an admin, so everything happens 
 *   **Daily cap and cooldown.** A configurable ceiling on posts per day, and a minimum gap before the same group can be posted to again. The app refuses to exceed them.
 *   **Content variation is enforced, not optional.** This is the highest-value protection in the whole system, because Meta's Spam policy explicitly restricts accounts at *low* frequencies when repetitive content is present (see §8). The app must warn before sending byte-identical text to more than two groups in a batch, show a per-batch similarity indicator, and make editing per-group text easy rather than an afterthought. Identical text plus an identical link across many groups is the strongest spam signal available and must be actively discouraged in the UI.
 *   **Human-hours only.** Posts are scheduled within normal waking hours; no 4 AM activity.
-*   **Groups that hold posts for approval are recognised, not guessed at.** A group with post approval on accepts the post, closes the composer, and keeps it out of the feed, so verification finds nothing. Reading that as failure was wrong in both directions — it produced a confident "done" for an invisible post on one run and a halted batch on the next, purely on timing. The app now reads the group's "Pending admin approval" banner, and only after confirming the post is genuinely absent. Such a post is marked awaiting approval, the batch continues to the other groups, and the wording still starts the cooldown and counts against the repeat guard and the daily cap — because it will appear the moment an admin approves, and forgetting it would invite sending the same text again.
+*   **Groups that hold posts for approval are recognised, not guessed at.** A group with post approval on accepts the post, closes the composer, and keeps it out of the feed, so verification finds nothing. Reading that as failure was wrong in both directions — it produced a confident "done" for an invisible post on one run and a halted batch on the next, purely on timing. The app reads the group's "Pending admin approval" banner — but that banner stays up while *any* of the user's posts is queued, and Facebook shows authors their own queued posts in the feed, so when the post is visible and the banner is up, the app asks the group's list of the user's pending posts which one it is. Such a post is marked awaiting approval, the batch continues to the other groups, and the wording still starts the cooldown and counts against the repeat guard and the daily cap — because it will appear the moment an admin approves, and forgetting it would invite sending the same text again.
 *   **Pending posts resolve themselves.** Every few hours, inside posting hours only, the app checks the group's "Your content" page for anything it submitted to a moderated group: still listed as pending means wait, in the feed means approved, gone from both means declined — and declined releases the wording so it can be sent again. It takes two consecutive checks to call something declined, because a page that fails to render looks exactly like an empty pending list.
 *   **Stop on anomaly.** If a checkpoint, CAPTCHA, "you're posting too fast" warning, or unexpected page appears, the worker halts the entire batch and surfaces it to the user. It never retries blindly.
 
@@ -120,13 +120,15 @@ The delay ranges in §7 are a conservative engineering judgement, not a Meta-pub
 DOM selectors are a separate ongoing risk: Facebook's class names are obfuscated and change frequently. Selectors are role- and `aria-label`-based rather than class-based, and they depend on the account's UI language. **English, Hebrew and Russian are supported**, each string read off the live site rather than translated — Russian's post button turned out to be `Отправить` ("send"), not the obvious `Опубликовать`. Adding a language means probing a real group, not consulting a dictionary.
 
 ## 9. Data Model (SQLite, as built)
-Stored at `C:\FBAutomation\fbposter.db`, beside the Chrome profile. Migrations are keyed on `PRAGMA user_version`, so the schema can change without wiping stored groups.
+Stored at `C:\FBAutomation\fbposter.db`, beside the Chrome profile (or under `%LOCALAPPDATA%\FBAutomation\` on a machine where that path cannot be used). Migrations are keyed on `PRAGMA user_version`, so the schema can change without wiping stored groups.
 
-*   `groups` — identifier (UNIQUE), url, name, **cooldown_hours**, last_posted_at, notes, archived, created_at
+*   `groups` — identifier (UNIQUE), url, name, **cooldown_hours**, last_posted_at, notes, **archived**, created_at. Removing a group archives it rather than deleting it, because its posting history is what the repeat rule in §7 reads.
 *   `templates` — name (UNIQUE), body, media_paths, created_at, updated_at
-*   `tasks` — body, media_paths, scheduled_for (NULL = post now), state, created_at / started_at / finished_at, error
-*   `task_targets` — task_id, group_id, position, **body**, state, attempted_at, posted_at, post_url, error, **`UNIQUE(task_id, group_id)`**
-*   `settings` — key/value: daily cap, posting window, default cooldown
+*   `tasks` — body, media_paths, scheduled_for (NULL = post now), state, created_at / started_at / finished_at, error, resume_at (when a deferred batch may carry on), schedule_id (the repeating post it came from, if any)
+*   `task_targets` — task_id, group_id, position, **body**, state, attempted_at, posted_at, post_url, error, resolve_misses, **`UNIQUE(task_id, group_id)`**
+*   `schedules` — a repeating post's definition, never a queue entry: name, **bodies** (the wordings it rotates through), media_paths, times and days (Israel local), state, run_count, next_run_at, last_run_at. When one comes due, the worker creates an ordinary `tasks` row from it.
+*   `schedule_targets` — schedule_id, group_id, position, `UNIQUE(schedule_id, group_id)`
+*   `settings` — key/value: daily cap, posting window and its time zone, default cooldown, queue and history retention, plus the worker's own bookkeeping (`next_post_after`, `last_prune_at`)
 
 Two columns carry most of the safety weight. **`UNIQUE(task_id, group_id)`** means the database itself refuses to let one batch target the same group twice — a duplicate post is the worst failure mode here, so it is not left to application code. **`task_targets.body`** is per-group rather than per-batch, which is what makes content variation expressible at all.
 
@@ -135,7 +137,8 @@ Two columns carry most of the safety weight. **`UNIQUE(task_id, group_id)`** mea
 ### Safety settings (confirmed)
 *   **Daily cap: 25** individual group posts — just above the realistic ceiling of 3 posts x 7 groups, so it catches a runaway rather than normal use.
 *   **Posting window: 08:00–23:00.**
-*   **Cooldown: per-group**, default 24h, editable on the Groups screen. Large, active groups can be lowered to a few hours. New groups start conservative because a too-tight default costs a warning while a too-loose one costs the account.
+*   **Cooldown: 8h** between posts to the same group, the same for every group. It was 24h, and was lowered by the user so that two or three posts a day to one group is possible at all. It is no longer editable per group.
+*   **"Post anyway".** Any of these rules can be broken for one batch or one repeating post, by choice: Publish lists what would be broken and offers "Post anyway" instead of refusing. The choice is recorded on the batch, honoured when it posts, and shown in the Queue. Nothing is broken without that second click.
 *   **Identical text is never sent to the same group twice**, regardless of cooldown. This is the rule that does the real work: posting more often to an active group is only safe while the wording changes.
 
 ## 10. Scope Control

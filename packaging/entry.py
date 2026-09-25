@@ -9,10 +9,10 @@ is up, and whatever is still missing is explained by the setup wizard.
 
 The one addition is `--selftest`, which exists for the support call. Four
 things can be absent from a frozen build and every one of them fails silently
-at runtime rather than at startup -- see "Handing this to a non-technical user"
-in CLAUDE.md. Asking a non-technical client to describe a symptom that is
-"the tick is missing from a checkbox" is hopeless; asking them to run one
-shortcut and send back a text file is not.
+at runtime rather than at startup -- see packaging/CLAUDE.md. Asking a
+non-technical client to describe a symptom that is "the tick is missing from a
+checkbox" is hopeless; asking them to run one shortcut and send back a text
+file is not.
 """
 
 from __future__ import annotations
@@ -67,14 +67,22 @@ def selftest(show_dialog: bool = True) -> int:
     except Exception as exc:
         check("Playwright driver", False, f"{type(exc).__name__}: {exc}")
 
-    # 3. Qt, and the SVG the stylesheet points at. A missing asset here costs
-    #    the checkbox tick on the one screen whose job is picking groups.
+    # 3. Qt, and the SVGs the stylesheet points at. A missing asset here costs
+    #    the checkbox tick on the one screen whose job is picking groups, or the
+    #    arrows on every time field -- which still step, but show nothing.
     try:
         from fbposter.qtui import theme
 
         icon = Path(theme.CHECK_ICON)
         check("Qt theme loads", True)
         check("Checkbox tick (check.svg)", icon.exists(), str(icon))
+        arrows = [
+            theme.icon_path(name, mode)
+            for name in theme.ICON_NAMES
+            for mode in ("light", "dark")
+        ]
+        absent = [p.name for p in arrows if not p.exists()]
+        check("Arrow icons (chevron-*.svg)", not absent, ", ".join(absent))
     except Exception as exc:
         check("Qt theme loads", False, f"{type(exc).__name__}: {exc}")
 

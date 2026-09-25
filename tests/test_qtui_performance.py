@@ -139,16 +139,6 @@ class TestTheGroupListIsNotRebuiltForNothing:
         view.refresh()
         assert widgets_in(view.rows) != before
 
-    def test_a_changed_cooldown_rebuilds(self, stocked):
-        app, made = stocked
-        view = app.views["groups"]
-        view.refresh()
-        before = widgets_in(view.rows)
-
-        app.group_repo.set_cooldown(made[0].id, 12)
-        view.refresh()
-        assert widgets_in(view.rows) != before
-
     def test_a_new_group_rebuilds(self, stocked):
         app, _ = stocked
         view = app.views["groups"]

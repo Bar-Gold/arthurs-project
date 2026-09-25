@@ -6,7 +6,41 @@ that imports the views.
 
 from __future__ import annotations
 
-from PySide6.QtWidgets import QFrame, QLayout, QWidget
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import (
+    QAbstractButton,
+    QComboBox,
+    QFrame,
+    QLayout,
+    QProxyStyle,
+    QWidget,
+)
+
+
+class AppStyle(QProxyStyle):
+    """What a stylesheet cannot say about a control, said once for all of them.
+
+    Qt polishes every widget through the style as it first appears, including
+    the rows a screen rebuilds later, so this reaches every button without a
+    line in any view.
+
+    * **A hand cursor on everything clickable.** Only the sidebar had one, so
+      the pointer stayed an arrow over every other button in the window.
+    * **A click does not give a button keyboard focus; Tab still does.** Focus
+      has to be visible, so the stylesheet rings it -- and with click focus the
+      ring then sat on whatever was clicked last, and a clicked group's name
+      turned bold blue. Tab-only focus is the desktop version of the web's
+      `:focus-visible`: the ring means "the keyboard is here", nothing else.
+      Values typed into a field are not stranded by it: the fields read them
+      with `interpretText()` rather than relying on losing focus to a button.
+    """
+
+    def polish(self, target):  # noqa: D401 - Qt's name, several overloads
+        if isinstance(target, (QAbstractButton, QComboBox)):
+            target.setCursor(Qt.PointingHandCursor)
+        if isinstance(target, QAbstractButton):
+            target.setFocusPolicy(Qt.TabFocus)
+        return super().polish(target)
 
 
 def clear(layout: QLayout) -> None:

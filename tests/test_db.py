@@ -168,19 +168,59 @@ class TestSchema:
             "INSERT INTO groups (identifier, url, cooldown_hours, created_at) "
             "VALUES ('deliberate', 'u2', 48, '2026-01-01')"
         )
+        # Migration 005 alone: 009 later puts every group on the default on
+        # purpose, which is its own test below.
+        schema.MIGRATIONS[4](raw)
+        stored = dict(raw.execute("SELECT identifier, cooldown_hours FROM groups"))
+        setting = raw.execute(
+            "SELECT value FROM settings WHERE key = 'default_cooldown_hours'"
+        ).fetchone()[0]
+        raw.close()
+
+        assert int(setting) == DEFAULT_COOLDOWN
+        assert stored["untouched"] == DEFAULT_COOLDOWN
+        assert stored["deliberate"] == 48, "a chosen cooldown was overwritten"
+
+    def test_every_group_is_put_on_the_default_cooldown(self, tmp_path):
+        """Migration 009. The cooldown can no longer be changed per group, so a
+        value chosen earlier would go on applying where nobody can see it."""
+        import sqlite3
+
+        from fbposter.db import schema
+
+        path = tmp_path / "one_rule.db"
+        raw = sqlite3.connect(path, isolation_level=None)
+        for index in range(8):
+            schema.MIGRATIONS[index](raw)
+            raw.execute(f"PRAGMA user_version = {index + 1}")
+        raw.execute(
+            "INSERT INTO groups (identifier, url, cooldown_hours, created_at) "
+            "VALUES ('chosen', 'u', 48, '2026-01-01')"
+        )
         raw.close()
 
         upgraded = Database(path)
         try:
-            assert (
-                SettingsRepo(upgraded).get_int("default_cooldown_hours", 0)
-                == DEFAULT_COOLDOWN
-            )
             stored = {g.identifier: g.cooldown_hours for g in GroupRepo(upgraded).list()}
-            assert stored["untouched"] == DEFAULT_COOLDOWN
-            assert stored["deliberate"] == 48, "a chosen cooldown was overwritten"
+            assert stored["chosen"] == DEFAULT_COOLDOWN
         finally:
             upgraded.close()
+
+    def test_a_batch_remembers_which_rules_it_may_break(self, tmp_path):
+        """Migration 009's other half: "Post anyway" has to outlive a restart,
+        or the worker would skip the post the user had insisted on."""
+        from fbposter.db.repo import TaskRepo
+
+        db = Database(tmp_path / "overrides.db")
+        try:
+            group = GroupRepo(db).add_from_url("https://www.facebook.com/groups/42/")
+            tasks = TaskRepo(db)
+            task = tasks.create("hi", [(group.id, "hi")], overrides={"cooldown"})
+            plain = tasks.create("hello", [(group.id, "hello")])
+            assert tasks.get(task.id).overrides == frozenset({"cooldown"})
+            assert tasks.get(plain.id).overrides == frozenset()
+        finally:
+            db.close()
 
     def test_settings_added_after_the_database_was_made_still_appear(self, tmp_path):
         """Settings are seeded once; a key added later never showed up."""

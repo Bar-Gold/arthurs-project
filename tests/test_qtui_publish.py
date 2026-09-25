@@ -251,12 +251,18 @@ class TestRepeat:
         assert publish.add_time() is False
 
     def test_three_times_a_day_reaches_the_database(self, qt_app, views):
+        """Only with "Post anyway": inside a 08:00-23:00 window, three runs a
+        day cannot all be 8h apart, so every group would be skipped on two."""
         _compose, publish = views
         publish.set_mode(REPEAT)
         publish.add_time("14:00")
         publish.add_time("20:00")
-        publish.publish()
-        assert len(qt_app.schedule_repo.list()[0].times) == 3
+        assert publish.publish() is False
+        assert qt_app.schedule_repo.list() == []
+        assert publish.post_anyway() is True
+        stored = qt_app.schedule_repo.list()[0]
+        assert len(stored.times) == 3
+        assert "cooldown" in stored.overrides
 
     def test_all_seven_days_is_stored_as_every_day(self, qt_app, views):
         _compose, publish = views
@@ -408,3 +414,92 @@ class TestTheWindowItself:
 
     def test_constructing_it_does_not_start_the_worker(self, qt_app):
         assert qt_app.worker is None
+
+
+class TestPostAnyway:
+    """The rules refuse, then offer; nothing is posted without the second click."""
+
+    @staticmethod
+    def recently_posted(qt_app):
+        for group in qt_app.group_repo.list():
+            qt_app.group_repo.mark_posted(group.id, utcnow() - timedelta(hours=1))
+
+    def test_a_rule_broken_offers_post_anyway_instead_of_refusing(self, qt_app, views):
+        _compose, publish = views
+        self.recently_posted(qt_app)
+        assert publish.publish() is False
+        assert qt_app.task_repo.list_recent() == []
+        assert not publish.override_card.isHidden()
+        assert publish.go_button.isHidden()
+        assert "cooldown" in publish.override_list.text()
+
+    def test_post_anyway_queues_it_and_records_why(self, qt_app, views):
+        _compose, publish = views
+        self.recently_posted(qt_app)
+        publish.publish()
+        assert publish.post_anyway() is True
+        (task,) = qt_app.task_repo.list_recent()
+        assert task.overrides == frozenset({"cooldown"})
+        assert publish.override_card.isHidden()
+        assert not publish.go_button.isHidden()
+
+    def test_cancel_posts_nothing(self, qt_app, views):
+        _compose, publish = views
+        self.recently_posted(qt_app)
+        publish.publish()
+        publish.keep_rules_button.click()
+        assert qt_app.task_repo.list_recent() == []
+        assert publish.override_card.isHidden()
+
+    def test_changing_mode_withdraws_the_offer(self, qt_app, views):
+        """It was made for one moment; it says nothing about another."""
+        _compose, publish = views
+        self.recently_posted(qt_app)
+        publish.publish()
+        publish.set_mode(ONCE)
+        assert publish.override_card.isHidden()
+
+    def test_a_batch_inside_the_rules_needs_no_second_click(self, qt_app, views):
+        _compose, publish = views
+        assert publish.publish() is True
+        (task,) = qt_app.task_repo.list_recent()
+        assert task.overrides == frozenset()
+        assert publish.override_card.isHidden()
+
+    def test_what_is_not_a_rule_is_still_just_refused(self, qt_app, views):
+        """No groups is not something to post anyway."""
+        _compose, publish = views
+        qt_app.selected_groups.clear()
+        assert publish.publish() is False
+        assert publish.override_card.isHidden()
+
+    def test_the_offer_is_not_the_screens_accent_button(self, views):
+        """One filled button per screen, and it is the next step, not this."""
+        _compose, publish = views
+        assert publish.anyway_button.objectName() == "Danger"
+
+    def test_a_repeat_three_hours_apart_is_caught_and_can_be_forced(self, qt_app, views):
+        _compose, publish = views
+        publish.set_mode(REPEAT)
+        publish.add_time("12:00")  # beside the default 09:00
+        assert publish.publish() is False
+        assert "3h apart" in publish.override_list.text()
+        assert qt_app.schedule_repo.list() == []
+        assert publish.post_anyway() is True
+        (schedule,) = qt_app.schedule_repo.list()
+        assert "cooldown" in schedule.overrides
+
+    def test_a_repeat_inside_the_rules_is_created_straight_away(self, qt_app, views):
+        _compose, publish = views
+        publish.set_mode(REPEAT)
+        publish._time_rows[0].setTime(publish._time_rows[0].time().fromString("10:00", "HH:mm"))
+        publish.add_time("20:00")
+        assert publish.publish() is True
+        (schedule,) = qt_app.schedule_repo.list()
+        assert schedule.overrides == frozenset()
+
+    def test_the_summary_says_so_before_the_button_is_pressed(self, views):
+        _compose, publish = views
+        publish.set_mode(REPEAT)
+        publish.add_time("12:00")
+        assert "3h apart" in publish.summary.text()

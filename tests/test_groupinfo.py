@@ -132,3 +132,90 @@ class TestTheHeadingIsTheGroupsOwn:
         """With no heading in main, the tab title is a better answer than an
         arbitrary h1 -- an arbitrary h1 is how this bug happened."""
         assert read_name(FakePage(heading="", title="(20+) TRY | Facebook")) == "TRY"
+
+
+class RecordingPage(FakePage):
+    """A page that records the waits, for the timing tests below."""
+
+    def __init__(self, heading="TRY", title="(20+) TRY | Facebook", appears=True) -> None:
+        super().__init__(heading=heading, title=title)
+        self.appears = appears
+        self.calls = []
+
+    def goto(self, url, **kwargs):
+        self.calls.append(("goto", url, kwargs))
+
+    def wait_for_function(self, script, **kwargs):
+        self.calls.append(("wait_for_function", script, kwargs))
+        if not self.appears:
+            raise TimeoutError("no heading")
+
+    def wait_for_timeout(self, ms):
+        self.calls.append(("wait_for_timeout", ms))
+
+    def close(self):
+        self.calls.append(("close",))
+
+
+class TestTheNameIsReadAsSoonAsItIsThere:
+    """A lookup used to pause a flat four seconds after the page loaded.
+
+    Measured live on 2026-09-25: DOMContentLoaded at 3.47s, the group's
+    heading at 3.50s. The pause was more than half of every lookup, spent
+    waiting for something that had already happened.
+    """
+
+    def test_it_waits_for_the_heading_not_for_a_clock(self):
+        from fbposter.automation.groupinfo import wait_for_heading
+
+        page = RecordingPage()
+        assert wait_for_heading(page) is True
+        pauses = [call[1] for call in page.calls if call[0] == "wait_for_timeout"]
+        assert all(ms < 1000 for ms in pauses), pauses
+
+    def test_it_waits_for_the_groups_own_heading(self):
+        """Scoped like READ_NAME, or the chat panel's "Chats" would do."""
+        from fbposter.automation.groupinfo import HAS_HEADING
+
+        assert '[role="main"] h1' in HAS_HEADING
+        assert "querySelector('h1')" not in HAS_HEADING
+
+    def test_it_polls_on_a_timer_not_on_animation_frames(self):
+        """The Chrome it reads from is off-screen and may never paint."""
+        from fbposter.automation.groupinfo import wait_for_heading
+
+        page = RecordingPage()
+        wait_for_heading(page)
+        _name, _script, kwargs = page.calls[0]
+        assert isinstance(kwargs["polling"], int)
+        assert kwargs["timeout"] > 0
+
+    def test_no_heading_falls_back_to_the_title_without_raising(self):
+        from fbposter.automation.groupinfo import wait_for_heading
+
+        page = RecordingPage(heading="", appears=False)
+        assert wait_for_heading(page) is False
+        assert read_name(page) == "TRY"
+
+    def test_the_live_namer_navigates_and_reads_without_a_fixed_pause(self, monkeypatch):
+        from contextlib import contextmanager
+
+        from fbposter.automation import groupinfo
+
+        page = RecordingPage()
+
+        class Context:
+            def new_page(self):
+                return page
+
+        @contextmanager
+        def attach(*_a, **_k):
+            yield Context()
+
+        monkeypatch.setattr(groupinfo.session, "attach", attach)
+        url = "https://www.facebook.com/groups/1/"
+        assert LiveGroupNamer().names_for([url]) == {url: "TRY"}
+        kinds = [call[0] for call in page.calls]
+        assert kinds[:2] == ["goto", "wait_for_function"]
+        assert kinds[-1] == "close"
+        assert all(call[1] < 1000 for call in page.calls if call[0] == "wait_for_timeout")

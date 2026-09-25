@@ -286,6 +286,34 @@ def _migration_008(connection: sqlite3.Connection) -> None:
     connection.execute("UPDATE groups SET name = ''")
 
 
+def _migration_009(connection: sqlite3.Connection) -> None:
+    """"Post anyway", and one cooldown for every group.
+
+    `overrides` records which rules the user chose to break for this batch or
+    schedule, as a JSON list of `guards.OVERRIDABLE` names. It has to live on
+    the row: the worker re-checks every rule at the moment of posting, and
+    without this it would skip the very post the user had just insisted on.
+
+    The per-group cooldown is no longer editable, so every group is put on the
+    default. A value set earlier would otherwise go on applying invisibly --
+    the rule is "the 8h gap", and a group quietly on 24 is not that rule.
+    """
+    connection.execute("ALTER TABLE tasks ADD COLUMN overrides TEXT NOT NULL DEFAULT '[]'")
+    connection.execute(
+        "ALTER TABLE schedules ADD COLUMN overrides TEXT NOT NULL DEFAULT '[]'"
+    )
+    row = connection.execute(
+        "SELECT value FROM settings WHERE key = 'default_cooldown_hours'"
+    ).fetchone()
+    try:
+        hours = int(row[0]) if row is not None else None
+    except (TypeError, ValueError):
+        hours = None
+    if hours is None or hours < 0:
+        hours = int(DEFAULT_SETTINGS["default_cooldown_hours"])
+    connection.execute("UPDATE groups SET cooldown_hours = ?", (hours,))
+
+
 # Index i applies when user_version == i, and bumps it to i + 1.
 MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _migration_001,
@@ -296,6 +324,7 @@ MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _migration_006,
     _migration_007,
     _migration_008,
+    _migration_009,
 ]
 
 LATEST_VERSION = len(MIGRATIONS)
