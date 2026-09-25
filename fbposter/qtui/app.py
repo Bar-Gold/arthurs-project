@@ -151,6 +151,9 @@ class App(QMainWindow):
         self._chrome_probe = lambda: chrome.probe()
         self._chrome_installed = lambda: login.chrome_installed()
         self._chrome_start = lambda: login.start_chrome()
+        self._chrome_profile_busy = lambda: chrome.profile_in_use(config.resolve_profile_dir())
+        # Consecutive looks that found Chrome holding the profile but silent.
+        self._busy_looks = 0
         self._monotonic = time.monotonic
 
         # Which groups this post is going to. It lives on the window rather
@@ -533,11 +536,31 @@ class App(QMainWindow):
                 return "up"
             if not self._chrome_installed():
                 return "missing"
+            if self._chrome_profile_busy():
+                # Still running on the profile, only slow to answer. It used
+                # to be taken for gone after one slow second -- on a machine
+                # running flat out -- and the launch that followed replaced
+                # the app's Chrome outright. A post in progress would go with
+                # it.
+                return "busy"
             return "down"
 
         self.run_in_background(look, self._on_chrome_looked, self._on_chrome_look_failed)
 
     def _on_chrome_looked(self, found: str) -> None:
+        if found == "busy":
+            self._watching = False
+            self._busy_looks += 1
+            if self._busy_looks == keepalive.BUSY_LOOKS_BEFORE_TELLING:
+                self.note_connection(
+                    ConnectionResult(
+                        ConnectionState.CHROME_DOWN,
+                        "The app's Chrome is open but not answering. If this "
+                        "lasts, close it and the app will start it again.",
+                    )
+                )
+            return
+        self._busy_looks = 0
         if found == "up":
             self._keeper.seen_running()
             self._watching = False

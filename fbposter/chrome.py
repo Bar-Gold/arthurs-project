@@ -90,6 +90,36 @@ def is_running(port: int = config.DEBUG_PORT) -> bool:
     return probe(port) is not None
 
 
+# How long a Chrome that holds the profile but has not answered is given to
+# answer, before launch() gives up on it rather than starting another.
+BUSY_GRACE_S = 15.0
+
+
+def profile_in_use(profile_dir: Path) -> bool:
+    """Whether a Chrome is running on this profile, answering the port or not.
+
+    Chrome holds `<profile>/lockfile` open for as long as it runs, created
+    delete-on-close, so while it lives nobody else may open the file, and when
+    it exits Windows deletes it. That tells the difference the debugging port
+    cannot: "not answering" is either gone, or busy -- starting up, loading a
+    heavy page, on a machine running flat out -- and the two need opposite
+    handling. Launching Chrome on a profile a busy Chrome still holds hands the
+    launch to it, and Chrome may shut the busy one down to take over, which is
+    how a slow second once replaced the app's Chrome outright. Verified live
+    on 2026-09-25: the file exists and refuses to open while Chrome runs.
+    """
+    lock = Path(profile_dir) / "lockfile"
+    if not lock.exists():
+        return False
+    try:
+        with open(lock, "rb"):
+            return False  # it opened: nothing holds it; left over, not live
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+
+
 def wait_for_cdp(port: int = config.DEBUG_PORT, timeout: float = config.LAUNCH_TIMEOUT_S) -> dict[str, Any]:
     """Poll the debugging port until Chrome answers, or raise ChromeLaunchError."""
     deadline = time.monotonic() + timeout
@@ -133,6 +163,13 @@ def launch(
     """
     with _LAUNCH_LOCK:
         if is_running(port):
+            return False
+        if profile_in_use(profile_dir):
+            # Running on this profile, just not answering yet: never start a
+            # second one on top of it (see profile_in_use). Give it time to
+            # answer; if it never does, wait_for_cdp says why -- most often a
+            # Chrome opened on this profile without the debugging port.
+            wait_for_cdp(port, timeout=BUSY_GRACE_S)
             return False
 
         chrome = find_chrome()

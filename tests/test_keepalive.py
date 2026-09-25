@@ -70,6 +70,8 @@ class Browser:
         self.up = up
         self.installed = installed
         self.starts = starts
+        # Holding the profile without answering the port: slow, not gone.
+        self.busy = False
         self.launches = 0
 
     def probe(self):
@@ -90,6 +92,7 @@ def watched(qt_app, monkeypatch):
     qt_app._chrome_probe = browser.probe
     qt_app._chrome_installed = lambda: browser.installed
     qt_app._chrome_start = browser.start
+    qt_app._chrome_profile_busy = lambda: browser.busy
     clock = {"now": 1000.0}
     qt_app._monotonic = lambda: clock["now"]
     monkeypatch.setattr(
@@ -153,6 +156,84 @@ class TestTheWindowStartsItAgain:
         app.watch_chrome()
         app.watch_chrome()
         assert held == [1]
+
+
+class TestABusyChromeIsNeverStartedOver:
+    """Seen live: with the machine running flat out, Chrome was slow to answer
+    for a moment, the watcher took it for gone, and the launch that followed
+    replaced the app's Chrome outright. Mid-post, that loses the post."""
+
+    def test_a_chrome_holding_the_profile_is_left_alone(self, watched):
+        app, browser, _clock, _checks = watched
+        browser.busy = True
+        for _ in range(3):
+            app.watch_chrome()
+        assert browser.launches == 0
+
+    def test_the_user_is_told_once_if_it_lasts(self, watched):
+        from fbposter.keepalive import BUSY_LOOKS_BEFORE_TELLING
+
+        app, browser, _clock, _checks = watched
+        browser.busy = True
+        for _ in range(BUSY_LOOKS_BEFORE_TELLING - 1):
+            app.watch_chrome()
+        assert app.connection_state is not ConnectionState.CHROME_DOWN
+        app.watch_chrome()
+        assert app.connection_state is ConnectionState.CHROME_DOWN
+        assert "not answering" in app.connection_result.detail
+
+    def test_once_it_answers_the_count_starts_again(self, watched):
+        app, browser, _clock, _checks = watched
+        browser.busy = True
+        app.watch_chrome()
+        browser.busy, browser.up = False, True
+        app.watch_chrome()
+        assert app._busy_looks == 0
+
+
+class TestTheProfileLock:
+    """chrome.profile_in_use reads the lock Chrome holds on its profile."""
+
+    def test_no_lock_file_means_no_chrome(self, tmp_path):
+        assert chrome.profile_in_use(tmp_path) is False
+
+    def test_a_lock_file_nobody_holds_is_left_over(self, tmp_path):
+        (tmp_path / "lockfile").write_bytes(b"")
+        assert chrome.profile_in_use(tmp_path) is False
+
+    def test_a_lock_file_held_like_chrome_holds_it(self, tmp_path):
+        """Open, delete-on-close, as Chrome's process singleton does."""
+        import os
+
+        handle = os.open(tmp_path / "lockfile", os.O_CREAT | os.O_RDWR | os.O_TEMPORARY)
+        try:
+            assert chrome.profile_in_use(tmp_path) is True
+        finally:
+            os.close(handle)
+        assert chrome.profile_in_use(tmp_path) is False  # gone with its holder
+
+    def test_launch_never_starts_a_second_chrome_on_a_held_profile(self, monkeypatch, tmp_path):
+        popened = []
+        monkeypatch.setattr(chrome, "is_running", lambda port=None: False)
+        monkeypatch.setattr(chrome, "profile_in_use", lambda _dir: True)
+        monkeypatch.setattr(chrome.subprocess, "Popen", lambda *a, **k: popened.append(a))
+        monkeypatch.setattr(chrome, "wait_for_cdp", lambda port=None, timeout=None: {"Browser": "x"})
+        assert chrome.launch(tmp_path, visible=False) is False
+        assert popened == []
+
+    def test_one_that_never_answers_is_reported_not_replaced(self, monkeypatch, tmp_path):
+        popened = []
+
+        def silent(port=None, timeout=None):
+            raise ChromeLaunchError("no port")
+
+        monkeypatch.setattr(chrome, "is_running", lambda port=None: False)
+        monkeypatch.setattr(chrome, "profile_in_use", lambda _dir: True)
+        monkeypatch.setattr(chrome.subprocess, "Popen", lambda *a, **k: popened.append(a))
+        monkeypatch.setattr(chrome, "wait_for_cdp", silent)
+        with pytest.raises(ChromeLaunchError):
+            chrome.launch(tmp_path, visible=False)
+        assert popened == []
 
 
 class TestWhenItWillNotStart:

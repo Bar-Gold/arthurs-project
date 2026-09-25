@@ -35,6 +35,13 @@ WATCH_EVERY_S = 20
 BACKOFF_S = (60, 5 * 60)
 MAX_ATTEMPTS = len(BACKOFF_S) + 1
 
+# A Chrome that still holds the profile but has not answered is *busy*, not
+# gone, and is never started over -- see chrome.profile_in_use. If it stays
+# like that for this many looks in a row (two minutes), the user is told once:
+# a Chrome opened on the profile without the debugging port looks exactly so,
+# and only closing it lets the app start its own.
+BUSY_LOOKS_BEFORE_TELLING = 6
+
 
 @dataclass
 class ChromeKeeper:
