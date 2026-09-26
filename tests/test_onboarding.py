@@ -122,6 +122,36 @@ class TestNothingTellsTheUserToOpenATerminal:
         monkeypatch.setattr(chrome, "probe", lambda *a, **k: None)
         assert self.offenders(connection.check_connection().detail) == []
 
+    def test_no_string_in_the_package_names_one(self):
+        """Every string the app could show, not only the ones above.
+
+        The scheduler told the user to "Start Chrome with 'main.py start'" when
+        Chrome stayed down for two hours -- in a message none of the tests
+        above looked at. Docstrings are left out; they are for developers.
+        """
+        import ast
+        from pathlib import Path
+
+        import fbposter
+
+        found = []
+        for path in Path(fbposter.__file__).parent.rglob("*.py"):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            docstrings = {
+                id(node.body[0].value)
+                for node in ast.walk(tree)
+                if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef,
+                                     ast.AsyncFunctionDef))
+                and node.body
+                and isinstance(node.body[0], ast.Expr)
+                and isinstance(node.body[0].value, ast.Constant)
+            }
+            for node in ast.walk(tree):
+                if (isinstance(node, ast.Constant) and isinstance(node.value, str)
+                        and id(node) not in docstrings and self.offenders(node.value)):
+                    found.append(f"{path.name}:{node.lineno} {node.value[:60]!r}")
+        assert found == []
+
     def test_every_step_says_something(self):
         """A step with empty copy is a blank card and no way forward."""
         for step in SetupStep:

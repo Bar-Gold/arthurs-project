@@ -103,7 +103,7 @@ def verify_session(context: BrowserContext) -> SessionStatus:
         return SessionStatus(
             logged_in=False,
             user_id=None,
-            detail="No Facebook login cookie in this profile -- nobody has logged in yet.",
+            detail="Nobody has logged into Facebook in the app's Chrome window yet.",
         )
 
     # A cookie only proves someone logged in at some point, so confirm the
@@ -129,8 +129,8 @@ def verify_session(context: BrowserContext) -> SessionStatus:
         return SessionStatus(
             logged_in=False,
             user_id=user_id,
-            detail="Login cookie is present but Facebook redirected to the login page; "
-            "the session has expired and needs a manual sign-in.",
+            detail="Your Facebook login has expired. Press Log in to Facebook "
+            "to sign in again.",
         )
 
     return SessionStatus(

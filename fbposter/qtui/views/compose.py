@@ -179,7 +179,7 @@ class ComposeView(QWidget):
         self.counter.setObjectName("Muted")
         footer.addWidget(self.counter)
         footer.addStretch(1)
-        self.reset_button = QPushButton("Reset to base text")
+        self.reset_button = QPushButton("Use the All groups text")
         self.reset_button.clicked.connect(self.reset_current)
         self.reset_button.hide()
         footer.addWidget(self.reset_button)
@@ -333,7 +333,8 @@ class ComposeView(QWidget):
                 if had_rewrites:
                     self._bodies.clear()
                     self.notify(
-                        "Base text changed, so the per-group versions were reset.",
+                        "You changed the text for all groups, so the per-group "
+                        "versions were cleared.",
                         "warning",
                     )
         else:
@@ -515,7 +516,7 @@ class ComposeView(QWidget):
         self.app.template_repo.save(name, body, [str(p) for p in self.attachments])
         self.template_name.clear()
         self.refresh_templates()
-        self.notify(f"Saved template {name!r}.", "success")
+        self.notify(f"Saved template “{name}”.", "success")
         return True
 
     def load_template(self) -> bool:
@@ -530,7 +531,11 @@ class ComposeView(QWidget):
         self.refresh_tabs()
         self.attachments = [Path(p) for p in template.media_paths]
         self._render_attachments()
-        self.notify(f"Loaded {template.name!r}. Edit it before sending.", "info")
+        self.notify(
+            f"Loaded “{template.name}”. Vary the wording if these groups have "
+            "had it before.",
+            "info",
+        )
         return True
 
     # -- attachments -------------------------------------------------------
@@ -620,8 +625,10 @@ class ComposeView(QWidget):
             now=now,
             when=when,
             daily_cap=settings.get_int("daily_cap", 25),
+            # The day the batch runs, not today: a batch for next week is
+            # judged against next week's posts, of which there are none yet.
             posted_today=self.app.task_repo.posted_count_since(
-                clock.start_of_local_day(now)
+                clock.start_of_local_day(when or now)
             ),
             window_start_hour=settings.get_int("posting_window_start_hour", 8),
             window_end_hour=settings.get_int("posting_window_end_hour", 23),
@@ -646,14 +653,15 @@ class ComposeView(QWidget):
         )
         for warning in verdict.warnings:
             self.notify(warning, "warning")
+        count = f"{len(planned)} group{'s' if len(planned) != 1 else ''}"
         if overrides:
             self.notify(
-                f"Queued for {len(planned)} group(s), posting anyway despite the "
+                f"Queued for {count}, posting anyway despite the "
                 f"{rule_labels(overrides)}.",
                 "warning",
             )
         elif not verdict.warnings:
-            self.notify(f"Queued for {len(planned)} group(s).", "success")
+            self.notify(f"Queued for {count}.", "success")
         return True
 
 

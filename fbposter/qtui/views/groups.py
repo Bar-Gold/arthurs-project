@@ -37,8 +37,8 @@ LOOKING_UP = "Looking up the group's name…"
 class GroupsView(QWidget):
     title = "Groups"
     subtitle = (
-        "Tick the groups this post goes to. Only groups you can post in — "
-        "admin groups belong in Facebook's own scheduler."
+        "Tick the groups this post goes to. Leave out groups you are an admin "
+        "of — Facebook can schedule posts there by itself."
     )
 
     def __init__(self, app) -> None:
@@ -181,7 +181,7 @@ class GroupsView(QWidget):
         self.app.set_group_selected(group.id, True)
         if restored:
             self.notify(
-                f"Brought {group.display_name} back, with what it has already been sent.",
+                f"Brought {group.display_name} back, along with its posting history.",
                 "success",
             )
         elif group.name:

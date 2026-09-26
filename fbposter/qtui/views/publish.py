@@ -69,6 +69,20 @@ BUTTON_LABELS = {
     REPEAT: "Start repeating",
 }
 
+# What pressing "Post anyway" does, said on the panel that offers it. The
+# rules listed above it are facts; this is the consequence, and it is the
+# user's to choose. The spacing is named because it is the one thing people
+# expect "anyway" to skip, and it does not.
+ANYWAY_EFFECT = {
+    NOW: "Post anyway and it goes out despite these.",
+    ONCE: "Post anyway and it goes out at the time you chose, despite these.",
+    REPEAT: "Post anyway and every run goes out despite these.",
+}
+ANYWAY_STILL = (
+    " Every other rule still applies, including the 10–25 minute gap "
+    "between groups."
+)
+
 # How far ahead a one-off post may be scheduled. Not a technical limit -- it is
 # the range in which a mis-scroll is recoverable. Without a ceiling the year
 # section takes a mouse wheel notch straight to 2028, which is what happened.
@@ -340,9 +354,9 @@ class PublishView(QWidget):
         # not obvious: one wording works exactly once, because sending the same
         # words to a group twice is refused.
         self.wording_hint = QLabel(
-            "No alternates yet — the Compose text is the only wording, so this "
-            "can run once per group and then has nothing fresh to send. Add one "
-            "or two more."
+            "No alternates yet. With only the Compose text, each group gets it "
+            "once, and every run after that would repeat it, which the rules "
+            "refuse. Add one or two more."
         )
         self.wording_hint.setObjectName("Muted")
         self.wording_hint.setWordWrap(True)
@@ -402,9 +416,12 @@ class PublishView(QWidget):
         body = self.base_body()
 
         # The snippet is a setText and always runs; only the rows are guarded.
-        snippet = " ".join(body.split())[:SNIPPET_CHARS]
+        # The ellipsis only when something was cut: after a whole post it
+        # read as though the rest of it was missing.
+        flat = " ".join(body.split())
+        snippet = flat[:SNIPPET_CHARS] + ("…" if len(flat) > SNIPPET_CHARS else "")
         self.preview_note.setText(
-            f"“{snippet}…”" if snippet else "Nothing written yet — start on Compose."
+            f"“{snippet}”" if snippet else "Nothing written yet — start on Compose."
         )
 
         # None never equals a list, so the first call always draws -- including
@@ -519,16 +536,19 @@ class PublishView(QWidget):
         layout = QVBoxLayout(self.override_card)
         layout.setContentsMargins(theme.PAD_M, theme.PAD_M, theme.PAD_M, theme.PAD_M)
         layout.setSpacing(theme.PAD_S)
-        title = QLabel("This breaks the posting rules")
+        title = QLabel("This would break the posting rules")
         title.setObjectName("SectionHeading")
         title.setStyleSheet(f"color: {theme.C['WARNING']};")
         layout.addWidget(title)
         self.override_list = QLabel("")
         self.override_list.setWordWrap(True)
         layout.addWidget(self.override_list)
+        self.override_effect = QLabel("")
+        self.override_effect.setWordWrap(True)
+        layout.addWidget(self.override_effect)
         why = QLabel(
-            "You can post anyway. The rules are what keeps the account from "
-            "looking automated, so break them only on purpose."
+            "The rules keep the account from looking automated, so break them "
+            "only on purpose. Cancel posts nothing, so you can change it instead."
         )
         why.setObjectName("Muted")
         why.setWordWrap(True)
@@ -549,6 +569,7 @@ class PublishView(QWidget):
         """Show what the post would break, and offer to post anyway."""
         self._offered = frozenset(v.rule for v in violations)
         self.override_list.setText("\n".join(f"•  {v.message}" for v in violations))
+        self.override_effect.setText(ANYWAY_EFFECT[self.mode] + ANYWAY_STILL)
         self.override_card.show()
         self.go_button.hide()
         # The summary says the same things; twice over, the column outgrew
@@ -821,7 +842,7 @@ class PublishView(QWidget):
         count = f"{len(groups)} group{'s' if len(groups) != 1 else ''}"
 
         if self.mode == NOW:
-            self.summary.setText(f"{count}, starting as soon as the worker is free.")
+            self.summary.setText(f"{count}, starting as soon as nothing else is posting.")
             return
         if self.mode == ONCE:
             when = self.schedule_entry.dateTime().toString("yyyy-MM-dd HH:mm")
@@ -830,10 +851,15 @@ class PublishView(QWidget):
 
         wordings = self.wordings()
         self.wording_hint.setVisible(not self._wordings)
+        # Said only when there is a rotation to speak of: with no alternates
+        # the hint above says it, and "1 wording in rotation" is not one.
+        extra = len(self.alternates())
+        self.rotation_note.setVisible(extra > 0)
         self.rotation_note.setText(
-            f"{len(wordings)} wording{'s' if len(wordings) != 1 else ''} in rotation "
-            "(the Compose text plus these). Each run picks a different one per "
-            "group, so no group sees the same text twice."
+            f"{len(wordings)} wordings in rotation: "
+            + ("the Compose text and " if self.base_body() else "")
+            + f"{extra} alternate{'s' if extra != 1 else ''}. Each run gives every "
+            "group a wording it has not had yet, as long as one is left."
         )
 
         rule = self.rule()
@@ -952,7 +978,7 @@ class PublishView(QWidget):
         if any(self.compose.has_rewrite(group_id) for group_id in groups):
             self.notify(
                 "Per-group rewrites are not carried into a repeating post — it "
-                "rotates the wordings below instead.",
+                "rotates the Compose text and the alternate wordings instead.",
                 "warning",
             )
 
@@ -1085,7 +1111,8 @@ class PublishView(QWidget):
             layout.addWidget(anyway)
 
         if schedule.bodies:
-            snippet = " ".join(schedule.bodies[0].split())[:SNIPPET_CHARS]
+            flat = " ".join(schedule.bodies[0].split())
+            snippet = flat[:SNIPPET_CHARS] + ("…" if len(flat) > SNIPPET_CHARS else "")
             first = QLabel(snippet)
             first.setWordWrap(True)
             layout.addWidget(first)

@@ -37,6 +37,7 @@ from .guards import (
     Violation,
     check_cooldown,
     normalise,
+    span,
 )
 
 # A daily schedule may fire at most this many times. This is the user's own
@@ -239,7 +240,7 @@ def window_violation(rule: Recurrence, start_hour: int, end_hour: int) -> Violat
     return Violation(
         POSTING_WINDOW,
         f"{' and '.join(outside)} {'is' if len(outside) == 1 else 'are'} outside the "
-        f"{start_hour:02d}:00-{end_hour:02d}:00 posting window.",
+        f"posting hours ({start_hour:02d}:00-{end_hour:02d}:00).",
     )
 
 
@@ -253,6 +254,10 @@ def interval_violation(
     judged on the actual gaps, not the average: 09:00 and 12:00 is two runs a
     day -- twelve hours on average, comfortably outside an 8h cooldown -- and
     yet the 12:00 run would be skipped every single day.
+
+    The message says what is true and stops there. It used to end "so the
+    12:00 run would be skipped", which is only so if the user does *not* press
+    "Post anyway" -- and it was written on the very panel offering that button.
     """
     if cooldown_hours <= 0:
         return None
@@ -261,8 +266,7 @@ def interval_violation(
     if not gaps:
         return None
     gap, earlier, later = min(gaps)
-    hours = gap.total_seconds() / 3600
-    if hours >= cooldown_hours:
+    if gap >= timedelta(hours=cooldown_hours):
         return None
     first, second = clock.to_local(earlier), clock.to_local(later)
     when = second.strftime("%H:%M")
@@ -270,9 +274,8 @@ def interval_violation(
         when += " the next day"
     return Violation(
         COOLDOWN,
-        f"Runs at {first.strftime('%H:%M')} and {when} are only {round(hours, 1):g}h apart, "
-        f"inside the {cooldown_hours}h cooldown between posts to the same group, "
-        f"so the {second.strftime('%H:%M')} run would be skipped.",
+        f"Runs at {first.strftime('%H:%M')} and {when} are only {span(gap)} apart, "
+        f"less than the {cooldown_hours}h cooldown between posts to the same group.",
     )
 
 
@@ -309,11 +312,12 @@ def check_schedule(
     # ago would be skipped on the schedule's very first outing.
     first_run = next_occurrence(rule, now)
     for target in targets:
-        early = check_cooldown(target.last_posted_at, first_run, cooldown_hours, target.name)
+        early = check_cooldown(
+            target.last_posted_at, first_run, cooldown_hours, target.name,
+            " at the first run",
+        )
         if early is not None:
-            found.append(
-                Violation(COOLDOWN, f"{early.message.rstrip('.')} at the first run.")
-            )
+            found.append(early)
 
     if daily_cap > 0 and targets:
         per_day = rule.per_day * len(targets)
@@ -336,7 +340,7 @@ def check_schedule(
                     Violation(
                         REPEAT_TEXT,
                         f"{target.name} has already been sent every one of these "
-                        "wordings, so the schedule has nothing fresh for it.",
+                        "wordings.",
                     )
                 )
 

@@ -86,8 +86,8 @@ class CheckpointError(FBPosterError):
 
     def __init__(self, url: str) -> None:
         super().__init__(
-            f"Facebook served a checkpoint or verification screen: {url}\n"
-            "Stopping. Open Chrome and resolve it yourself -- the app will never "
-            "click through one of these."
+            "Facebook is asking you to confirm it is you. Press Show me the "
+            "window and finish the check yourself — the app will never click "
+            "through one of these."
         )
         self.url = url

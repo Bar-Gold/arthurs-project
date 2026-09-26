@@ -13,6 +13,7 @@ three times a day to one group is possible at all).
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Sequence
@@ -55,6 +56,22 @@ def rule_labels(rules) -> str:
     return ", ".join(names[:-1]) + " and " + names[-1]
 
 
+def span(delta: timedelta) -> str:
+    """ "40 min", "3h", "3h 10m" -- a stretch of time as a person says it.
+
+    Rounded up, so a cooldown with seconds left never reads as "0.0h".
+    """
+    minutes = max(1, math.ceil(delta.total_seconds() / 60))
+    if minutes < 60:
+        return f"{minutes} min"
+    hours, rest = divmod(minutes, 60)
+    return f"{hours}h" if not rest else f"{hours}h {rest}m"
+
+
+# Every refusal below says what is true, never what will happen next. What
+# happens next is the user's choice -- "Post anyway" goes ahead regardless --
+# so a message ending "...so it would be skipped" read as if that button would
+# not work, which is the one thing it is there to do.
 @dataclass(frozen=True)
 class Violation:
     rule: str
@@ -101,14 +118,21 @@ def normalise(text: str) -> str:
     return " ".join(strip_invisible(text).split()).casefold()
 
 
-def check_daily_cap(posted_today: int, adding: int, cap: int) -> Violation | None:
-    """Refuse to exceed the daily ceiling. Landing exactly on it is fine."""
+def check_daily_cap(
+    posted_today: int, adding: int, cap: int, day: str = "today"
+) -> Violation | None:
+    """Refuse to exceed the daily ceiling. Landing exactly on it is fine.
+
+    `day` is how the day in question is named: "today", or "that day" for a
+    batch scheduled for another one.
+    """
     if cap <= 0:
         return None
     if posted_today + adding > cap:
         return Violation(
             DAILY_CAP,
-            f"That would make {posted_today + adding} posts today, over the cap of {cap}.",
+            f"That makes {posted_today + adding} posts {day}, over the daily "
+            f"limit of {cap}.",
         )
     return None
 
@@ -118,19 +142,21 @@ def check_cooldown(
     now: datetime,
     cooldown_hours: int,
     group_name: str = "this group",
+    at: str = "",
 ) -> Violation | None:
-    """Enforce the per-group gap. Exactly at the boundary is allowed."""
+    """Enforce the per-group gap. Exactly at the boundary is allowed.
+
+    `at` names the moment judged when it is not now: " at the scheduled time".
+    """
     if last_posted_at is None or cooldown_hours <= 0:
         return None
 
     ready_at = last_posted_at + timedelta(hours=cooldown_hours)
     if now < ready_at:
-        remaining = ready_at - now
-        hours = remaining.total_seconds() / 3600
         return Violation(
             COOLDOWN,
-            f"{group_name} was posted to too recently; {hours:.1f}h of its "
-            f"{cooldown_hours}h cooldown left.",
+            f"{group_name} was posted to too recently: {span(ready_at - now)} of "
+            f"the {cooldown_hours}h cooldown between posts is still left{at}.",
         )
     return None
 
@@ -158,8 +184,8 @@ def check_posting_window(when: datetime, start_hour: int, end_hour: int) -> Viol
         return None
     return Violation(
         POSTING_WINDOW,
-        f"{local.strftime('%H:%M')} Israel time is outside the "
-        f"{start_hour:02d}:00-{end_hour:02d}:00 posting window.",
+        f"{local.strftime('%H:%M')} Israel time is outside the posting hours "
+        f"({start_hour:02d}:00-{end_hour:02d}:00).",
     )
 
 
@@ -181,7 +207,7 @@ def check_repeat_text(
     if any(normalise(previous) == target for previous in recent_bodies):
         return Violation(
             REPEAT_TEXT,
-            f"This exact text has already been posted to {group_name}. Reword it first.",
+            f"This exact text has already been posted to {group_name}.",
         )
     return None
 
@@ -216,7 +242,7 @@ def evaluate_batch(
     """Judge a whole batch before anything is written to the database.
 
     `when` is the moment the batch would run -- the scheduled time, or now for
-    an immediate post.
+    an immediate post. `posted_today` is the count for the day `when` falls on.
     """
     blocked: list[Violation] = []
     warnings: list[str] = []
@@ -224,7 +250,12 @@ def evaluate_batch(
     if not targets:
         return BatchVerdict(blocked=(Violation("empty", "Pick at least one group."),))
 
-    cap = check_daily_cap(posted_today, len(targets), daily_cap)
+    # Judged on the day the batch runs: "posts today" is wrong for a batch
+    # scheduled for next week, and the caller counts that day's posts.
+    later = when is not None and clock.start_of_local_day(when) != clock.start_of_local_day(now)
+    cap = check_daily_cap(
+        posted_today, len(targets), daily_cap, "that day" if later else "today"
+    )
     if cap is not None:
         blocked.append(cap)
 
@@ -234,7 +265,11 @@ def evaluate_batch(
 
     for target in targets:
         cooldown = check_cooldown(
-            target.last_posted_at, when or now, target.cooldown_hours, target.group_name
+            target.last_posted_at,
+            when or now,
+            target.cooldown_hours,
+            target.group_name,
+            " at the scheduled time" if when is not None and when > now else "",
         )
         if cooldown is not None:
             blocked.append(cooldown)

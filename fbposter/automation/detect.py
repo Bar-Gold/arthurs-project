@@ -47,13 +47,17 @@ def classify(url: str, page_text: str = "") -> PageVerdict:
 
 
 HALT_MESSAGES = {
+    # The connection light does not change when a batch halts, so both of
+    # these start at "Check connection": that is what turns the button under
+    # it into the one that fixes this.
     PageVerdict.CHECKPOINT: (
-        "Facebook served a checkpoint or verification screen. Stopping the batch. "
-        "Open Chrome and clear it yourself -- the app will never click through one."
+        "Facebook is showing a security check, so the batch has stopped. Press "
+        "Check connection, then Show me the window, and finish the check "
+        "yourself — the app will never click through one."
     ),
     PageVerdict.LOGIN: (
-        "Facebook redirected to the login page; the session has expired. "
-        "Use the Log in to Facebook button beside the connection light to sign "
+        "Facebook showed its login page: the session has expired, so the batch "
+        "has stopped. Press Check connection, then Log in to Facebook, to sign "
         "in again."
     ),
     PageVerdict.RATE_LIMIT: (
@@ -61,7 +65,7 @@ HALT_MESSAGES = {
         "batch immediately. Do not post again today, and leave it a while."
     ),
     PageVerdict.UNAVAILABLE: (
-        "The group page did not load as expected -- it may be unavailable, or "
+        "The group page did not load as expected — it may be unavailable, or "
         "membership may have changed. Stopping rather than guessing."
     ),
 }

@@ -225,8 +225,9 @@ class GroupPoster:
         trigger = self._find_composer_trigger()
         if trigger is None:
             raise ComposerNotFound(
-                "Could not find the group composer. Facebook may have changed its "
-                "markup, or the interface language may no longer be English."
+                "Could not find where to write a post in this group. Facebook may "
+                "have changed its page, or the account's language is not English, "
+                "Hebrew or Russian."
             )
 
         self.human.hover_then_click(trigger)
@@ -529,14 +530,14 @@ class GroupPoster:
             self.discard()
             raise PostNotVerified(
                 "Clicked Post but the composer never closed and the post is not in "
-                "the group, so it almost certainly did not go out. Often a slow or "
-                "dropped connection. Nothing was posted and the draft was cleared, "
-                "so it is safe to try again."
+                "the group, so it almost certainly did not go out — usually a slow "
+                "or dropped connection. The draft was cleared, so it is safe to "
+                "try again."
             )
 
         raise PostNotVerified(
             "Clicked Post, the composer closed, but the post could not be found in "
-            "the group afterwards. It may well have gone out -- check the group "
+            "the group afterwards. It may well have gone out — check the group "
             "before queueing it again, because posting it twice is worse than not "
             "posting it at all."
         )

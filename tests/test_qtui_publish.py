@@ -316,14 +316,14 @@ class TestSummaryAndWarnings:
         publish._time_rows[0].setTime(
             publish._time_rows[0].time().fromString("03:00", "HH:mm")
         )
-        assert "posting window" in publish.summary.text()
+        assert "posting hours" in publish.summary.text()
 
     def test_the_empty_wordings_hint_shows_when_there_are_no_alternates(self, views):
         """It carries the one non-obvious thing: one wording runs once."""
         _compose, publish = views
         publish.set_mode(REPEAT)
         assert publish.wording_hint.isVisibleTo(publish)
-        assert "run once" in publish.wording_hint.text()
+        assert "gets it once" in publish.wording_hint.text()
 
     def test_the_hint_goes_away_once_an_alternate_exists(self, views):
         _compose, publish = views
@@ -504,6 +504,27 @@ class TestPostAnyway:
         publish.add_time("12:00")
         assert "3h apart" in publish.summary.text()
 
+    def test_the_panel_says_what_post_anyway_does(self, qt_app, views):
+        _compose, publish = views
+        self.recently_posted(qt_app)
+        publish.publish()
+        effect = publish.override_effect.text()
+        assert "goes out despite these" in effect
+        # The one thing people expect "anyway" to skip, and it does not.
+        assert "10–25 minute gap" in effect
+
+    def test_for_a_repeat_it_says_every_run_goes_out(self, qt_app, views):
+        """The screenshot: the list said the 11:00 run "would be skipped",
+        directly above the button whose whole job is to post it."""
+        _compose, publish = views
+        publish.set_mode(REPEAT)
+        publish.add_time("11:00")
+        publish.publish()
+        assert "every run goes out" in publish.override_effect.text()
+        assert "2h apart" in publish.override_list.text()
+        assert "skip" not in publish.override_list.text().lower()
+        assert "would" not in publish.override_list.text().lower()
+
     def test_editing_withdraws_the_offer(self, qt_app, views):
         """The panel described the post as it was; after an edit it would be
         offering to break rules for a post that no longer exists."""
@@ -516,3 +537,62 @@ class TestPostAnyway:
         assert publish.override_card.isHidden()
         assert not publish.go_button.isHidden()
         assert publish.publish() is True  # 09:00 and 21:00 break nothing
+
+
+class TestTheDailyLimitIsJudgedOnTheDayItPosts:
+    """Today's posts used to count against a batch scheduled for next week,
+    which was refused as "27 posts today" -- neither true nor today."""
+
+    @pytest.fixture
+    def today_is_full(self, qt_app, monkeypatch):
+        qt_app.settings_repo.set("daily_cap", 3)
+        start_of_today = clock.start_of_local_day(utcnow())
+        monkeypatch.setattr(
+            qt_app.task_repo,
+            "posted_count_since",
+            lambda since: 3 if since <= start_of_today else 0,
+        )
+
+    def test_a_full_today_does_not_refuse_another_day(self, qt_app, views, today_is_full):
+        _compose, publish = views
+        publish.set_mode(ONCE)
+        publish.schedule_entry.setDateTime(publish.schedule_entry.dateTime().addDays(2))
+        assert publish.publish() is True
+        assert publish.override_card.isHidden()
+
+    def test_a_full_today_still_counts_today(self, qt_app, views, today_is_full):
+        _compose, publish = views
+        assert publish.publish() is False
+        assert "posts today, over the daily limit of 3" in publish.override_list.text()
+
+
+class TestTheRotationNote:
+    def test_it_is_not_shown_without_a_rotation(self, views):
+        """With no alternates the hint says it all; "1 wording in rotation
+        (the Compose text plus these)" described a list that was not there."""
+        _compose, publish = views
+        publish.set_mode(REPEAT)
+        assert publish.rotation_note.isHidden()
+
+    def test_it_counts_what_is_really_there(self, views):
+        _compose, publish = views
+        publish.set_mode(REPEAT)
+        publish.add_wording("Road bike, 54cm, barely ridden.")
+        assert not publish.rotation_note.isHidden()
+        assert publish.rotation_note.text().startswith(
+            "2 wordings in rotation: the Compose text and 1 alternate."
+        )
+
+
+class TestTheSnippet:
+    def test_a_whole_post_has_no_ellipsis(self, views):
+        _compose, publish = views
+        assert publish.preview_note.text() == f"“{BODY}”"
+
+    def test_a_long_post_says_it_was_cut(self, qt_app, views):
+        compose, publish = views
+        qt_app.show_view("compose")
+        compose._show("word " * 60)
+        compose.capture()
+        qt_app.show_view("publish")
+        assert publish.preview_note.text().endswith("…”")

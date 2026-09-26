@@ -298,7 +298,7 @@ class PostingWorker:
             try:
                 did_work = self.run_once()
             except Exception as exc:
-                self.emit("error", f"Worker error: {exc}")
+                self.emit("error", f"Scheduler error: {exc}")
                 did_work = False
 
             self._sync_power()
@@ -360,13 +360,14 @@ class PostingWorker:
                 self.tasks.mark_task(
                     fresh.id,
                     TASK_MISSED,
-                    error="Scheduled slot passed while nothing was running.",
+                    error="The scheduled time passed while the app was closed or the "
+                    "computer was asleep.",
                     finished=True,
                 )
                 self.emit(
                     "missed",
-                    "A scheduled batch was missed, probably while the machine was "
-                    "asleep. It has not been fired late.",
+                    "A scheduled batch was missed, probably while the computer was "
+                    "asleep. It was skipped rather than posted late.",
                     fresh.id,
                 )
                 return True
@@ -541,7 +542,8 @@ class PostingWorker:
                 )
                 self.emit(
                     "posted",
-                    f"{group.display_name} approved the post — it is live now.",
+                    f"An admin of {group.display_name} approved the post — it is "
+                    "live now.",
                     target.task_id,
                     target.id,
                 )
@@ -553,14 +555,14 @@ class PostingWorker:
                         approved=False,
                         note=(
                             f"Gone from the group's pending list on "
-                            f"{MISSES_BEFORE_DECLINED} checks running and never "
+                            f"{MISSES_BEFORE_DECLINED} checks in a row and never "
                             "published, so an admin declined it."
                         ),
                     )
                     self.emit(
                         "declined",
-                        f"{group.display_name} declined the post. That wording is "
-                        "free to send again.",
+                        f"An admin of {group.display_name} declined the post. That "
+                        "wording is free to send again.",
                         target.task_id,
                         target.id,
                     )
@@ -614,7 +616,7 @@ class PostingWorker:
                     "missed",
                     f"{schedule.display_name} missed its slot at "
                     f"{clock.format_local(schedule.next_run_at)}, probably while the "
-                    "machine was asleep. It has not been fired late.",
+                    "computer was asleep. It was skipped rather than posted late.",
                 )
 
             if schedule.next_run_at is None:
@@ -654,11 +656,16 @@ class PostingWorker:
             targets.append((group.id, body.strip()))
 
         if stale:
+            # A schedule cannot be edited, so "add another wording" was advice
+            # nobody could follow: the way on is a new one.
+            many = len(stale) != 1
             self.emit(
                 "skipped",
-                f"{schedule.display_name}: every wording has already gone to "
-                f"{', '.join(stale)}. Add another wording — reposting the same text "
-                "is what gets accounts restricted.",
+                f"{schedule.display_name}: {', '.join(stale)} "
+                f"{'have' if many else 'has'} already been sent every wording, so "
+                f"{'they were' if many else 'it was'} left out of this run. To keep "
+                "posting there, start a new repeating post with fresh wordings — "
+                "reposting the same text is what gets accounts restricted.",
             )
         if not targets:
             if not stale:
@@ -732,8 +739,8 @@ class PostingWorker:
             self.tasks.set_resume_at(task.id, resume)
             self.emit(
                 "deferred",
-                f"Daily cap of {cap} reached; the rest of this batch waits until "
-                f"{clock.format_local(resume)}.",
+                f"Daily limit of {cap} posts reached; the rest of this batch waits "
+                f"until {clock.format_local(resume)}.",
                 task.id,
             )
             return True
@@ -743,8 +750,8 @@ class PostingWorker:
             self.tasks.set_resume_at(task.id, window_open)
             self.emit(
                 "deferred",
-                f"Outside the {start_hour:02d}:00-{end_hour:02d}:00 window; resuming "
-                f"{clock.format_local(window_open)}.",
+                f"Outside the posting hours ({start_hour:02d}:00-{end_hour:02d}:00); "
+                f"the batch resumes {clock.format_local(window_open)}.",
                 task.id,
             )
             return True
@@ -939,8 +946,8 @@ class PostingWorker:
                 task,
                 target,
                 f"Chrome has not been reachable for {hours} hours, so this batch "
-                "stopped waiting for it. Nothing was posted. Start Chrome with "
-                "'main.py start' and queue the batch again.",
+                "stopped waiting for it. Nothing was posted. Once the connection "
+                "light says Connected, queue the batch again.",
             )
             return
 
@@ -958,8 +965,9 @@ class PostingWorker:
             self._connection_announced.add(task.id)
             self.emit(
                 "deferred",
-                f"Chrome is not reachable ({exc}). Nothing was posted; the batch "
-                "waits and tries again shortly.",
+                "Chrome is not reachable, so nothing was posted. The batch waits "
+                f"and tries again every {int(CONNECTION_RETRY.total_seconds() // 60)} "
+                "minutes.",
                 task.id,
             )
 
@@ -1149,7 +1157,8 @@ class PostingWorker:
         self.tasks.mark_target(target.id, TARGET_PENDING)
         self.emit(
             "recovered",
-            f"{group.display_name} was interrupted before posting; requeued.",
+            f"{group.display_name} was interrupted before posting; it is back in "
+            "the queue.",
             target.task_id,
             target.id,
         )

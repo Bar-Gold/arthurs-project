@@ -71,7 +71,7 @@ powershell -ExecutionPolicy Bypass -File packaging\build.ps1 -SkipInstaller  # .
 
 `status` exits 0 when logged in, 1 when not, 2 on error (Chrome not running, etc.).
 
-There is no linter or formatter configured, and no pytest config file — the suite is the whole check. Baseline: **1394 tests, 75-170s** — the spread is machine load, not the suite; the Qt and Tk GUI files are ~80s of it on their own. A run of *five minutes or more* means something is reaching the network; see the `SilentNamer` note below.
+There is no linter or formatter configured, and no pytest config file — the suite is the whole check. Baseline: **1417 tests, 75-170s** — the spread is machine load, not the suite; the Qt and Tk GUI files are ~80s of it on their own. A run of *five minutes or more* means something is reaching the network; see the `SilentNamer` note below.
 
 **Do not add `playwright install`.** It is unnecessary and was verified so against Chrome 150: the app attaches to the user's real Chrome over CDP and never launches Playwright's bundled Chromium, so the driver shipped inside the pip package is all that is required.
 
@@ -148,6 +148,7 @@ The rules used to be absolute. The user asked for an override, and there is exac
 - **Exactly the rules shown, never "all rules".** A batch allowed past the cooldown still waits for posting hours. `PublishView.post_anyway()` re-judges rather than trusting the list: if something new is now broken, the panel comes back naming it.
 - **Repeat is judged on real gaps, not averages.** `recurrence.check_schedule` is the same set of rules the worker applies when the schedule fires. 09:00 and 12:00 average twelve hours apart, yet the 12:00 run is skipped every day. `interval_violation` walks the actual occurrences, across midnight and across chosen days. Three runs a day inside a 08:00-23:00 window can never all be 8h apart, so they always need "Post anyway".
 - **It is visible afterwards.** The Queue card and the repeating-post card both say which rules the batch was allowed to break, so a post at 23:40 is never a mystery.
+- **A refusal states a fact, never an outcome.** The panel once listed "...so the 11:00 run would be skipped" directly above the button that posts it. Messages in `guards.py` and `recurrence.py` say what is true ("only 2h apart, less than the 8h cooldown"); what each button does is said once, by the panel (`publish.ANYWAY_EFFECT`). `tests/test_wording.py` rejects "skip", "would", "will" and "reword" in any refusal, and `test_onboarding.py` now scans every string in the package for terminal commands, after one reached the user from the scheduler.
 - **The cooldown is no longer per group in the UI.** There is one rule, the default gap, and migration 009 put every group on it. A value set earlier would otherwise have gone on applying where nobody could see it. `groups.cooldown_hours` still exists and the guards still read it; nothing edits it any more. The legacy Tk window still has its old control.
 
 ### Playwright is imported lazily, and must stay that way

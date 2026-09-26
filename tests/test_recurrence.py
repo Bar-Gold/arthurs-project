@@ -277,7 +277,7 @@ class TestPreview:
             window_start_hour=8,
             window_end_hour=23,
         )
-        assert any("posting window" in w for w in report.warnings)
+        assert any("posting hours" in w for w in report.warnings)
 
     def test_a_time_inside_the_window_is_not_flagged(self):
         report = recurrence.preview(
@@ -287,7 +287,7 @@ class TestPreview:
             window_end_hour=23,
             cooldown_hours=0,
         )
-        assert not any("posting window" in w for w in report.warnings)
+        assert not any("posting hours" in w for w in report.warnings)
 
     def test_posting_faster_than_the_cooldown_is_flagged(self):
         """Three times a day against a 24h cooldown skips two runs in three."""

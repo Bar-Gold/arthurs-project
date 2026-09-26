@@ -84,9 +84,9 @@ GUIDANCE: dict[SetupStep, Guidance] = {
     SetupStep.CHECKPOINT: Guidance(
         headline="Facebook is asking you to confirm it is you",
         detail=(
-            "Facebook has put a security check in front of the account. Open the "
-            "Chrome window, finish the check yourself, then press Check again. "
-            "The app will never click through one of these for you."
+            "Facebook has put a security check in front of the account. Press "
+            "Show me the window, finish the check yourself, then press Check "
+            "again. The app will never click through one of these for you."
         ),
         action="Show me the window",
         done=False,

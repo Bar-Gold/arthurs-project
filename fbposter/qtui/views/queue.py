@@ -252,11 +252,12 @@ class QueueView(QWidget):
         when = (
             f"Scheduled {clock.format_local(task.scheduled_for)}"
             if task.scheduled_for
-            else "Post now"
+            else "Right away"
         )
         if task.schedule_id is not None:
             when = f"{when} · {self._schedule_name(task.schedule_id, schedule_names)}"
-        snippet = " ".join(task.body.split())[:SNIPPET_CHARS]
+        flat = " ".join(task.body.split())
+        snippet = flat[:SNIPPET_CHARS] + ("…" if len(flat) > SNIPPET_CHARS else "")
         title = QLabel(f"{when} — {snippet}")
         title.setStyleSheet("font-weight: 600;")
         title.setWordWrap(True)
