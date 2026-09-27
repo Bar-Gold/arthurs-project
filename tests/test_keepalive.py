@@ -341,7 +341,15 @@ class TestTheUsersOwnChromeIsNeverTouched:
         assert f"--user-data-dir={tmp_path / 'profile'}" in args
 
     def test_nothing_in_the_app_closes_or_kills_a_chrome(self):
-        """Read as code, not text: the comments that explain the ban mention it."""
+        """Read as code, not text: the comments that explain the ban mention it.
+
+        One exception, and only one, since 2026-09-27: `tabs.restart_chrome`,
+        the last resort for a connection check that has stalled, sends
+        `Browser.close` -- to the app's own Chrome, once its process has been
+        shown to run on the app's profile (tests/test_tabs.py pins that a
+        Chrome on any other profile is never closed). Nothing kills a process,
+        anywhere.
+        """
         import ast
         from pathlib import Path
 
@@ -349,16 +357,298 @@ class TestTheUsersOwnChromeIsNeverTouched:
 
         banned_calls = {"kill", "terminate", "TerminateProcess"}
         banned_text = ("taskkill", "Stop-Process", "Browser.close")
+        allowed = {("tabs.py", "restart_chrome", "Browser.close")}
         offenders = []
         for path in Path(fbposter.__file__).parent.rglob("*.py"):
             tree = ast.parse(path.read_text(encoding="utf-8"))
+            # Each node's innermost enclosing function. ast.walk is breadth
+            # first, so an inner function is reached after its outer one and
+            # overwrites it.
+            inside = {}
+            for function in ast.walk(tree):
+                if isinstance(function, ast.FunctionDef):
+                    for node in ast.walk(function):
+                        inside[node] = function.name
             for node in ast.walk(tree):
+                where = inside.get(node, "<module>")
                 if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
                     name = node.func.attr
                     owner = ast.unparse(node.func.value).lower()
                     if name in banned_calls or (name == "close" and "browser" in owner):
                         offenders.append(f"{path.name}:{node.lineno} {ast.unparse(node)}")
                 if isinstance(node, ast.Constant) and isinstance(node.value, str):
-                    if any(text in node.value for text in banned_text) and len(node.value) < 80:
-                        offenders.append(f"{path.name}:{node.lineno} {node.value!r}")
-        assert offenders == []
+                    text = next((t for t in banned_text if t in node.value), None)
+                    if text and len(node.value) < 80 and (path.name, where, node.value) not in allowed:
+                        offenders.append(f"{path.name}:{node.lineno} {where} {node.value!r}")
+        assert sorted(set(offenders)) == []
+
+    def test_the_one_close_is_behind_the_proof(self):
+        """restart_chrome asks whose Chrome it is before it can reach the close."""
+        import inspect
+
+        from fbposter import tabs
+
+        source = inspect.getsource(tabs.restart_chrome)
+        assert source.index("_owned_client(") < source.index('"Browser.close"')
+        assert "return NOT_OURS" in source
+
+
+# -- a Chrome whose port answers but whose tabs do not --------------------------
+class TestItLooksInsideChromeEveryTwoMinutes:
+    """A port that answers is not a Chrome that works. One tab stuck on a
+    JavaScript dialog hangs every connection while /json/version answers on,
+    which is what left a client's pill on "Checking..." (see tabs.py)."""
+
+    @pytest.fixture
+    def swept(self, watched):
+        app, browser, clock, checks = watched
+        browser.up = True
+        sweeps = []
+
+        def clear():
+            sweeps.append(clock["now"])
+            return app.stuck_tabs_found
+
+        app.stuck_tabs_found = []
+        app._clear_stuck_tabs = clear
+        return app, clock, checks, sweeps
+
+    def test_the_first_look_at_a_running_chrome_sweeps(self, swept):
+        app, _clock, _checks, sweeps = swept
+        app.watch_chrome()
+        assert len(sweeps) == 1
+
+    def test_not_on_every_tick(self, swept):
+        from fbposter.keepalive import TAB_SWEEP_EVERY_S, WATCH_EVERY_S
+
+        app, clock, _checks, sweeps = swept
+        app.watch_chrome()
+        for _ in range(TAB_SWEEP_EVERY_S // WATCH_EVERY_S - 1):
+            clock["now"] += WATCH_EVERY_S
+            app.watch_chrome()
+        assert len(sweeps) == 1
+        clock["now"] += WATCH_EVERY_S
+        app.watch_chrome()
+        assert len(sweeps) == 2
+
+    def test_nothing_found_says_nothing(self, swept):
+        app, _clock, checks, _sweeps = swept
+        app.watch_chrome()
+        assert app.toast_label.text() == "" and checks == []
+
+    def test_a_closed_tab_is_reported(self, swept):
+        app, _clock, _checks, _sweeps = swept
+        app.stuck_tabs_found = ["Facebook"]
+        app.watch_chrome()
+        assert "stopped answering, so the app closed it" in app.toast_label.text()
+
+    def test_a_stale_pill_is_rechecked_once(self, swept):
+        app, _clock, checks, _sweeps = swept
+        app._set_connection(ConnectionState.ERROR, announce=False)
+        app.stuck_tabs_found = ["Facebook"]
+        app.watch_chrome()
+        assert checks == [1]
+
+    @pytest.mark.parametrize("state", [ConnectionState.CONNECTED, ConnectionState.CHECKING])
+    def test_no_check_when_nothing_is_stale(self, swept, state):
+        """A check hung on that tab finishes by itself once it is gone."""
+        app, _clock, checks, _sweeps = swept
+        app._set_connection(state, announce=False)
+        app.stuck_tabs_found = ["Facebook"]
+        app.watch_chrome()
+        assert checks == []
+
+    def test_no_sweep_when_chrome_is_down_or_busy(self, swept):
+        app, _clock, _checks, sweeps = swept
+        browser = Browser(up=False, starts=False)
+        app._chrome_probe = browser.probe
+        app._chrome_start = browser.start
+        app.watch_chrome()
+        browser.busy = True
+        app._chrome_profile_busy = lambda: True
+        app.watch_chrome()
+        assert sweeps == []
+
+    def test_one_at_a_time(self, swept, monkeypatch):
+        app, clock, _checks, _sweeps = swept
+        held = []
+
+        def runner(fn, ok=None, err=None):
+            if fn is app._clear_stuck_tabs:
+                held.append(ok)  # the sweep has not come back yet
+            else:
+                _run(fn, ok, err)
+
+        monkeypatch.setattr(app, "run_in_background", runner)
+        app.watch_chrome()
+        clock["now"] += 1000
+        app.watch_chrome()
+        assert len(held) == 1
+        held[0]([])
+        app.watch_chrome()
+        assert len(held) == 2
+
+
+class Held:
+    """Stands in for run_in_background: jobs wait until released, in order."""
+
+    def __init__(self) -> None:
+        self.jobs = []
+
+    def __call__(self, fn, ok=None, err=None):
+        self.jobs.append((fn, ok, err))
+
+    def release(self):
+        fn, ok, err = self.jobs.pop(0)
+        _run(fn, ok, err)
+
+
+class TestACheckCannotHangForever:
+    """The check used to have no deadline at all: a connect hung on a stuck
+    tab left the pill on "Checking..." until the client closed Chrome by
+    hand. Now the app does what they did, least drastic first."""
+
+    @pytest.fixture
+    def stalling(self, qt_app, monkeypatch):
+        from fbposter import tabs
+        from fbposter.ui.connection import ConnectionResult
+
+        runner = Held()
+        monkeypatch.setattr(qt_app, "run_in_background", runner)
+        qt_app._check_fn = lambda: ConnectionResult(ConnectionState.CONNECTED, "Logged in as 1")
+        clock = {"now": 5000.0}
+        qt_app._monotonic = lambda: clock["now"]
+        qt_app.found = []
+        qt_app.restarts = []
+        qt_app.restart_says = tabs.RESTARTED
+        qt_app._clear_stuck_tabs = lambda: qt_app.found
+
+        def restart():
+            qt_app.restarts.append(clock["now"])
+            if isinstance(qt_app.restart_says, Exception):
+                raise qt_app.restart_says
+            return qt_app.restart_says
+
+        qt_app._restart_chrome = restart
+        return qt_app, runner, clock
+
+    def stall(self, app, runner):
+        """A check that never comes back, then the deadline, then its fix."""
+        app.check_connection()
+        hung = runner.jobs.pop(0)
+        app._on_check_stalled()
+        runner.release()  # the fix
+        return hung
+
+    def test_a_check_arms_the_deadline_and_its_answer_stops_it(self, stalling):
+        from fbposter.qtui.app import CHECK_DEADLINE_MS
+
+        app, runner, _clock = stalling
+        app.check_connection()
+        assert app._check_deadline.isActive()
+        assert app._check_deadline.interval() == CHECK_DEADLINE_MS == 90_000
+        runner.release()
+        assert not app._check_deadline.isActive()
+        assert app.connection_state is ConnectionState.CONNECTED
+
+    def test_the_pill_leaves_checking_and_the_button_comes_back(self, stalling, monkeypatch):
+        app, runner, _clock = stalling
+        app.check_connection()
+        refreshed = []
+        monkeypatch.setattr(app.views["welcome"], "refresh", lambda: refreshed.append(1))
+        app._on_check_stalled()
+        assert app.connection_state is ConnectionState.ERROR
+        assert app.check_button.isEnabled()
+        assert "stopped answering" in app.connection_result.detail
+        assert refreshed, "the setup screen still showed the check in progress"
+
+    def test_a_stuck_tab_is_closed_first_and_nothing_restarted(self, stalling):
+        app, runner, _clock = stalling
+        app.found = ["Facebook"]
+        self.stall(app, runner)
+        assert app.restarts == []
+        assert "closed it" in app.toast_label.text() or app.connection_state is ConnectionState.CHECKING
+        runner.release()  # the fresh check
+        assert app.connection_state is ConnectionState.CONNECTED
+
+    def test_with_no_stuck_tab_the_apps_chrome_is_restarted_and_rechecked(self, stalling):
+        app, runner, _clock = stalling
+        app._keeper.failed(0)
+        self.stall(app, runner)
+        assert len(app.restarts) == 1
+        assert app._keeper.failures == 0
+        runner.release()  # the fresh check
+        assert app.connection_state is ConnectionState.CONNECTED
+
+    def test_the_answer_of_the_check_given_up_on_is_ignored(self, stalling):
+        from fbposter.ui.connection import ConnectionResult
+
+        app, runner, _clock = stalling
+        _fn, ok, _err = self.stall(app, runner)
+        runner.jobs.clear()  # the fresh check has not answered yet
+        ok(ConnectionResult(ConnectionState.LOGGED_OUT, "late"))
+        assert app.connection_state is not ConnectionState.LOGGED_OUT
+
+    def test_at_most_one_restart_in_half_an_hour(self, stalling):
+        from fbposter.keepalive import STALL_RESTART_EVERY_S
+
+        app, runner, clock = stalling
+        self.stall(app, runner)
+        runner.jobs.clear()
+        app._set_connection(ConnectionState.UNKNOWN, announce=False)
+        clock["now"] += STALL_RESTART_EVERY_S - 1
+        self.stall(app, runner)
+        assert len(app.restarts) == 1
+        assert "Close it from the taskbar" in app.connection_result.detail
+        runner.jobs.clear()
+        app._set_connection(ConnectionState.UNKNOWN, announce=False)
+        clock["now"] += 1
+        self.stall(app, runner)
+        assert len(app.restarts) == 2
+
+    @pytest.mark.parametrize("says, expected", [
+        ("posting", "A post is going out"),
+        ("not_ours", "left it alone"),
+        ("would_not_close", "Close it from the taskbar"),
+        ("gone", "starts it again"),
+    ])
+    def test_every_other_outcome_is_said_and_nothing_is_rechecked(self, stalling, says, expected):
+        app, runner, _clock = stalling
+        app.restart_says = says
+        self.stall(app, runner)
+        assert expected in app.connection_result.detail
+        assert app.connection_state is ConnectionState.ERROR
+        assert runner.jobs == []  # no fresh check queued
+        assert app._watching is False
+
+    def test_a_restart_that_fails_is_said(self, stalling):
+        from fbposter.errors import ChromeLaunchError
+
+        app, runner, _clock = stalling
+        app.restart_says = ChromeLaunchError("port never opened")
+        self.stall(app, runner)
+        assert "Close it from the taskbar" in app.connection_result.detail
+        assert app._watching is False
+
+    def test_the_keep_alive_waits_while_chrome_is_being_restarted(self, stalling):
+        app, runner, _clock = stalling
+        app.check_connection()
+        runner.jobs.pop(0)
+        app._on_check_stalled()
+        assert app._watching  # the fix is still running
+        looked = len(runner.jobs)
+        app.watch_chrome()
+        assert len(runner.jobs) == looked
+
+    def test_closing_the_window_stops_the_deadline(self, qt_app, monkeypatch):
+        monkeypatch.setattr(qt_app, "run_in_background", lambda fn, ok=None, err=None: None)
+        qt_app.check_connection()
+        assert qt_app._check_deadline.isActive()
+        qt_app.close()
+        assert not qt_app._check_deadline.isActive()
+
+    def test_a_window_the_suite_builds_looks_inside_no_chrome(self, qt_app):
+        from fbposter import tabs
+
+        assert qt_app._clear_stuck_tabs() == []
+        assert qt_app._restart_chrome() == tabs.GONE

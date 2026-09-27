@@ -42,6 +42,24 @@ MAX_ATTEMPTS = len(BACKOFF_S) + 1
 # and only closing it lets the app start its own.
 BUSY_LOOKS_BEFORE_TELLING = 6
 
+# How often the watcher also looks inside Chrome for a tab that has stopped
+# answering (tabs.py). A port that answers is not a Chrome that works: one
+# stuck tab hangs every connection while /json/version goes on answering, and
+# that is what left a client's pill on "Checking..." for good. The look is a
+# few DevTools messages to the app's own Chrome -- never a page load, never
+# Facebook -- so it is cheap, but it is not free, hence not every tick.
+TAB_SWEEP_EVERY_S = 2 * 60
+
+# A connection check that has not come back after this long never will.
+# The slowest honest one -- a probe, a sweep with its second look, a connect,
+# a 30-second page load -- is well under a minute.
+CHECK_DEADLINE_S = 90
+
+# At most one automatic restart for a check that stalled, in this long. If a
+# fresh Chrome stalls again straight away, restarting it again will not help,
+# and restarting on a loop is exactly what the keeper exists to prevent.
+STALL_RESTART_EVERY_S = 30 * 60
+
 
 @dataclass
 class ChromeKeeper:

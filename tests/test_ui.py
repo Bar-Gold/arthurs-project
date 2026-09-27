@@ -624,8 +624,11 @@ class TestPerGroupText:
 class TestQueueingPerGroupText:
     @pytest.fixture(autouse=True)
     def any_hour(self, app):
+        # Start equal to end means no restriction (clock.inside_window). Not
+        # 0-24: clock.sane_hour turns the 24 into 23, so that "all day" was
+        # 00:00-23:00 and these failed every night between 23:00 and midnight.
         app.settings_repo.set("posting_window_start_hour", 0)
-        app.settings_repo.set("posting_window_end_hour", 24)
+        app.settings_repo.set("posting_window_end_hour", 0)
         yield
         app.settings_repo.set("posting_window_start_hour", 8)
         app.settings_repo.set("posting_window_end_hour", 23)
@@ -1061,8 +1064,11 @@ class TestTextDirection:
     def open_posting_window(self, app):
         """Queueing is refused outside 08:00-23:00, so without this the test
         passes or fails depending on the time of day it happens to run at."""
+        # Start equal to end means no restriction (clock.inside_window). Not
+        # 0-24: clock.sane_hour turns the 24 into 23, so that "all day" was
+        # 00:00-23:00 and these failed every night between 23:00 and midnight.
         app.settings_repo.set("posting_window_start_hour", 0)
-        app.settings_repo.set("posting_window_end_hour", 24)
+        app.settings_repo.set("posting_window_end_hour", 0)
         yield
         app.settings_repo.set("posting_window_start_hour", 8)
         app.settings_repo.set("posting_window_end_hour", 23)
@@ -1101,8 +1107,11 @@ class TestAddToQueue:
         the worst kind of flake -- it looks like the code broke.
         The window itself is covered by its own test below.
         """
+        # Start equal to end means no restriction (clock.inside_window). Not
+        # 0-24: clock.sane_hour turns the 24 into 23, so that "all day" was
+        # 00:00-23:00 and these failed every night between 23:00 and midnight.
         app.settings_repo.set("posting_window_start_hour", 0)
-        app.settings_repo.set("posting_window_end_hour", 24)
+        app.settings_repo.set("posting_window_end_hour", 0)
         yield
         app.settings_repo.set("posting_window_start_hour", 8)
         app.settings_repo.set("posting_window_end_hour", 23)

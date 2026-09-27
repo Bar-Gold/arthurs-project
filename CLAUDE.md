@@ -71,7 +71,7 @@ powershell -ExecutionPolicy Bypass -File packaging\build.ps1 -SkipInstaller  # .
 
 `status` exits 0 when logged in, 1 when not, 2 on error (Chrome not running, etc.).
 
-There is no linter or formatter configured, and no pytest config file — the suite is the whole check. Baseline: **1417 tests, 75-170s** — the spread is machine load, not the suite; the Qt and Tk GUI files are ~80s of it on their own. A run of *five minutes or more* means something is reaching the network; see the `SilentNamer` note below.
+There is no linter or formatter configured, and no pytest config file — the suite is the whole check. Baseline: **1487 tests, 75-170s** — the spread is machine load, not the suite; the Qt and Tk GUI files are ~80s of it on their own. A run of *five minutes or more* means something is reaching the network; see the `SilentNamer` note below.
 
 **Do not add `playwright install`.** It is unnecessary and was verified so against Chrome 150: the app attaches to the user's real Chrome over CDP and never launches Playwright's bundled Chromium, so the driver shipped inside the pip package is all that is required.
 
@@ -95,7 +95,7 @@ Three layers that must stay separate:
 
 UI and worker communicate through a thread-safe queue. The tables as built are `groups`, `templates`, `tasks`, `task_targets`, `schedules`, `schedule_targets` and `settings`; `tags`, `group_tags` and `run_log` were cut (README §9 and §10) — do not write code expecting them.
 
-Core: `config.py` (paths, port, Chrome flags), `chrome.py` (find/launch Chrome, probe the debug port), `session.py` (CDP attach, `c_user` cookie check), `strings.py` (every Facebook URL and UI string, in all three languages), `clock.py` (Israel-time judgement), `power.py` (`SleepBlocker`, `on_battery`), `guards.py` (the safety rules as pure functions), `recurrence.py` (repeating-schedule rules, also pure), `groups.py` (group-URL parsing), `text.py` (the invisible-character list), `single.py` (the one-app mutex), `onboarding.py` (what setup step the user is on, pure), `login.py` (putting a visible Chrome in front of them), `keepalive.py` (when to restart a Chrome that has closed, pure), `errors.py`, `worker.py` (`PostingWorker` and `LivePoster`).
+Core: `config.py` (paths, port, Chrome flags), `chrome.py` (find/launch Chrome, probe the debug port), `session.py` (CDP attach, `c_user` cookie check), `strings.py` (every Facebook URL and UI string, in all three languages), `clock.py` (Israel-time judgement), `power.py` (`SleepBlocker`, `on_battery`), `guards.py` (the safety rules as pure functions), `recurrence.py` (repeating-schedule rules, also pure), `groups.py` (group-URL parsing), `text.py` (the invisible-character list), `single.py` (the one-app mutex), `onboarding.py` (what setup step the user is on, pure), `login.py` (putting a visible Chrome in front of them), `keepalive.py` (when to restart a Chrome that has closed, pure), `tabs.py` (finding and closing a tab that has stopped answering, and the last-resort restart), `cdp.py` (a DevTools client on the standard library, for when Playwright is the thing hanging), `errors.py`, `worker.py` (`PostingWorker` and `LivePoster`).
 
 Scripts: `scripts/setup_always_on.ps1` — the laptop power plan and the logon task. See the Power section.
 
@@ -258,11 +258,12 @@ Nothing in the suite opens Chrome, hits Facebook, or waits out a real delay. Kee
 - **`Humanizer(rng=, sleep=)`** — pass a seeded `Random` and a no-op sleep and the human pacing is deterministic and instant.
 - **`PostingWorker(poster=, now=, sleep=, blocker=, tick_seconds=)`** — the whole loop, including the inter-group gap and crash recovery, runs without a thread, a browser or the wall clock.
 - **`App(check_fn=, db=, group_namer=)`** — a temporary database and `SilentNamer`. Constructing an `App` deliberately does not start the worker. Both the Tk and the Qt window take the same three seams.
+- **Looking inside Chrome is inert until `qtui.app.run()` switches it on.** `session.before_attach` is `None`, and a window's `_clear_stuck_tabs` and `_restart_chrome` do nothing, unless `run()` wires up `tabs.py`. The suite never does, so no test can look inside, let alone close a tab in, the app's Chrome running on the developer's machine. `tests/test_tabs.py` tests the DevTools client against a WebSocket server on a thread of its own.
 - **Qt tests run offscreen.** `tests/conftest.py` has a session-scoped `qt_application` (one `QApplication`, `QT_QPA_PLATFORM=offscreen`) and a per-test `qt_app` window on a temporary database. Offscreen is not tidiness: this app's central promise is that it never takes focus, and a suite that popped real windows would break that on the developer's own machine every time it ran. Drive views through their own methods rather than synthesised clicks. Note that `deleteLater()` widgets keep painting until the event loop turns, so anything that reads pixels needs a real loop turn first — two "duplicate row" and "giant blue rectangle" scares came from screenshotting without one.
 
 **`QPixmap` cannot be constructed before a `QApplication` exists** — Qt aborts the process (`STATUS_STACK_BUFFER_OVERRUN`), so pytest reports nothing at all rather than a failure. Any test touching `QPixmap`, `cover()` or `avatar()` must depend on the `qt_application` fixture even if it never builds a widget.
 
-**Never call `browser.close()` on a CDP-attached browser.** That Chrome belongs to the user and holds the Facebook login. `session.attach()` is a context manager that simply drops the connection on exit; closing would take the session with it. Login is checked via the `c_user` cookie rather than the DOM — no navigation, no selectors, no language dependency.
+**Never call `browser.close()` on a CDP-attached browser.** That Chrome belongs to the user and holds the Facebook login. `session.attach()` is a context manager that simply drops the connection on exit; closing it as a side effect of attaching would take the browser away mid-whatever. The one deliberate close is `tabs.restart_chrome`, the last resort for a check that has stalled. It sends `Browser.close` only to a Chrome proven to be the app's own, never mid-post, and at most once in 30 minutes. The login is on disk in the profile and survives it, exactly as it survives the user closing the window. `test_keepalive.py` fails on a second close anywhere. Login is checked via the `c_user` cookie rather than the DOM — no navigation, no selectors, no language dependency.
 
 ### Handing this to a non-technical user
 
@@ -286,6 +287,28 @@ The app ships to a client as `dist\FacebookAutoPoster-Setup-x.y.z.exe`. How that
 - **A failed restart backs off, and gives up after `MAX_ATTEMPTS`.** The usual cause is a Chrome already open on the profile *without* the port, so every launch opens yet another window in it. Retrying every 20s would pile them up for ever. The keeper waits 1 minute, then 5, then stops and points the user at Start Chrome. Chrome being seen alive resets the count, whoever started it.
 - **A launch that finds Chrome already up means someone else started it, off-screen.** `open_login_window` and `switch_account` check `is_running()` and then launch visibly, but the keep-alive can start Chrome between the two. `launch()` then starts nothing and returns False, and they now *move* the window on screen instead of assuming theirs is the visible one. Before this, the login form opened in an off-screen window.
 - **The seams are looked up at call time** (`lambda: login.start_chrome()`), not captured in `__init__`. Tests patch `login.start_chrome` after the window exists; a captured reference ignored the patch, and on a machine without Chrome up it would have launched a real one.
+
+**A Chrome whose port answers can still hang every connection.** A client logged in and saw the light go green. Then the group names never loaded, and "Check connection" sat on "Checking…" until they closed the background Chrome by hand. Reproduced on 2026-09-27 against Chrome 153, on a throwaway Chrome of its own (its own profile, port 9333, no Facebook):
+
+- **While any tab has a JavaScript dialog open, or its page is stuck in a loop, Playwright's `connect_over_cdp` hangs for ever.** Dialogs include alert, confirm and "Leave site?". Its own 30-second timeout does not fire. The check, the name lookup and every post all go through that connect, so all of them hang.
+- **`/json/version` goes on answering throughout**, so the keep-alive saw a healthy Chrome.
+- **`Runtime.getIsolateId` tells the two apart.** A healthy tab answers in about a millisecond; a stuck one never does. It runs nothing in the page.
+- **`Target.closeTarget` on the stuck tab is enough.** A connect already hung on it finishes by itself 0.6s later.
+
+So `tabs.clear_stuck_tabs` runs in three places:
+
+- **In front of every connect**, through `session.before_attach`.
+- **From the keep-alive**, every `TAB_SWEEP_EVERY_S` (2 min). That catches a stuck tab before a scheduled post rather than when somebody presses a button.
+- **When a check passes `CHECK_DEADLINE_S` (90s)**, the one situation that also gets the restart.
+
+Every look is a few DevTools messages to the app's own Chrome over `cdp.py`; none is a page load, and none reaches Facebook. The rules that make that safe:
+
+- **Only the app's own Chrome, proven.** The process behind the port must have been started with `--user-data-dir=` the app's profile. The command line is read from Windows (`NtQueryInformationProcess`, then `CommandLineToArgvW`), off the PID `SystemInfo.getProcessInfo` names. Anything else answering on the port is asked which process it is and nothing more. Chrome did not write `DevToolsActivePort` into the profile here, so that file cannot be the proof.
+- **Two looks, more than ten seconds of silence in all**, before a tab counts as stuck. A Facebook page busy loading on a slow laptop answers the second time.
+- **Never the last tab.** Chrome quits when its last tab closes, so a blank one is opened first.
+- **Nothing while the worker has a page open.** `LivePoster._page` holds `tabs.posting()`, taken only once its connect has succeeded. A worker hung *in* the connect has no page open, and must not stop the sweep that would free it.
+- **The restart is last, not first.** A stalled check first sweeps. Only when there is nothing to close does it restart the app's Chrome, at most once per `STALL_RESTART_EVERY_S` (30 min). Chrome is closed with `Browser.close`, which verifiably works with stuck tabs open (profile released in 1.4s). It is started again only once the port is shut *and* the profile lock is released. Nothing is ever killed.
+- **The answer to a check given up on is ignored.** Checks are numbered (`_check_serial`), because the hung one usually does return once Chrome is put right.
 
 **Re-login moves the window; it does not restart Chrome.** This is the part worth reading before changing it. The normal state of this app is a Chrome parked at `-32000,-32000`, so a session that expires later leaves a login form somewhere nobody can reach. Restarting Chrome is the obvious fix and the wrong one: there is no dependable way to close a window the user cannot see, and a restart mid-batch strands it. `login.open_login_window()` sends CDP `Browser.setWindowBounds` instead, and `hide_login_window()` puts it back.
 

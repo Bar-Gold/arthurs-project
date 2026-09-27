@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .. import chrome, config, keepalive, login, onboarding, power
+from .. import chrome, config, keepalive, login, onboarding, power, session, tabs
 from ..automation.groupinfo import LiveGroupNamer
 from ..db import Database
 from ..db.models import SCHEDULE_ACTIVE
@@ -61,6 +61,7 @@ WORKER_POLL_MS = 700
 STARTUP_RECHECK_MS = 15_000
 # How often the window looks for the background Chrome; see keepalive.py.
 CHROME_WATCH_MS = keepalive.WATCH_EVERY_S * 1000
+CHECK_DEADLINE_MS = keepalive.CHECK_DEADLINE_S * 1000
 TOAST_MS = 4500
 
 # The order is the flow: what to say, who to say it to, when to say it, and
@@ -155,6 +156,18 @@ class App(QMainWindow):
         # Consecutive looks that found Chrome holding the profile but silent.
         self._busy_looks = 0
         self._monotonic = time.monotonic
+        # Looking inside Chrome for a tab that has stopped answering, and the
+        # last-resort restart (tabs.py). Inert here; run() wires up the real
+        # ones. Every window the suite builds keeps these, so no test can look
+        # inside -- let alone close a tab in -- a Chrome that happens to be
+        # running on the machine.
+        self._clear_stuck_tabs = lambda: []
+        self._restart_chrome = lambda: tabs.GONE
+        self._last_tab_sweep: float | None = None
+        self._last_stall_restart: float | None = None
+        # Each check is numbered, so the answer to one given up on at its
+        # deadline is known to be stale if it ever does arrive.
+        self._check_serial = 0
 
         # Which groups this post is going to. It lives on the window rather
         # than in a view because three screens need to agree on it: Groups
@@ -190,6 +203,10 @@ class App(QMainWindow):
 
         self._chrome_watch = QTimer(self)
         self._chrome_watch.timeout.connect(self.watch_chrome)
+
+        self._check_deadline = QTimer(self)
+        self._check_deadline.setSingleShot(True)
+        self._check_deadline.timeout.connect(self._on_check_stalled)
 
         self.show_view(self._opening_view())
 
@@ -374,9 +391,94 @@ class App(QMainWindow):
             return
         self._set_connection(ConnectionState.CHECKING, announce=False)
         self.check_button.setEnabled(False)
+        self._check_serial += 1
+        serial = self._check_serial
+        # Armed before the work starts, so a runner that answers at once still
+        # finds it running and stops it.
+        self._check_deadline.start(CHECK_DEADLINE_MS)
         self.run_in_background(
-            self._check_fn, self._on_check_result, self._on_check_error
+            self._check_fn,
+            lambda result: self._check_answered(serial, self._on_check_result, result),
+            lambda exc: self._check_answered(serial, self._on_check_error, exc),
         )
+
+    def _check_answered(self, serial: int, handler, payload) -> None:
+        if serial != self._check_serial:
+            # Given up on at its deadline and already dealt with. Chrome being
+            # put right under it is usually what finally let it return.
+            return
+        self._check_deadline.stop()
+        handler(payload)
+
+    def _on_check_stalled(self) -> None:
+        """A check has not come back in CHECK_DEADLINE_S, so it never will.
+
+        This used to leave the pill on "Checking..." for good: a stuck tab
+        hangs Playwright's connect with no timeout at all (tabs.py). What the
+        client did by hand is done for them, least drastic first -- close any
+        tab that has stopped answering, which alone lets a hung connect finish,
+        and only when there is none, restart the app's own Chrome. Never
+        mid-post, and at most once in STALL_RESTART_EVERY_S.
+        """
+        self._check_serial += 1  # its answer, if it ever comes, is stale now
+        self.check_button.setEnabled(True)
+        detail = "Chrome stopped answering. The app is putting it right."
+        self.connection_result = ConnectionResult(ConnectionState.ERROR, detail)
+        self._set_connection(ConnectionState.ERROR, detail)
+        self._refresh_welcome()
+        now = self._monotonic()
+        may_restart = (
+            self._last_stall_restart is None
+            or now - self._last_stall_restart >= keepalive.STALL_RESTART_EVERY_S
+        )
+        # The keep-alive must not start a Chrome of its own while this one is
+        # being closed and started again.
+        self._watching = True
+
+        def unstick():
+            if self._clear_stuck_tabs():
+                return "cleared"
+            if not may_restart:
+                return "gave_up"
+            return self._restart_chrome()
+
+        self.run_in_background(unstick, self._on_unstuck, self._on_unstick_failed)
+
+    def _on_unstuck(self, outcome: str) -> None:
+        self._watching = False
+        if outcome == "cleared":
+            self.toast("A tab in the app's Chrome had stopped answering, so the app closed it.")
+            self.check_connection()
+            return
+        if outcome in (tabs.RESTARTED, tabs.WOULD_NOT_CLOSE):
+            self._last_stall_restart = self._monotonic()
+        if outcome == tabs.RESTARTED:
+            self._keeper.restarted()
+            self.toast("Chrome had stopped answering, so the app restarted it.")
+            self.check_connection()
+            return
+        details = {
+            tabs.POSTING: "The connection check did not finish. A post is going out, "
+                          "so Chrome was left alone; press Check connection once it is done.",
+            tabs.NOT_OURS: "The connection check did not finish. Something other than "
+                           "the app's Chrome is using its connection, so the app left it alone.",
+            tabs.GONE: "The connection check did not finish, and the app's Chrome has "
+                       "closed. The app starts it again within a minute.",
+        }
+        self._report_stuck(details.get(outcome))
+
+    def _on_unstick_failed(self, _exc) -> None:
+        self._watching = False
+        self._report_stuck(None)
+
+    def _report_stuck(self, detail: str | None) -> None:
+        detail = detail or (
+            "Chrome is not answering. Close it from the taskbar and the app "
+            "will start it again."
+        )
+        self.connection_result = ConnectionResult(ConnectionState.ERROR, detail)
+        self._set_connection(ConnectionState.ERROR, detail)
+        self._refresh_welcome()
 
     def _on_check_result(self, result: ConnectionResult) -> None:
         self.check_button.setEnabled(True)
@@ -563,12 +665,23 @@ class App(QMainWindow):
         self._busy_looks = 0
         if found == "up":
             self._keeper.seen_running()
-            self._watching = False
             if self.connection_state is ConnectionState.CHROME_DOWN:
                 # It came back -- the user started it, or a restart took a
                 # moment -- so the pill is stale. One check, on the change,
                 # never on the timer.
                 self.check_connection()
+            now = self._monotonic()
+            if (self._last_tab_sweep is None
+                    or now - self._last_tab_sweep >= keepalive.TAB_SWEEP_EVERY_S):
+                # A port that answers is not a Chrome that works: one stuck
+                # tab hangs every connection while the port answers on. Still
+                # "watching" until this lands, so only one runs at a time.
+                self._last_tab_sweep = now
+                self.run_in_background(
+                    self._clear_stuck_tabs, self._on_tabs_swept, self._on_tabs_sweep_failed
+                )
+                return
+            self._watching = False
             return
         if found == "missing":
             # Nothing to start. The wizard says to install it.
@@ -590,6 +703,19 @@ class App(QMainWindow):
         )
 
     def _on_chrome_look_failed(self, _exc) -> None:
+        self._watching = False
+
+    def _on_tabs_swept(self, closed) -> None:
+        self._watching = False
+        if not closed:
+            return
+        self.toast("A tab in the app's Chrome had stopped answering, so the app closed it.")
+        if self.connection_state not in (ConnectionState.CONNECTED, ConnectionState.CHECKING):
+            # A check hung on that tab finishes by itself; any other result
+            # on the pill predates the fix. One check, on the change.
+            self.check_connection()
+
+    def _on_tabs_sweep_failed(self, _exc) -> None:
         self._watching = False
 
     def _on_chrome_restarted(self, _started) -> None:
@@ -706,6 +832,7 @@ class App(QMainWindow):
         # A closed window has nothing to keep Chrome running for. And a window
         # a test closed must not go on firing this and start a real Chrome.
         self._chrome_watch.stop()
+        self._check_deadline.stop()
         self.db.close()
         super().closeEvent(event)
 
@@ -775,6 +902,12 @@ def run() -> int:
     application.setFont(QFont(theme.FONT_FAMILY))
 
     window = App()
+    # Only the real app looks inside its Chrome for a stuck tab (tabs.py), and
+    # only it may restart one. Every window the suite builds keeps the inert
+    # defaults, so no test can reach a Chrome running on the machine.
+    window._clear_stuck_tabs = lambda: tabs.clear_stuck_tabs()
+    window._restart_chrome = lambda: tabs.restart_chrome()
+    session.before_attach = tabs.clear_stuck_tabs
     window.show()
     # Only the real GUI starts the scheduler; constructing an App does not.
     QTimer.singleShot(500, window.start_worker)

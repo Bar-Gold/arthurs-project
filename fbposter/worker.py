@@ -28,12 +28,13 @@ from __future__ import annotations
 import queue
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
-from . import clock, recurrence, session
+from . import clock, recurrence, session, tabs
 from .automation import GroupPoster
 from .automation.humanize import Humanizer
 from .automation.poster import PostOutcome, PostRequest
@@ -162,28 +163,31 @@ class LivePoster:
         self.dry_run = dry_run
 
     def post(self, request: PostRequest) -> PostOutcome:
-        with session.attach() as context:
-            page = context.new_page()
-            try:
-                return GroupPoster(page, dry_run=self.dry_run).post(request)
-            finally:
-                page.close()
+        with self._page() as page:
+            return GroupPoster(page, dry_run=self.dry_run).post(request)
 
     def verify(self, group_url: str, body: str) -> bool:
-        with session.attach() as context:
-            page = context.new_page()
-            try:
-                poster = GroupPoster(page)
-                page.goto(group_url, timeout=45_000, wait_until="domcontentloaded")
-                return poster.verify(body, group_url)
-            finally:
-                page.close()
+        with self._page() as page:
+            poster = GroupPoster(page)
+            page.goto(group_url, timeout=45_000, wait_until="domcontentloaded")
+            return poster.verify(body, group_url)
 
     def pending_verdict(self, group_url: str, body: str) -> str:
-        with session.attach() as context:
+        with self._page() as page:
+            return GroupPoster(page).pending_verdict(group_url, body)
+
+    @contextmanager
+    def _page(self):
+        """A page of the worker's own, marked so nothing closes it mid-post.
+
+        Marked only once the connect has succeeded: a worker hung *in* the
+        connect has no page open, and must not stop the stuck tab that is
+        hanging it from being cleared (see tabs.py).
+        """
+        with session.attach() as context, tabs.posting():
             page = context.new_page()
             try:
-                return GroupPoster(page).pending_verdict(group_url, body)
+                yield page
             finally:
                 page.close()
 

@@ -10,7 +10,7 @@ from __future__ import annotations
 import enum
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Iterator, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Iterator, Mapping, Sequence
 
 from . import config, strings
 from .errors import CheckpointError, ConnectionFailed
@@ -30,6 +30,16 @@ if TYPE_CHECKING:  # annotations only -- `from __future__ import annotations`
 # Keep it that way: importing `playwright` anywhere at module scope in this
 # package puts the cost straight back on startup, wherever it is written.
 # tests/test_qtui_performance.py pins that nothing does.
+
+
+# Run before every connect. Playwright's connect hangs for ever on a Chrome
+# with a stuck tab -- an open JavaScript dialog, a frozen page -- and nothing
+# after it can time out, so the tab has to be gone before the connect starts.
+# `qtui.app.run()` sets it to `tabs.clear_stuck_tabs`. Inert by default, like
+# every seam that reaches a real browser: the suite never sets it, so no test
+# can look inside -- let alone close a tab in -- a Chrome that happens to be
+# running on the machine.
+before_attach: Callable[[], object] | None = None
 
 
 class UrlVerdict(enum.Enum):
@@ -75,6 +85,11 @@ def classify_url(url: str) -> UrlVerdict:
 def attach(endpoint: str | None = None) -> Iterator[BrowserContext]:
     """Yield the browser context of the already-running Chrome."""
     endpoint = endpoint or config.cdp_endpoint()
+    if before_attach is not None:
+        try:
+            before_attach()
+        except Exception:
+            pass  # looking for a stuck tab must never be what stops a connection
     from playwright.sync_api import Error as PlaywrightError
     from playwright.sync_api import sync_playwright
 
