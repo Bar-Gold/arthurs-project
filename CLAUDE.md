@@ -10,12 +10,15 @@ Most of this file is a rule that already cost a live bug. They are grouped by wh
 | --- | --- |
 | anything | Repository Status, Architecture, Scope Discipline |
 | `worker.py`, scheduling | Rules for the Worker; Power; Repeating posts; Time |
+| `guards.py`, `recurrence.py`, Publish | "Post anyway"; Repeating posts |
 | `automation/` | Rules for the Automation Engine; Selector Strategy; Non-Interfering Operation |
+| `chrome.py`, `keepalive.py`, `tabs.py`, `cdp.py`, `session.py` | Handing this to a non-technical user (the keep-alive and stuck-tab rules live there); Playwright is imported lazily; "Never call `browser.close()`" under the tests section |
 | `qtui/` | `fbposter/qtui/CLAUDE.md` — loads on its own when you open a file there, but not from `tests/`: open it before editing a `test_qtui_*` file |
-| `db/`, retention | Database rules; the two retentions; Queue retention |
+| `db/`, retention, removing groups | Database rules; the two retentions; Queue retention; Removing a group archives it |
 | `ui/` (legacy Tk) | `fbposter/ui/CLAUDE.md` — loads on its own when you open a file there |
 | tests | How the tests avoid a browser and a real clock |
 | `onboarding.py`, `login.py`, the wizard | Handing this to a non-technical user; Changing which Facebook account it posts as |
+| `always_on.py`, `scripts/` | Power (the Settings half is at its end) |
 | `packaging/` | `packaging/CLAUDE.md` — loads on its own when you open a file there |
 
 Text that reaches a post also passes Invisible characters and Hebrew, whatever screen it came from.
@@ -71,7 +74,7 @@ powershell -ExecutionPolicy Bypass -File packaging\build.ps1 -SkipInstaller  # .
 
 `status` exits 0 when logged in, 1 when not, 2 on error (Chrome not running, etc.).
 
-There is no linter or formatter configured, and no pytest config file — the suite is the whole check. Baseline: **1487 tests, 75-170s** — the spread is machine load, not the suite; the Qt and Tk GUI files are ~80s of it on their own. A run of *five minutes or more* means something is reaching the network; see the `SilentNamer` note below.
+There is no linter or formatter configured, and no pytest config file — the suite is the whole check. Baseline: **1562 tests, 75-170s** — the spread is machine load, not the suite; the Qt and Tk GUI files are ~80s of it on their own. A run of *five minutes or more* means something is reaching the network; see the `SilentNamer` note below.
 
 **Do not add `playwright install`.** It is unnecessary and was verified so against Chrome 150: the app attaches to the user's real Chrome over CDP and never launches Playwright's bundled Chromium, so the driver shipped inside the pip package is all that is required.
 
@@ -95,7 +98,7 @@ Three layers that must stay separate:
 
 UI and worker communicate through a thread-safe queue. The tables as built are `groups`, `templates`, `tasks`, `task_targets`, `schedules`, `schedule_targets` and `settings`; `tags`, `group_tags` and `run_log` were cut (README §9 and §10) — do not write code expecting them.
 
-Core: `config.py` (paths, port, Chrome flags), `chrome.py` (find/launch Chrome, probe the debug port), `session.py` (CDP attach, `c_user` cookie check), `strings.py` (every Facebook URL and UI string, in all three languages), `clock.py` (Israel-time judgement), `power.py` (`SleepBlocker`, `on_battery`), `guards.py` (the safety rules as pure functions), `recurrence.py` (repeating-schedule rules, also pure), `groups.py` (group-URL parsing), `text.py` (the invisible-character list), `single.py` (the one-app mutex), `onboarding.py` (what setup step the user is on, pure), `login.py` (putting a visible Chrome in front of them), `keepalive.py` (when to restart a Chrome that has closed, pure), `tabs.py` (finding and closing a tab that has stopped answering, and the last-resort restart), `cdp.py` (a DevTools client on the standard library, for when Playwright is the thing hanging), `errors.py`, `worker.py` (`PostingWorker` and `LivePoster`).
+Core: `config.py` (paths, port, Chrome flags), `chrome.py` (find/launch Chrome, probe the debug port), `session.py` (CDP attach, `c_user` cookie check), `strings.py` (every Facebook URL and UI string, in all three languages), `clock.py` (Israel-time judgement), `power.py` (`SleepBlocker`, `on_battery`), `always_on.py` (the Settings screen's start-with-Windows and keep-awake switches, which run `setup_always_on.ps1`), `guards.py` (the safety rules as pure functions), `recurrence.py` (repeating-schedule rules, also pure), `groups.py` (group-URL parsing), `text.py` (the invisible-character list), `single.py` (the one-app mutex), `onboarding.py` (what setup step the user is on, pure), `login.py` (putting a visible Chrome in front of them), `keepalive.py` (when to restart a Chrome that has closed, pure), `tabs.py` (finding and closing a tab that has stopped answering, and the last-resort restart), `cdp.py` (a DevTools client on the standard library, for when Playwright is the thing hanging), `errors.py`, `worker.py` (`PostingWorker` and `LivePoster`).
 
 Scripts: `scripts/setup_always_on.ps1` — the laptop power plan and the logon task. See the Power section.
 
@@ -103,7 +106,7 @@ Packaging: `packaging/` — `fbposter.spec` (PyInstaller), `installer.iss` (Inno
 
 Automation: `automation/poster.py` (`GroupPoster` — arrive → compose → type → attach → publish → verify, plus the read-only `probe`), `detect.py` (`classify` a page as OK / checkpoint / login / rate-limit / unavailable), `humanize.py` (`Humanizer`: keystroke timing, hovers, arrival scroll, the inter-group gap), `groupinfo.py` (read a group's display name off the `h1` **inside `[role="main"]`**; cosmetic, and must never raise into a caller).
 
-UI (Qt, current): `qtui/app.py` (window, sidebar, connection pill, worker row, worker-event pump, background thread helper), `qtui/views/` (compose, groups, publish, queue — the nav order is the flow; plus `welcome`, the first-run wizard, which is deliberately not in the sidebar), `qtui/theme.py` (palette + one stylesheet), `qtui/widgets.py` (`card`, `row`, `clear`), `qtui/assets/`. It reuses `ui/connection.py` and every non-UI module unchanged.
+UI (Qt, current): `qtui/app.py` (window, sidebar, connection pill, paused line, worker-event pump, background thread helper), `qtui/views/` (compose, groups, publish, queue — the nav order is the flow; `settings`, at the foot of the sidebar; plus `welcome`, the first-run wizard, which is deliberately not in the sidebar), `qtui/theme.py` (palette + one stylesheet), `qtui/widgets.py` (`card`, `row`, `clear`), `qtui/assets/`. It reuses `ui/connection.py` and every non-UI module unchanged.
 
 UI (Tk, legacy — `main.py gui --tk`): `ui/app.py`, `ui/views/`, `theme.py`, `toast.py`, `background.py`, `connection.py`, `preview.py`, `textdir.py`.
 
@@ -149,7 +152,7 @@ The rules used to be absolute. The user asked for an override, and there is exac
 - **Repeat is judged on real gaps, not averages.** `recurrence.check_schedule` is the same set of rules the worker applies when the schedule fires. 09:00 and 12:00 average twelve hours apart, yet the 12:00 run is skipped every day. `interval_violation` walks the actual occurrences, across midnight and across chosen days. Three runs a day inside a 08:00-23:00 window can never all be 8h apart, so they always need "Post anyway".
 - **It is visible afterwards.** The Queue card and the repeating-post card both say which rules the batch was allowed to break, so a post at 23:40 is never a mystery.
 - **A refusal states a fact, never an outcome.** The panel once listed "...so the 11:00 run would be skipped" directly above the button that posts it. Messages in `guards.py` and `recurrence.py` say what is true ("only 2h apart, less than the 8h cooldown"); what each button does is said once, by the panel (`publish.ANYWAY_EFFECT`). `tests/test_wording.py` rejects "skip", "would", "will" and "reword" in any refusal, and `test_onboarding.py` now scans every string in the package for terminal commands, after one reached the user from the scheduler.
-- **The cooldown is no longer per group in the UI.** There is one rule, the default gap, and migration 009 put every group on it. A value set earlier would otherwise have gone on applying where nobody could see it. `groups.cooldown_hours` still exists and the guards still read it; nothing edits it any more. The legacy Tk window still has its old control.
+- **The cooldown is no longer per group in the UI.** There is one rule, the default gap, and migration 009 put every group on it. A value set earlier would otherwise have gone on applying where nobody could see it. `groups.cooldown_hours` still exists and **the worker and Compose read it, not the setting** — so the Settings screen changes the rule through `SettingsRepo.set_posting_rules` (or `set_default_cooldown`), which writes the setting and every group's row (archived ones too) in one transaction, together with the posting hours and the daily limit. Writing only `default_cooldown_hours` would change what Publish previews and nothing that actually decides a post. Never below 1 hour: nought switches the rule off for good, and breaking it once is what "Post anyway" is for. The same goes for the other two rules on that screen, and `set_posting_rules` refuses them before writing anything: a daily limit of 0 is "no limit" to `check_daily_cap`, and posting hours that start and end on the same hour are "no posting hours" to `clock.inside_window` — a 4am post. Hours that cross midnight are fine. The legacy Tk window still has its old per-group control.
 
 ### Playwright is imported lazily, and must stay that way
 
@@ -336,17 +339,21 @@ renaming `ChromeProfile\` by hand.
   feed after being told you were signed out is how somebody posts as the wrong
   person. `_sign_out` therefore raises rather than swallowing, unlike almost
   everything else in `login.py`.
-- **The pill's button offers it whenever the connection is fine**, because the
-  wizard is otherwise unreachable: it retires itself the first time a check comes
-  back `CONNECTED`. The button still only navigates — the wizard owns the action
-  and the confirmation, which matters most for the one that destroys something.
-- **Two presses, and the second is not a dialog.** The confirmation replaces the
-  card rather than opening over it, so the permitted-modal list stays at three.
-  The button sits beside the connection light on every screen, and one press away
-  from signing out is too close to "Check connection".
-- **Refused outright while the worker is mid-post.** Dropping the cookies with a
-  post in the composer fails that post, and the batch then halts on a
-  verification that could never have succeeded. It is a wait, not a refusal.
+- **It lives on the Settings screen.** It used to be the pill's button whenever
+  the connection was fine, one press from "Check connection" on every screen; the
+  user moved it. Settings owns the button and the question, and is enabled only
+  while `CONNECTED`. The yes calls `WelcomeView.start_switch()` and navigates to
+  the wizard, which owns the sign-out, the login that follows and parking the
+  window afterwards — one implementation of each. The wizard itself no longer
+  offers a switch, and the pill's button is hidden when nothing is wrong.
+- **Two presses, and the second is not a dialog.** The question replaces the
+  card's text rather than opening over it, so the permitted-modal list stays at
+  three.
+- **Refused outright while the worker is mid-post** — checked at the first press
+  and again at the yes, since a post can start while they read the question.
+  Dropping the cookies with a post in the composer fails that post, and the
+  batch then halts on a verification that could never have succeeded. It is a
+  wait, not a refusal.
 - **The app records the sign-out itself** (`App.note_connection`) instead of
   waiting for a check to come back and say so. That is not cosmetic: until the
   app knows, the wizard still believes it is `READY`, and the `READY` branch of
@@ -372,6 +379,8 @@ It is achievable because Playwright dispatches input through the DevTools protoc
 
 The installer calls the script with **`-AppPath`** (build the logon task around the packaged `.exe` rather than hunting for a `.venv` and `main.py`) and, when the client wanted autostart but not a machine that never sleeps, **`-SkipPower`** (register the task, touch no power setting). Keep both working when changing the script.
 
+**The Settings screen turns each half on and off on its own**, through `always_on.py`: `-SkipPower [-AppPath]` and `-Revert -SkipPower` for starting with Windows, `-SkipTask` and `-Revert -SkipTask` for keeping awake. `-Revert` alone still undoes both, which is what the uninstaller relies on. The script **exits 1 when anything it was asked to do did not happen**; the app reads that, shows the first `[fail]` line, and re-reads the real state so a checkbox never shows what was clicked instead of what is true. Where things stand is read, never remembered: the scheduled task (`schtasks /query`) and the script's own backup file, which exists exactly while its power settings are in force. **`App.always_on` is `always_on.Inert` until `run()` swaps in the real one**, like `_clear_stuck_tabs`: a suite that toggled it would change the power plan of whoever ran it. Both halves were verified live on 2026-09-28 through `AlwaysOn` itself: the task half under a throwaway task name, the power half by seeding non-default AC values (sleep 1800, hibernate 3600, Wi-Fi 1), turning keep-awake on (all went to 0, DC untouched, backup recorded the seeded values), then off (seeded values back exactly, backup deleted, logon task untouched). That machine has no lid setting, so the lid action is the one value not yet seen changing live.
+
 Three failures here were live gaps, and each one is a rule now:
 
 - **The keep-awake is bounded by `KEEP_AWAKE_HORIZON` (30 min), not by "is a batch running".** A batch that runs out of posting window at 23:00 stays `TASK_RUNNING` with `resume_at` set to 08:00, and counting that held the machine awake for nine hours of deliberate waiting. `TaskRepo.active_batches(before)` takes the bound; 30 minutes clears the longest inter-group gap (25), so **every real gap still counts** — suspending in a gap strands the rest of the batch exactly as suspending mid-post would.
@@ -390,6 +399,7 @@ One `PostingWorker`, one thread, started by `App.start_worker()` and by nothing 
 - **That includes the wording, and for a while it did not.** `check_repeat_text` ran only at the door, and the door's answer goes stale: post now and schedule the same advert for tomorrow, and both were judged before either had gone out. The cooldown hid the near case and nothing covered the far one, so the same words reached the same group twice — the actual ban vector, not post count. `_attempt` now re-reads `GroupRepo.recent_bodies` and **skips that one group, loudly, while the batch carries on**, exactly as a cooldown does. Do not upgrade it to a halt: a wording can simply be reworded, and halting a batch over one would cost the user posts they are entitled to make.
 - **Believe the `PostOutcome`.** `outcome.posted` being False (a dry run) must not be recorded as a real post — that would start a real cooldown and consume real daily cap. This was a live bug.
 - **A target is claimed, not just marked.** `TaskRepo.claim_target` is a conditional `UPDATE ... WHERE state = 'pending'` and the transition itself is the lock. Reading a pending target and then marking it running as two steps left a window in which a *second copy of the app* read the same target and posted it too — racing two workers on one database produced a duplicate in **7 runs out of 40**. Never replace this with an unconditional `mark_target`.
+- **A pause is stored, not held in memory.** `pause()`/`resume()` write `PAUSED_KEY` (`scheduler_paused`) and a new worker reads it, because the app restarts on its own — the logon task, a Windows Update reboot — and a pause that lifted itself at the next sign-in would post the very batch somebody paused to stop. Paused means no Facebook at all: **crash recovery waits for the resume too**, since checking on a crashed post is a page load. The control lives on the Settings screen; the sidebar shows "Posting is paused" only while one is in force, because a forgotten pause is every post silently not happening.
 - **Only one app may run.** `fbposter/single.py` takes a Windows named mutex in `run()`; a second launch shows a message box and exits 1. This is the second layer — `claim_target` is what makes a duplicate impossible — but it stops two copies fighting over the same Chrome session and both holding the machine awake.
 - **A group may hold the post for an admin, and that is a third outcome.** Groups with post approval on accept the post, close the composer, and keep it out of the feed — so `verify()` finds nothing. Guessing from that alone was wrong *both ways*: verified live against a real moderated group on 2026-08-17, the app matched something transient right after the click and recorded a confident **"done"** for a post that was not visible; a few seconds later the same check found nothing, which would have **halted** the batch. Same reality, two different wrong answers, decided by timing.
   `GroupPoster.awaiting_approval()` reads the group's "Pending admin approval" banner. No banner and no snippet still means `PostNotVerified` and a halted batch; the safe default is unchanged.

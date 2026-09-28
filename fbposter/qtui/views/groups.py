@@ -338,8 +338,9 @@ class GroupsView(QWidget):
         layout.addWidget(box, 1)
 
         # No cooldown control. There is one rule for every group -- the
-        # default gap, 8h -- and breaking it is a choice made per post, with
-        # "Post anyway" on the Publish screen, not a setting buried in a row.
+        # default gap, set on the Settings screen -- and breaking it is a
+        # choice made per post, with "Post anyway" on the Publish screen, not
+        # a setting buried in a row.
 
         remove = QPushButton("Remove")
         remove.setObjectName("Link")

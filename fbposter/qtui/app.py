@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .. import chrome, config, keepalive, login, onboarding, power, session, tabs
+from .. import always_on, chrome, config, keepalive, login, onboarding, power, session, tabs
 from ..automation.groupinfo import LiveGroupNamer
 from ..db import Database
 from ..db.models import SCHEDULE_ACTIVE
@@ -38,6 +38,7 @@ from .views.compose import ComposeView
 from .views.groups import GroupsView
 from .views.publish import PublishView
 from .views.queue import QueueView
+from .views.settings import SettingsView
 from .views.welcome import WelcomeView
 from .widgets import AppStyle, card
 
@@ -67,12 +68,14 @@ TOAST_MS = 4500
 # The order is the flow: what to say, who to say it to, when to say it, and
 # what happened. The sidebar is the sequence, so it reads top to bottom, and
 # the first three are numbered -- four equal-looking items gave no clue that
-# they are meant to be walked in order.
+# they are meant to be walked in order. Settings is not part of the flow at
+# all, so it sits at the foot of the sidebar, away from the steps.
 NAV_ITEMS = (
     ("compose", "Compose", ComposeView),
     ("groups", "Groups", GroupsView),
     ("publish", "Publish", PublishView),
     ("queue", "Queue", QueueView),
+    ("settings", "Settings", SettingsView),
 )
 
 # Keys that form the three-step path, in order. Queue is where you look
@@ -84,6 +87,7 @@ NAV_HINTS = {
     "groups": "Choose the groups",
     "publish": "Choose when",
     "queue": "See what happened",
+    "settings": "Pause posting, and the cooldown between posts",
 }
 
 PILL_STATES: dict[ConnectionState, tuple[str, str, str]] = {
@@ -163,6 +167,10 @@ class App(QMainWindow):
         # running on the machine.
         self._clear_stuck_tabs = lambda: []
         self._restart_chrome = lambda: tabs.GONE
+        # Starting with Windows and keeping the PC awake (always_on.py). Inert
+        # for the same reason: the real one changes the machine's power plan
+        # and scheduled tasks, and run() is the only place that wires it up.
+        self.always_on = always_on.Inert()
         self._last_tab_sweep: float | None = None
         self._last_stall_restart: float | None = None
         # Each check is numbered, so the answer to one given up on at its
@@ -236,6 +244,11 @@ class App(QMainWindow):
 
         group = QButtonGroup(self)
         for key, label, _view in NAV_ITEMS:
+            if key == "settings":
+                # Down at the foot, with the connection: somewhere you go on
+                # purpose, not a step you walk through.
+                column.addStretch(1)
+                self._build_paused_notice(column)
             if key == "queue":
                 # Queue is not a step -- it is where you look afterwards.
                 column.addSpacing(theme.PAD_S)
@@ -259,22 +272,25 @@ class App(QMainWindow):
             column.addWidget(button)
             self.nav_buttons[key] = button
 
-        column.addStretch(1)
-        self._build_worker_row(column)
+        column.addSpacing(theme.PAD_S)
         self._build_pill(column)
         layout.addWidget(sidebar)
 
-    def _build_worker_row(self, column: QVBoxLayout) -> None:
-        box = card()
-        inner = QVBoxLayout(box)
-        inner.setContentsMargins(theme.PAD_S, theme.PAD_S, theme.PAD_S, theme.PAD_S)
-        self.worker_label = QLabel("Scheduler: off")
-        self.worker_label.setObjectName("Muted")
-        inner.addWidget(self.worker_label)
-        self.worker_button = QPushButton("Pause")
-        self.worker_button.clicked.connect(self.toggle_worker)
-        inner.addWidget(self.worker_button)
-        column.addWidget(box)
+    def _build_paused_notice(self, column: QVBoxLayout) -> None:
+        """A line that exists only while posting is paused.
+
+        The control lives on Settings, but the fact cannot live only there:
+        a pause survives restarts now, and one forgotten about is every post
+        silently not happening. Hidden the rest of the time, so an app that
+        is posting normally shows nothing here at all.
+        """
+        self.paused_notice = QPushButton("Posting is paused")
+        self.paused_notice.setObjectName("PausedNotice")
+        self.paused_notice.setToolTip("Open Settings to resume")
+        self.paused_notice.setAccessibleName("Posting is paused — open Settings to resume")
+        self.paused_notice.setVisible(False)
+        self.paused_notice.clicked.connect(lambda: self.show_view("settings"))
+        column.addWidget(self.paused_notice)
 
     def _build_pill(self, column: QVBoxLayout) -> None:
         box = card()
@@ -294,8 +310,8 @@ class App(QMainWindow):
         # it by navigating -- the wizard owns every action. Before this the pill
         # reported "Chrome not running" and the detail told the user to run a
         # terminal command, which is not a thing the person this app was built
-        # for is ever going to do. When there is nothing wrong it offers the
-        # account switch, which is otherwise unreachable.
+        # for is ever going to do. When there is nothing wrong it is hidden;
+        # changing account lives on the Settings screen.
         self.fix_button = QPushButton()
         self.fix_button.setVisible(False)
         self.fix_button.clicked.connect(lambda: self.show_view("welcome"))
@@ -536,6 +552,11 @@ class App(QMainWindow):
         self.pill_label.setText(f"● {label}")
         self.pill_label.setStyleSheet(f"color: {colour};")
         self._refresh_fix_button()
+        # Settings offers the account switch only while there is a session to
+        # end, so it hears about every change the pill does.
+        settings = self.views.get("settings")
+        if settings is not None:
+            settings.refresh_account()
         if announce and detail:
             self.toast(detail, level)
 
@@ -555,12 +576,10 @@ class App(QMainWindow):
             button.setVisible(False)
             return
         if self.connection_state is ConnectionState.CONNECTED:
-            # Nothing is wrong, so the only thing left worth offering is the one
-            # thing a working setup might still need changed: which account it
-            # posts as. Without this the wizard is unreachable once it has been
-            # retired, and the alternative is renaming a folder by hand.
-            button.setText(onboarding.SWITCH_ACTION)
-            button.setVisible(True)
+            # Nothing is wrong, so there is nothing to repair. Changing which
+            # account it posts as used to be offered here, one press from
+            # "Check connection" on every screen; it lives on Settings now.
+            button.setVisible(False)
             return
         step = onboarding.plan(login.chrome_installed(), self.connection_result)
         guide = onboarding.guidance(step)
@@ -576,7 +595,7 @@ class App(QMainWindow):
             self.db, events=self.worker_events, on_battery=power.on_battery
         )
         self.worker.start()
-        self._refresh_worker_row()
+        self._refresh_scheduler()
 
     def begin_startup_checks(self) -> None:
         """Get Chrome up and the connection checked, without blocking the window.
@@ -747,19 +766,18 @@ class App(QMainWindow):
             return
         if self.worker.paused:
             self.worker.resume()
+            self.toast("Posting resumed.", "success")
         else:
             self.worker.pause()
-        self._refresh_worker_row()
+            self.toast("Posting paused. It stays paused until you resume it.", "warning")
+        self._refresh_scheduler()
 
-    def _refresh_worker_row(self) -> None:
-        if self.worker is None:
-            self.worker_label.setText("Scheduler: off")
-            self.worker_button.setEnabled(False)
-            return
-        state = self.worker.state
-        self.worker_label.setText(f"Scheduler: {state}")
-        self.worker_button.setEnabled(True)
-        self.worker_button.setText("Resume" if self.worker.paused else "Pause")
+    def _refresh_scheduler(self) -> None:
+        """The paused line in the sidebar and the Settings card, together."""
+        paused = self.worker is not None and self.worker.paused
+        if self.paused_notice.isHidden() == paused:
+            self.paused_notice.setVisible(paused)
+        self.views["settings"].refresh_status()
 
     def _drain_worker_events(self) -> None:
         while True:
@@ -768,7 +786,7 @@ class App(QMainWindow):
             except queue.Empty:
                 break
             self._handle_worker_event(event)
-        self._refresh_worker_row()
+        self._refresh_scheduler()
 
     def _handle_worker_event(self, event) -> None:
         level = {
@@ -907,6 +925,7 @@ def run() -> int:
     # defaults, so no test can reach a Chrome running on the machine.
     window._clear_stuck_tabs = lambda: tabs.clear_stuck_tabs()
     window._restart_chrome = lambda: tabs.restart_chrome()
+    window.always_on = always_on.AlwaysOn()
     session.before_attach = tabs.clear_stuck_tabs
     window.show()
     # Only the real GUI starts the scheduler; constructing an App does not.

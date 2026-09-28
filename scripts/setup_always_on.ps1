@@ -26,6 +26,9 @@
 
 .PARAMETER Revert
     Undo everything: restore the recorded power settings and remove the task.
+    With -SkipPower it only removes the task; with -SkipTask it only restores
+    the power settings. That is how the app's Settings screen turns each one
+    off on its own.
 
 .PARAMETER TaskName
     Name of the scheduled task. Only change this if it collides with something.
@@ -38,6 +41,11 @@
     the installer passes when the client asked to start the app at logon but
     not to keep the machine awake -- a laptop that never sleeps is a decision
     they have to make deliberately.
+
+.NOTES
+    Exits 1 when anything it was asked to do did not happen, so a caller can
+    tell without reading the output. The installer ignores the exit code; the
+    app's Settings screen does not.
 
 .PARAMETER AppPath
     Full path to the packaged FacebookAutoPoster.exe. Supplied by the installer,
@@ -147,8 +155,11 @@ function Find-Python {
 
 if ($Revert) {
     Write-Host "`nUndoing the always-on setup." -ForegroundColor Cyan
+    $failed = 0
 
-    if (Test-Path $BackupFile) {
+    if ($SkipPower) {
+        Write-Step "Leaving the power settings as they are."
+    } elseif (Test-Path $BackupFile) {
         $backup = Get-Content $BackupFile -Raw | ConvertFrom-Json
         foreach ($item in $Wanted) {
             $saved = $backup.PSObject.Properties[$item.Setting]
@@ -160,28 +171,47 @@ if ($Revert) {
                 Write-Good "$($item.Name): restored to $($saved.Value)"
             } else {
                 Write-Bad "$($item.Name): could not be restored"
+                $failed++
             }
         }
         & powercfg /setactive SCHEME_CURRENT | Out-Null
-        Remove-Item $BackupFile -Force
+        # Kept when a setting could not be put back, so a second attempt still
+        # knows what to restore it to.
+        if ($failed -eq 0) { Remove-Item $BackupFile -Force }
     } else {
         Write-Warn "No backup file at $BackupFile -- power settings left alone."
         Write-Step "Change them by hand in Settings > System > Power if needed."
     }
 
-    $existing = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
-    if ($null -ne $existing) {
-        Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
-        Write-Good "Removed the '$TaskName' logon task."
+    if ($SkipTask) {
+        Write-Step "Leaving the logon task as it is."
     } else {
-        Write-Step "No '$TaskName' logon task to remove."
+        $existing = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+        if ($null -ne $existing) {
+            try {
+                Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
+                Write-Good "Removed the '$TaskName' logon task."
+            } catch {
+                Write-Bad "Could not remove the task: $($_.Exception.Message)"
+                $failed++
+            }
+        } else {
+            Write-Step "No '$TaskName' logon task to remove."
+        }
     }
 
-    Write-Host "`nDone. The laptop sleeps normally again.`n" -ForegroundColor Cyan
+    if ($failed -gt 0) {
+        Write-Host "`nFinished with $failed problem(s) above.`n" -ForegroundColor Yellow
+        exit 1
+    }
+    Write-Host "`nDone.`n" -ForegroundColor Cyan
     exit 0
 }
 
 # --- apply ------------------------------------------------------------------
+
+# Counted across both halves; the exit code at the end is read from it.
+$failed = 0
 
 if ($SkipPower) {
     Write-Host "`nLeaving every power setting exactly as it is." -ForegroundColor Cyan
@@ -214,7 +244,6 @@ if (-not (Test-Path $BackupFile)) {
 Write-Host ""
 
 Write-Host "Power plan (AC):"
-$failed = 0
 foreach ($item in $Wanted) {
     # Presence first. powercfg returns 0 for a setting this machine does not
     # have, so acting on the exit code alone reports success for a change that
@@ -360,3 +389,6 @@ Still up to you -- none of this can be scripted safely:
 To undo everything: scripts\setup_always_on.ps1 -Revert
 
 "@
+
+if ($failed -gt 0) { exit 1 }
+exit 0

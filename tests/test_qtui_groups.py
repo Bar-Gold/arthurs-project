@@ -121,6 +121,8 @@ class TestTheFlowBetweenScreens:
             "groups",
             "publish",
             "queue",
+            # Not a step: somewhere you go on purpose, at the foot.
+            "settings",
         ]
 
     def test_next_goes_to_publish(self, qt_app, groups_view):

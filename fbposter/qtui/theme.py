@@ -258,6 +258,18 @@ def stylesheet() -> str:
         color: {c["ACCENT_TEXT"]};
         font-weight: 600;
     }}
+    /* "Posting is paused": shown only while it is true. Warning-coloured
+       text on the sidebar, laid out like a nav item so it reads as somewhere
+       to go (Settings) rather than as a button that acts. */
+    QPushButton#PausedNotice {{
+        background: transparent;
+        border: none;
+        text-align: left;
+        padding: 10px 12px;
+        color: {c["WARNING"]};
+        font-weight: 600;
+    }}
+    QPushButton#PausedNotice:hover {{ background: {c["HOVER_BG"]}; }}
     QPushButton#Tab {{ padding: 6px 12px; }}
     QPushButton#Tab:checked {{
         background: {c["ACCENT"]};
@@ -311,7 +323,7 @@ def stylesheet() -> str:
         border: 2px solid {c["TEXT_ON_ACCENT"]};
         padding: 10px 17px;
     }}
-    QPushButton#Nav:focus {{
+    QPushButton#Nav:focus, QPushButton#PausedNotice:focus {{
         border: 2px solid {c["ACCENT"]};
         padding: 9px 11px;
     }}
@@ -320,6 +332,9 @@ def stylesheet() -> str:
     QPushButton:pressed {{ background: {c["PRESSED_BG"]}; border-color: {c["BORDER_STRONG"]}; }}
     QPushButton#Primary:pressed {{ background: {c["ACCENT_PRESSED"]}; }}
     QPushButton#Nav:pressed {{ background: {c["PRESSED_BG"]}; }}
+    /* The warning colour is under 4.5:1 on the pressed grey, so for the
+       moment of the press the text goes plain. */
+    QPushButton#PausedNotice:pressed {{ background: {c["PRESSED_BG"]}; color: {c["TEXT"]}; }}
     QPushButton#Tab:checked:pressed {{
         background: {c["ACCENT_PRESSED"]};
         border-color: {c["ACCENT_PRESSED"]};

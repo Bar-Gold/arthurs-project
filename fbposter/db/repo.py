@@ -65,6 +65,69 @@ class SettingsRepo:
     def all(self) -> dict[str, str]:
         return {row["key"]: row["value"] for row in self.db.query("SELECT key, value FROM settings")}
 
+    def set_default_cooldown(self, hours: int) -> None:
+        """Change the one cooldown rule, on every group, in one transaction."""
+        _check_cooldown(hours)
+        with self.db.transaction() as connection:
+            _write_cooldown(connection, hours)
+
+    def set_posting_rules(
+        self, *, start_hour: int, end_hour: int, daily_cap: int, cooldown_hours: int
+    ) -> None:
+        """Save the posting hours, the daily limit and the cooldown together.
+
+        All three are checked before anything is written, and written in one
+        transaction, so the Settings screen can never leave half of what the
+        user pressed Save on in force.
+
+        Start and end may not be the same hour: `clock.inside_window` reads
+        that as "no posting hours at all", which would let a batch post at 4am.
+        A window that crosses midnight (22 to 6) is allowed; the clock handles
+        it. The daily limit may not be nought, which `check_daily_cap` reads as
+        "no limit".
+        """
+        for name, hour in (("start", start_hour), ("end", end_hour)):
+            if not 0 <= hour <= 23:
+                raise ValueError(f"{name} hour must be 0-23, not {hour}")
+        if start_hour == end_hour:
+            raise ValueError("the posting hours cannot start and end at the same hour")
+        if daily_cap < 1:
+            raise ValueError(f"the daily limit must be at least 1, not {daily_cap}")
+        _check_cooldown(cooldown_hours)
+        with self.db.transaction() as connection:
+            for key, value in (
+                ("posting_window_start_hour", start_hour),
+                ("posting_window_end_hour", end_hour),
+                ("daily_cap", daily_cap),
+            ):
+                connection.execute(
+                    "INSERT INTO settings (key, value) VALUES (?, ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    (key, str(value)),
+                )
+            _write_cooldown(connection, cooldown_hours)
+
+
+def _check_cooldown(hours: int) -> None:
+    if hours < 1:
+        raise ValueError(f"cooldown must be at least 1 hour, not {hours}")
+
+
+def _write_cooldown(connection, hours: int) -> None:
+    """The setting and every group's own copy of it.
+
+    The setting alone is not enough: the worker and Compose read each group's
+    own `cooldown_hours`, and migration 009 only copied the value across once.
+    Archived groups are included, so pasting one back in brings it back on the
+    current rule rather than an old one.
+    """
+    connection.execute(
+        "INSERT INTO settings (key, value) VALUES ('default_cooldown_hours', ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (str(hours),),
+    )
+    connection.execute("UPDATE groups SET cooldown_hours = ?", (hours,))
+
 
 class GroupRepo:
     def __init__(self, db: Database) -> None:

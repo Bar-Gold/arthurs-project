@@ -115,6 +115,12 @@ MISSES_BEFORE_DECLINED = 2
 
 FINISHED_STATES = {TASK_DONE, TASK_HALTED, TASK_CANCELLED, TASK_MISSED}
 
+# "1" while the user has paused posting. Stored rather than held in memory,
+# because the app restarts on its own -- the logon task, a Windows Update
+# reboot -- and a pause that quietly lifted itself at the next sign-in would
+# post the very batch somebody had paused to stop.
+PAUSED_KEY = "scheduler_paused"
+
 
 def _readable(exc: Exception) -> str:
     """Turn a raw Playwright failure into something worth reading.
@@ -226,6 +232,8 @@ class PostingWorker:
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._paused = threading.Event()
+        if self.settings.get(PAUSED_KEY) == "1":
+            self._paused.set()
         self._busy = False
         self._battery_warned = False
         # When Chrome first went missing, per batch. In memory rather than in
@@ -278,26 +286,39 @@ class PostingWorker:
         self.blocker.release()
 
     def pause(self) -> None:
+        """Stop posting, and stay stopped across a restart until resumed.
+
+        A post already under way finishes first; the loop only looks at this
+        between steps.
+        """
         self._paused.set()
+        self.settings.set(PAUSED_KEY, "1")
 
     def resume(self) -> None:
         self._paused.clear()
+        self.settings.set(PAUSED_KEY, "0")
 
     def emit(self, kind: str, message: str, task_id: int | None = None, target_id: int | None = None) -> None:
         self.events.put(WorkerEvent(kind, message, task_id, target_id))
 
     # -- the loop ----------------------------------------------------------
     def _loop(self) -> None:
-        try:
-            self.recover()
-        except Exception as exc:  # never let the thread die silently
-            self.emit("error", f"Recovery failed: {exc}")
-
+        recovered = False
         while not self._stop.is_set():
             if self._paused.is_set():
                 self.blocker.release()
                 self._stop.wait(self.tick_seconds)
                 continue
+
+            if not recovered:
+                # Inside the loop rather than before it: a worker started
+                # paused must not open a group page either, and checking on a
+                # post left mid-way by a crash is a real page load.
+                recovered = True
+                try:
+                    self.recover()
+                except Exception as exc:  # never let the thread die silently
+                    self.emit("error", f"Recovery failed: {exc}")
 
             try:
                 did_work = self.run_once()
@@ -364,14 +385,15 @@ class PostingWorker:
                 self.tasks.mark_task(
                     fresh.id,
                     TASK_MISSED,
-                    error="The scheduled time passed while the app was closed or the "
-                    "computer was asleep.",
+                    error="The scheduled time passed while posting was paused, the "
+                    "app was closed or the computer was asleep.",
                     finished=True,
                 )
                 self.emit(
                     "missed",
-                    "A scheduled batch was missed, probably while the computer was "
-                    "asleep. It was skipped rather than posted late.",
+                    "A scheduled batch was missed while posting was paused, the app "
+                    "was closed or the computer was asleep. It was skipped rather "
+                    "than posted late.",
                     fresh.id,
                 )
                 return True
@@ -619,8 +641,9 @@ class PostingWorker:
                 self.emit(
                     "missed",
                     f"{schedule.display_name} missed its slot at "
-                    f"{clock.format_local(schedule.next_run_at)}, probably while the "
-                    "computer was asleep. It was skipped rather than posted late.",
+                    f"{clock.format_local(schedule.next_run_at)} while posting was "
+                    "paused, the app was closed or the computer was asleep. It was "
+                    "skipped rather than posted late.",
                 )
 
             if schedule.next_run_at is None:

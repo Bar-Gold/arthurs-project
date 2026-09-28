@@ -61,6 +61,10 @@ class TestContrast:
             # The connection pill, which was the quietest failure of the lot.
             ("NEUTRAL", "SIDEBAR_BG"),
             ("NEUTRAL", "SURFACE"),
+            # "Posting is paused", and the same line as you reach for it.
+            # Pressed, it turns TEXT: WARNING is 4.15:1 on the pressed grey.
+            ("WARNING", "SIDEBAR_BG"),
+            ("WARNING", "HOVER_BG"),
             # The toast line sits on the window colour, in every level's
             # colour. DANGER failed here at 4.39:1 and nothing checked it.
             ("SUCCESS", "WINDOW_BG"),

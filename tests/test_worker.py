@@ -42,6 +42,7 @@ from fbposter.worker import (
     FOLLOW_UP_PER_SWEEP,
     KEEP_AWAKE_HORIZON,
     MISSED_GRACE,
+    PAUSED_KEY,
     PostingWorker,
 )
 
@@ -946,6 +947,53 @@ class TestRecoveryWaitsForChrome:
 
         assert tasks.targets_for(task.id)[0].state == TARGET_FAILED
         assert tasks.get(task.id).state == TASK_HALTED
+
+
+class TestAPauseOutlivesARestart:
+    """The app restarts on its own -- the logon task, a Windows Update reboot
+    -- so a pause held only in memory lifted itself at the next sign-in and
+    posted the very batch somebody had paused to stop."""
+
+    def test_a_new_worker_starts_paused_after_a_pause(self, db):
+        make_worker(db).pause()
+        assert make_worker(db).paused
+
+    def test_and_running_after_a_resume(self, db):
+        first = make_worker(db)
+        first.pause()
+        first.resume()
+        assert not make_worker(db).paused
+
+    def test_a_fresh_database_is_not_paused(self, db):
+        assert not make_worker(db).paused
+        assert SettingsRepo(db).get(PAUSED_KEY) == ""
+
+    def test_a_worker_started_paused_does_not_check_on_a_crashed_post(self, db, repos):
+        """Recovery opens a group page. Paused means the app leaves Facebook
+        alone entirely, so it waits for the resume like everything else."""
+        import time
+
+        groups, tasks, _ = repos
+        one, _ = add_groups(groups)
+        task = tasks.create(BODY, [(one.id, BODY)])
+        tasks.mark_target(tasks.targets_for(task.id)[0].id, TARGET_RUNNING, attempted=True)
+        make_worker(db).pause()
+
+        poster = FakePoster(verify_result=True)
+        worker = make_worker(db, poster)
+        worker.tick_seconds = 0.01
+        worker.start()
+        try:
+            time.sleep(0.2)
+            assert poster.verify_calls == [], "looked at Facebook while paused"
+
+            worker.resume()
+            deadline = time.monotonic() + 5
+            while not poster.verify_calls and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert poster.verify_calls == [one.url]
+        finally:
+            worker.stop()
 
 
 class TestLifecycle:

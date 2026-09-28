@@ -8,6 +8,8 @@ non-technical user".
 
 ## Build through `build.ps1`, never by hand
 
+**The release number is `AppVersion` in `installer.iss`**, and it names the output file. `fbposter.__version__` (still `0.1.0`) is read by nothing and is not the release number.
+
 The app is shipped to a client as `dist\FacebookAutoPoster-Setup-x.y.z.exe`, built by `packaging\build.ps1`. That script runs the suite first and **refuses to build a release from a red suite**, which is the whole reason to use it rather than calling PyInstaller by hand. It refuses on the same terms when the built bundle fails its own checks — a missing `node.exe`, `tzdata` or `check.svg`, or a non-zero `--selftest`; it used to print a warning and package it anyway, which put the discovery of a silent failure on the person least able to diagnose it. `-Force` packages it regardless, for looking at a broken build and never for a client.
 
 **Five things fail silently in a frozen build, and `build.ps1` checks for four of them:**
@@ -32,4 +34,7 @@ The app is shipped to a client as `dist\FacebookAutoPoster-Setup-x.y.z.exe`, bui
 **Uninstalling leaves the user's data.** The database, the Chrome profile and therefore the Facebook login all live outside `{app}`, so a reinstall picks up every group, template and posting record, and nobody logs into Facebook again. The uninstaller says so, and always runs `setup_always_on.ps1 -Revert`.
 
 `installer.iss` passes `setup_always_on.ps1` its `-AppPath` and `-SkipPower` flags; the
-root file's Power section says what they do and what the script changes.
+root file's Power section says what they do and what the script changes. The app's
+Settings screen runs the same script from `{app}\scripts\` with `-SkipTask`, `-SkipPower`
+and `-Revert` in combination, and reads its exit code — so the script has to stay in
+the bundle, and `-Revert` alone must still undo both halves for the uninstaller.

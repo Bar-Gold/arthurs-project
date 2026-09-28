@@ -301,6 +301,70 @@ class TestGroups:
         groups.set_cooldown(group.id, 6)
         assert groups.get(group.id).cooldown_hours == 6
 
+    def test_changing_the_default_moves_every_group(self, db, groups):
+        """The worker and Compose read each group's own cooldown, so the
+        setting alone would change nothing that decides a post."""
+        one = groups.add_from_url("https://www.facebook.com/groups/one")
+        two = groups.add_from_url("https://www.facebook.com/groups/two")
+        groups.set_cooldown(two.id, 24)
+        SettingsRepo(db).set_default_cooldown(12)
+
+        assert SettingsRepo(db).get_int("default_cooldown_hours", 0) == 12
+        assert groups.get(one.id).cooldown_hours == 12
+        assert groups.get(two.id).cooldown_hours == 12
+        assert groups.add_from_url("https://www.facebook.com/groups/new").cooldown_hours == 12
+
+    def test_a_removed_group_comes_back_on_the_current_rule(self, db, groups):
+        group = groups.add_from_url("https://www.facebook.com/groups/gone")
+        groups.remove(group.id)
+        SettingsRepo(db).set_default_cooldown(5)
+        assert groups.add_from_url("https://www.facebook.com/groups/gone").cooldown_hours == 5
+
+    def test_a_cooldown_under_an_hour_is_refused(self, db, groups):
+        """Nought would switch the rule off for every group, for good."""
+        group = groups.add_from_url("https://www.facebook.com/groups/one")
+        with pytest.raises(ValueError):
+            SettingsRepo(db).set_default_cooldown(0)
+        assert SettingsRepo(db).get_int("default_cooldown_hours", 0) == DEFAULT_COOLDOWN
+        assert groups.get(group.id).cooldown_hours == DEFAULT_COOLDOWN
+
+    def test_the_posting_rules_are_saved_together(self, db, groups):
+        group = groups.add_from_url("https://www.facebook.com/groups/one")
+        SettingsRepo(db).set_posting_rules(
+            start_hour=9, end_hour=21, daily_cap=12, cooldown_hours=6
+        )
+        settings = SettingsRepo(db)
+        assert settings.get_int("posting_window_start_hour", 0) == 9
+        assert settings.get_int("posting_window_end_hour", 0) == 21
+        assert settings.get_int("daily_cap", 0) == 12
+        assert settings.get_int("default_cooldown_hours", 0) == 6
+        assert groups.get(group.id).cooldown_hours == 6
+
+    @pytest.mark.parametrize(
+        "rules",
+        [
+            # "No posting hours at all" to the clock, so a 4am post.
+            dict(start_hour=10, end_hour=10, daily_cap=5, cooldown_hours=8),
+            dict(start_hour=24, end_hour=10, daily_cap=5, cooldown_hours=8),
+            # "No limit" to check_daily_cap.
+            dict(start_hour=8, end_hour=23, daily_cap=0, cooldown_hours=8),
+            dict(start_hour=8, end_hour=23, daily_cap=5, cooldown_hours=0),
+        ],
+    )
+    def test_a_rule_that_switches_itself_off_is_refused_and_nothing_is_written(
+        self, db, rules
+    ):
+        before = SettingsRepo(db).all()
+        with pytest.raises(ValueError):
+            SettingsRepo(db).set_posting_rules(**rules)
+        assert SettingsRepo(db).all() == before
+
+    def test_posting_hours_may_cross_midnight(self, db):
+        SettingsRepo(db).set_posting_rules(
+            start_hour=22, end_hour=6, daily_cap=5, cooldown_hours=8
+        )
+        assert SettingsRepo(db).get_int("posting_window_start_hour", 0) == 22
+
     def test_mark_posted_records_the_time(self, groups):
         group = groups.add_from_url("https://www.facebook.com/groups/123")
         assert group.last_posted_at is None
