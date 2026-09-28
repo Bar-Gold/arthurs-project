@@ -8,7 +8,7 @@
 ; (or let packaging\build.ps1 do the whole thing.)
 
 #define AppName "Facebook Auto-Poster"
-#define AppVersion "1.2.1"
+#define AppVersion "1.2.2"
 #define AppExe "FacebookAutoPoster.exe"
 #define AppPublisher "Bar Goldstein"
 
