@@ -152,9 +152,44 @@ class TestTheScript:
         lid on this machine", skipped it, and the laptop went on sleeping with
         the lid shut while plugged in. /qh includes them."""
         text = always_on.script_path().read_text(encoding="utf-8")
-        reader = text[text.index("function Get-AcValue"):text.index("function Set-AcValue")]
+        reader = text[text.index("function Get-PowerValue"):text.index("function Set-PowerValue")]
         assert '"/qh"' in reader
         assert reader.index('"/qh"') < reader.index('"/query"')
+
+    @staticmethod
+    def rows() -> dict[str, str]:
+        """The script's rows of changes, by name, as written."""
+        import re
+
+        text = always_on.script_path().read_text(encoding="utf-8")
+        block = text[text.index("$Wanted = @("):text.index("# --- helpers")]
+        return dict(re.findall(r'Name = "([^"]+)";(.*?)}', block))
+
+    def test_plugged_in_it_stays_awake_with_the_lid_shut(self):
+        rows = self.rows()
+        assert "Source = \"AC\"; Value = 0" in rows["Lid close action, plugged in"]
+        assert "Source = \"AC\"; Value = 0" in rows["Sleep after, plugged in"]
+        assert "Source = \"AC\"; Value = 0" in rows["Hibernate after, plugged in"]
+
+    def test_on_battery_it_stays_awake_only_while_the_lid_is_open(self):
+        """The user's rule, 2026-09-28: never idle to sleep on battery, but a
+        closed lid sleeps -- set explicitly, because a laptop left awake shut
+        in a bag is a fire risk whatever it was set to before."""
+        rows = self.rows()
+        assert "Source = \"DC\"; Value = 1" in rows["Lid close action, on battery"]
+        assert "Source = \"DC\"; Value = 0" in rows["Sleep after, on battery"]
+        assert "Source = \"DC\"; Value = 0" in rows["Hibernate after, on battery"]
+
+    def test_an_older_backup_still_restores(self):
+        """Backups written before the battery half keyed AC values on the bare
+        GUID. They must go on restoring, and gain the battery values rather
+        than be replaced -- the file holds the values from before the first
+        run, and the live ones may already be ours."""
+        text = always_on.script_path().read_text(encoding="utf-8")
+        key = text[text.index("function Get-BackupKey"):text.index("function Write-Step")]
+        assert 'return "$($Item.Setting):dc"' in key
+        assert "return $Item.Setting" in key
+        assert "-and $null -ne $backup[$key]) { continue }" in text
 
     def test_it_says_when_it_failed(self):
         """The app reads the exit code; the installer ignores it."""

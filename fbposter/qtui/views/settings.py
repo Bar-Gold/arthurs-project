@@ -90,12 +90,12 @@ AUTOSTART_HELP = (
     "Windows restarts for an update. Nothing starts until somebody has signed "
     "in to Windows."
 )
-AWAKE_LABEL = "Keep this PC awake while it is plugged in"
+AWAKE_LABEL = "Keep this PC awake"
 AWAKE_HELP = (
-    "Nothing posts while the PC is asleep. With this on, closing the lid does "
-    "nothing and it never goes to sleep on its own — but only on mains power; "
-    "on battery Windows behaves as normal. Keep it somewhere with air around "
-    "it, not in a bag."
+    "Nothing posts while the PC is asleep. Plugged in, it stays awake with the "
+    "lid open or closed. On battery, it stays awake while the lid is open and "
+    "sleeps when you close it. With the lid closed, keep it somewhere with air "
+    "around it, not in a bag."
 )
 
 
@@ -559,7 +559,7 @@ class SettingsView(QWidget):
 
     def set_keep_awake(self, on: bool) -> None:
         self._change_pc(lambda: self.app.always_on.set_keep_awake(on),
-                        "This PC stays awake while plugged in." if on
+                        "This PC stays awake now." if on
                         else "This PC sleeps normally again.")
 
     def _change_pc(self, change, done_message: str) -> None:

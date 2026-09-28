@@ -45,8 +45,9 @@ Name: "autostart"; Description: "Start {#AppName} when I sign in"; \
     GroupDescription: "Posting on schedule:"
 ; Deliberately unchecked by default. A machine that never sleeps is a real
 ; decision -- on a laptop kept in a bag it is a fire risk -- so it is opted
-; into, never assumed. The script it runs is mains-only and fully reversible.
-Name: "alwayson"; Description: "Keep this PC awake so scheduled posts go out (plugged-in PCs only)"; \
+; into, never assumed. The script it runs is fully reversible: plugged in the
+; PC stays awake with the lid shut, on battery only while the lid is open.
+Name: "alwayson"; Description: "Keep this PC awake so scheduled posts go out"; \
     GroupDescription: "Posting on schedule:"; Flags: unchecked
 
 [Files]

@@ -1,4 +1,4 @@
-"""Starting with Windows, and keeping a plugged-in PC awake.
+"""Starting with Windows, and keeping the PC awake.
 
 The Settings side of `scripts/setup_always_on.ps1`, which the installer runs
 once and which used to be the only way to change either. The script stays the

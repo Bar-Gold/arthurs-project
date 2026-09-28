@@ -351,11 +351,11 @@ class PostingWorker:
         """Say so once per batch, because the keep-awake request is not enough.
 
         SetThreadExecutionState suppresses the idle timer and nothing else, and
-        the power plan that stops a closed lid suspending the machine is set
-        for mains only -- deliberately, because nobody wants a laptop that
-        refuses to sleep in a bag. Unplugged, the batch can therefore be cut
-        off with the app none the wiser, and the only useful thing to do is say
-        so while it can still be fixed by reaching for the charger.
+        the power plan keeps a shut laptop awake on mains only -- deliberately,
+        because nobody wants a laptop that refuses to sleep in a bag. Unplugged,
+        closing the lid still suspends it, so the batch can be cut off with the
+        app none the wiser, and the only useful thing to do is say so while it
+        can still be fixed by reaching for the charger.
         """
         if self._battery_warned or self._on_battery() is not True:
             return

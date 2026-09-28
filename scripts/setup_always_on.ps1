@@ -10,19 +10,24 @@
     post -- Task Scheduler's wake timers reach a sleeping machine, never a shut
     down one, and the client here shuts theirs.
 
-    So the answer is not to wake it. It is to leave it running with the lid
-    shut, and that is what this script arranges:
+    So the answer is not to wake it. It is to leave it running, and that is
+    what this script arranges:
 
-      * on mains only, the lid does nothing, the machine never idles to sleep
-        or hibernate, and the wireless adapter stops power-saving;
-      * on battery, everything is left exactly as Windows had it, deliberately
-        -- a laptop that refuses to sleep in a bag is a fire risk and a flat
-        battery, and the app reports a missed slot rather than posting late;
+      * plugged in, it stays awake with the lid open or closed: the lid does
+        nothing, it never idles to sleep or hibernate, and the wireless adapter
+        stops power-saving;
+      * on battery, it stays awake while the lid is open -- it never idles to
+        sleep or hibernate -- and closing the lid puts it to sleep. Set
+        explicitly rather than left to whatever the laptop had, because a
+        laptop that stays awake shut in a bag is a fire risk. Windows' own
+        low-battery action still applies, so it does not run itself flat;
       * a scheduled task starts the app again at logon, because Windows Update
         will restart this machine sooner or later and an app that is not
         running posts nothing.
 
-    Every change is recorded first and `-Revert` puts it all back.
+    Every change is recorded first and `-Revert` puts it all back. The user
+    chose the battery half on 2026-09-28; before that the script was
+    mains-only and left battery settings alone.
 
 .PARAMETER Revert
     Undo everything: restore the recorded power settings and remove the task.
@@ -84,13 +89,18 @@ $HIBERNATEIDLE     = "9d7815a6-7ee4-497e-8888-515a05f02364"
 $SUB_WIRELESS      = "19cbb8fa-5279-450e-9fac-8a3d5fedd0c1"
 $POWERSAVEMODE     = "12bbebe6-58d6-4636-95bb-3217ef867c1a"
 
-# What we want on mains. 0 for the timeouts means "never"; 0 for LIDACTION is
-# "Do nothing"; 0 for POWERSAVEMODE is "Maximum Performance".
+# One row per value changed: the setting, which power source, and the value.
+# 0 for the timeouts means "never". LIDACTION: 0 is "Do nothing", 1 is
+# "Sleep". POWERSAVEMODE 0 is "Maximum Performance"; on battery it is left
+# alone, since it decides nothing about sleeping.
 $Wanted = @(
-    @{ Name = "Lid close action";      Sub = $SUB_BUTTONS;  Setting = $LIDACTION;     Value = 0; Required = $true  },
-    @{ Name = "Sleep after";           Sub = $SUB_SLEEP;    Setting = $STANDBYIDLE;   Value = 0; Required = $true  },
-    @{ Name = "Hibernate after";       Sub = $SUB_SLEEP;    Setting = $HIBERNATEIDLE; Value = 0; Required = $true  },
-    @{ Name = "Wi-Fi power saving";    Sub = $SUB_WIRELESS; Setting = $POWERSAVEMODE; Value = 0; Required = $false }
+    @{ Name = "Lid close action, plugged in";   Sub = $SUB_BUTTONS;  Setting = $LIDACTION;     Source = "AC"; Value = 0; Required = $true  },
+    @{ Name = "Sleep after, plugged in";        Sub = $SUB_SLEEP;    Setting = $STANDBYIDLE;   Source = "AC"; Value = 0; Required = $true  },
+    @{ Name = "Hibernate after, plugged in";    Sub = $SUB_SLEEP;    Setting = $HIBERNATEIDLE; Source = "AC"; Value = 0; Required = $true  },
+    @{ Name = "Wi-Fi power saving, plugged in"; Sub = $SUB_WIRELESS; Setting = $POWERSAVEMODE; Source = "AC"; Value = 0; Required = $false },
+    @{ Name = "Lid close action, on battery";   Sub = $SUB_BUTTONS;  Setting = $LIDACTION;     Source = "DC"; Value = 1; Required = $true  },
+    @{ Name = "Sleep after, on battery";        Sub = $SUB_SLEEP;    Setting = $STANDBYIDLE;   Source = "DC"; Value = 0; Required = $true  },
+    @{ Name = "Hibernate after, on battery";    Sub = $SUB_SLEEP;    Setting = $HIBERNATEIDLE; Source = "DC"; Value = 0; Required = $true  }
 )
 
 # --- helpers ----------------------------------------------------------------
@@ -101,14 +111,14 @@ function Test-Elevated {
     return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
-function Get-AcValue {
+function Get-PowerValue {
     <#
-      The AC index for one setting, as an integer, or $null.
+      The AC or DC index for one setting, as an integer, or $null.
 
       powercfg's labels are localised -- this machine's Windows may well not be
       in English -- so the text is never matched. The hex values are not
       localised, and powercfg always prints the AC index before the DC one, so
-      the first 0x........ in the block is the answer.
+      the last two 0x........ in the block are AC then DC.
 
       /qh first, not /query. /query leaves out any setting Windows has marked
       hidden, and on many laptops the lid close action is one: it printed the
@@ -118,7 +128,7 @@ function Get-AcValue {
       notebook whose lid action was hidden and set to Sleep on AC. /query is
       kept as a fallback for a build that does not know /qh.
     #>
-    param([string]$Sub, [string]$Setting)
+    param([string]$Sub, [string]$Setting, [string]$Source = "AC")
     foreach ($verb in @("/qh", "/query")) {
         try {
             $output = & powercfg $verb SCHEME_CURRENT $Sub $Setting 2>$null
@@ -128,7 +138,8 @@ function Get-AcValue {
             # the possible values, then the two indices. The last two are AC
             # then DC.
             if ($hex.Count -ge 2) {
-                return [Convert]::ToInt32($hex[$hex.Count - 2].Value, 16)
+                $index = if ($Source -eq "DC") { $hex.Count - 1 } else { $hex.Count - 2 }
+                return [Convert]::ToInt32($hex[$index].Value, 16)
             }
         } catch {
             continue
@@ -137,10 +148,23 @@ function Get-AcValue {
     return $null
 }
 
-function Set-AcValue {
-    param([string]$Sub, [string]$Setting, [int]$Value)
-    & powercfg /setacvalueindex SCHEME_CURRENT $Sub $Setting $Value 2>$null | Out-Null
+function Set-PowerValue {
+    param([string]$Sub, [string]$Setting, [string]$Source, [int]$Value)
+    $verb = if ($Source -eq "DC") { "/setdcvalueindex" } else { "/setacvalueindex" }
+    & powercfg $verb SCHEME_CURRENT $Sub $Setting $Value 2>$null | Out-Null
     return ($LASTEXITCODE -eq 0)
+}
+
+function Get-BackupKey {
+    <#
+      Where one row's original value is kept in the backup file. AC rows use
+      the bare setting GUID, which is all the file held before the battery
+      half existed -- so a backup written by an older copy of this script
+      still restores correctly.
+    #>
+    param($Item)
+    if ($Item.Source -eq "DC") { return "$($Item.Setting):dc" }
+    return $Item.Setting
 }
 
 function Write-Step   { param([string]$m) Write-Host "  $m" }
@@ -175,12 +199,12 @@ if ($Revert) {
     } elseif (Test-Path $BackupFile) {
         $backup = Get-Content $BackupFile -Raw | ConvertFrom-Json
         foreach ($item in $Wanted) {
-            $saved = $backup.PSObject.Properties[$item.Setting]
+            $saved = $backup.PSObject.Properties[(Get-BackupKey $item)]
             if ($null -eq $saved -or $null -eq $saved.Value) {
                 Write-Warn "$($item.Name): nothing recorded, left as it is"
                 continue
             }
-            if (Set-AcValue $item.Sub $item.Setting ([int]$saved.Value)) {
+            if (Set-PowerValue $item.Sub $item.Setting $item.Source ([int]$saved.Value)) {
                 Write-Good "$($item.Name): restored to $($saved.Value)"
             } else {
                 Write-Bad "$($item.Name): could not be restored"
@@ -230,8 +254,9 @@ if ($SkipPower) {
     Write-Host "`nLeaving every power setting exactly as it is." -ForegroundColor Cyan
 } else {
 
-Write-Host "`nSetting this machine up to post with the lid closed." -ForegroundColor Cyan
-Write-Host "Mains power only -- on battery nothing changes.`n"
+Write-Host "`nSetting this machine up to keep posting." -ForegroundColor Cyan
+Write-Host "Plugged in: stays awake, lid open or closed."
+Write-Host "On battery: stays awake while the lid is open, sleeps when it is closed.`n"
 
 if (-not (Test-Elevated)) {
     Write-Warn "Not running as Administrator. Power settings usually still apply;"
@@ -241,14 +266,31 @@ if (-not (Test-Elevated)) {
 
 # Record what is there now, before touching any of it. Written before the first
 # change rather than after the last, so an interrupted run is still revertible.
+#
+# A value already recorded is never overwritten: it is the one from before the
+# first run, and the current value may be ours. Anything not yet recorded is
+# added -- which is how a backup written by the mains-only version gains the
+# battery values before they are changed. A recorded $null is treated as not
+# recorded: the old /query reader wrote $null for a hidden lid setting it had
+# skipped, and a setting is only ever changed after a real value is on file.
 if (-not (Test-Path $BackupDir)) {
     New-Item -ItemType Directory -Path $BackupDir -Force | Out-Null
 }
-if (-not (Test-Path $BackupFile)) {
-    $backup = @{}
-    foreach ($item in $Wanted) {
-        $backup[$item.Setting] = Get-AcValue $item.Sub $item.Setting
+$backup = @{}
+if (Test-Path $BackupFile) {
+    $existing = Get-Content $BackupFile -Raw | ConvertFrom-Json
+    foreach ($property in $existing.PSObject.Properties) {
+        $backup[$property.Name] = $property.Value
     }
+}
+$recorded = 0
+foreach ($item in $Wanted) {
+    $key = Get-BackupKey $item
+    if ($backup.ContainsKey($key) -and $null -ne $backup[$key]) { continue }
+    $backup[$key] = Get-PowerValue $item.Sub $item.Setting $item.Source
+    $recorded++
+}
+if ($recorded -gt 0) {
     $backup | ConvertTo-Json | Out-File -FilePath $BackupFile -Encoding utf8
     Write-Good "Recorded the current settings in $BackupFile"
 } else {
@@ -256,17 +298,17 @@ if (-not (Test-Path $BackupFile)) {
 }
 Write-Host ""
 
-Write-Host "Power plan (AC):"
+Write-Host "Power plan:"
 foreach ($item in $Wanted) {
     # Presence first. powercfg returns 0 for a setting this machine does not
     # have, so acting on the exit code alone reports success for a change that
     # never happened -- a desktop has no lid, and plenty of machines have no
     # wireless adapter subgroup.
-    if ($null -eq (Get-AcValue $item.Sub $item.Setting)) {
+    if ($null -eq (Get-PowerValue $item.Sub $item.Setting $item.Source)) {
         Write-Step "$($item.Name): not present on this machine, skipped"
         continue
     }
-    if (Set-AcValue $item.Sub $item.Setting $item.Value) {
+    if (Set-PowerValue $item.Sub $item.Setting $item.Source $item.Value) {
         Write-Good "$($item.Name) -> $($item.Value)"
     } elseif ($item.Required) {
         Write-Bad "$($item.Name) could not be set"
@@ -281,7 +323,7 @@ foreach ($item in $Wanted) {
 # of returning 0 for a setting it did not change.
 Write-Host "`nVerifying:"
 foreach ($item in $Wanted) {
-    $actual = Get-AcValue $item.Sub $item.Setting
+    $actual = Get-PowerValue $item.Sub $item.Setting $item.Source
     if ($null -eq $actual) {
         Write-Step "$($item.Name): not present, nothing to check"
     } elseif ($actual -eq $item.Value) {
@@ -387,8 +429,8 @@ Write-Host @"
 
 Still up to you -- none of this can be scripted safely:
 
-  1. Keep it plugged in. Every change above is mains-only on purpose. On
-     battery the laptop sleeps as normal and a missed slot is reported, not
+  1. Keep it plugged in if the lid will be shut. On battery, closing the lid
+     puts it to sleep on purpose, and a missed slot is reported, not
      fired late.
   2. Keep it in the open. Lid closed and awake means the fans are the only
      cooling it has, so not in a bag and not in a drawer.
