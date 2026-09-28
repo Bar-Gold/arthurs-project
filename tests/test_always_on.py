@@ -146,6 +146,16 @@ class TestTheScript:
         assert "if ($SkipPower)" in revert
         assert "if ($SkipTask)" in revert
 
+    def test_it_reads_hidden_settings_too(self):
+        """`powercfg /query` leaves out settings Windows marks hidden, and on
+        many laptops the lid close action is one. The script read that as "no
+        lid on this machine", skipped it, and the laptop went on sleeping with
+        the lid shut while plugged in. /qh includes them."""
+        text = always_on.script_path().read_text(encoding="utf-8")
+        reader = text[text.index("function Get-AcValue"):text.index("function Set-AcValue")]
+        assert '"/qh"' in reader
+        assert reader.index('"/qh"') < reader.index('"/query"')
+
     def test_it_says_when_it_failed(self):
         """The app reads the exit code; the installer ignores it."""
         text = always_on.script_path().read_text(encoding="utf-8")

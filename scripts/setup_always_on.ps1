@@ -109,19 +109,32 @@ function Get-AcValue {
       in English -- so the text is never matched. The hex values are not
       localised, and powercfg always prints the AC index before the DC one, so
       the first 0x........ in the block is the answer.
+
+      /qh first, not /query. /query leaves out any setting Windows has marked
+      hidden, and on many laptops the lid close action is one: it printed the
+      scheme header and nothing else, exit code 0. That read as "this machine
+      has no lid", so the one setting that matters most was skipped and the
+      laptop went on sleeping with the lid shut. Found on 2026-09-28 on a
+      notebook whose lid action was hidden and set to Sleep on AC. /query is
+      kept as a fallback for a build that does not know /qh.
     #>
     param([string]$Sub, [string]$Setting)
-    try {
-        $output = & powercfg /query SCHEME_CURRENT $Sub $Setting 2>$null
-        if ($LASTEXITCODE -ne 0) { return $null }
-        $hex = [regex]::Matches(($output -join "`n"), '0x[0-9a-fA-F]{8}')
-        # The block opens with the scheme, subgroup and setting GUIDs, then the
-        # possible values, then the two indices. The last two are AC then DC.
-        if ($hex.Count -lt 2) { return $null }
-        return [Convert]::ToInt32($hex[$hex.Count - 2].Value, 16)
-    } catch {
-        return $null
+    foreach ($verb in @("/qh", "/query")) {
+        try {
+            $output = & powercfg $verb SCHEME_CURRENT $Sub $Setting 2>$null
+            if ($LASTEXITCODE -ne 0) { continue }
+            $hex = [regex]::Matches(($output -join "`n"), '0x[0-9a-fA-F]{8}')
+            # The block opens with the scheme, subgroup and setting GUIDs, then
+            # the possible values, then the two indices. The last two are AC
+            # then DC.
+            if ($hex.Count -ge 2) {
+                return [Convert]::ToInt32($hex[$hex.Count - 2].Value, 16)
+            }
+        } catch {
+            continue
+        }
     }
+    return $null
 }
 
 function Set-AcValue {
