@@ -107,10 +107,3 @@ class TestParsingAndFormatting:
 
     def test_formatting_nothing_gives_an_empty_string(self):
         assert clock.format_local(None) == ""
-
-
-class TestScheduleEntryUsesTheSameClock:
-    def test_the_compose_parser_matches_the_clock_module(self):
-        from fbposter.ui.views.compose import parse_schedule
-
-        assert parse_schedule("2026-08-10 21:30") == clock.parse_local("2026-08-10 21:30")

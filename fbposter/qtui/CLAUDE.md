@@ -1,10 +1,10 @@
 # CLAUDE.md — the Qt UI
 
 The root `CLAUDE.md` applies here too; this file adds the rules specific to
-`fbposter/qtui/`, the current window. What holds in both UIs — only the main thread
+`fbposter/qtui/`, the app's window. The general UI rules — only the main thread
 touches widgets, the three permitted modals, closing the window, `body_for()`, the
-injectable browser seams — stays in the root file under "UI rules that carry over to
-both UIs", as do Hebrew, invisible characters and the first-run wizard.
+injectable browser seams — stay in the root file under "UI rules", as do Hebrew,
+invisible characters and the first-run wizard.
 
 The Qt tests (`tests/test_qtui_*.py`) are in a directory this file does not cover, so
 open it before editing one of them.
@@ -49,7 +49,7 @@ Each of those four now computes a cheap **snapshot of what it would draw** — i
 
 - **Pictures crop to fill their tile (`cover()`), they do not fit inside it.** Fitting leaves letterbox bars and makes a row of tiles look ragged; stretching distorts faces. The exception is a **single** picture, which keeps its natural aspect ratio — cropping the only photo in a post would misrepresent it — capped at `MAX_SINGLE_HEIGHT` so it cannot push the rest off screen.
 - **Layouts are 1 / 2 / 3 / 4 / "+N"**, matching what a feed does. Past `MAX_TILES` the fourth tile carries a `+N` scrim.
-- **A picture that will not open still gets a tile**, named, occupying its slot so the grid keeps its shape. The file is still going to be uploaded; showing nothing would suggest it had been dropped. Same rule as the Tk `preview.py`.
+- **A picture that will not open still gets a tile**, named, occupying its slot so the grid keeps its shape. The file is still going to be uploaded; showing nothing would suggest it had been dropped.
 - **Short text with no picture is set large**, as a feed does. It is most of why the thing reads as a post rather than a label.
 - **Preview mode gets the whole window.** The right rail (templates, "Sending to") and the attach button with its file list are all *writing* tools, and holding a third of the window plus 150px of height for them left the preview itself in half a screen, clipped, with its Like/Comment/Share row below the fold. `set_mode` stands both down, and the post is **centred** in the space the way a feed centres its column — pinned to the left edge of a wide pane it read as a stray panel. Listing the attachments under a preview that already shows them was a second telling of the same fact, and it was the height that stopped the post fitting.
 - **The canvas gets the full width; the post does not.** `MAX_POST_WIDTH` stays feed-shaped (500px, about what Facebook uses). Stretching the post to fill a wide window would defeat the only question the preview exists to answer.

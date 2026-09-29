@@ -19,7 +19,7 @@ import pytest
 
 from fbposter import chrome
 from fbposter.qtui.views.groups import LOOKING_UP
-from fbposter.ui.connection import ConnectionResult, ConnectionState
+from fbposter.connection import ConnectionResult, ConnectionState
 
 FIRST = "https://www.facebook.com/groups/1111111111/"
 SECOND = "https://www.facebook.com/groups/2222222222/"

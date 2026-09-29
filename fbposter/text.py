@@ -17,8 +17,8 @@ load-bearing comparisons are string equality against the user's own words:
   renders, so searching for a snippet that still contains one finds nothing
   and reports a successful post as failed.
 
-The Tk UI stripped bidi marks on the way out of its editor because it had put
-them there itself. The Qt UI needs no marks of its own and so had no such
+The old Tk UI (since removed) stripped bidi marks on the way out of its editor
+because it had put them there itself. The Qt UI needs no marks of its own and so had no such
 step -- which is how pasted ones started reaching the database.
 
 Kept deliberately narrow: only characters with no visible width. Anything that

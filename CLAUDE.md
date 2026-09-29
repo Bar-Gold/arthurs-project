@@ -15,7 +15,6 @@ Most of this file is a rule that already cost a live bug. They are grouped by wh
 | `chrome.py`, `keepalive.py`, `tabs.py`, `cdp.py`, `session.py` | Handing this to a non-technical user (the keep-alive and stuck-tab rules live there); Playwright is imported lazily; "Never call `browser.close()`" under the tests section |
 | `qtui/` | `fbposter/qtui/CLAUDE.md` — loads on its own when you open a file there, but not from `tests/`: open it before editing a `test_qtui_*` file |
 | `db/`, retention, removing groups | Database rules; the two retentions; Queue retention; Removing a group archives it |
-| `ui/` (legacy Tk) | `fbposter/ui/CLAUDE.md` — loads on its own when you open a file there |
 | tests | How the tests avoid a browser and a real clock |
 | `onboarding.py`, `login.py`, the wizard | Handing this to a non-technical user; Changing which Facebook account it posts as |
 | `always_on.py`, `scripts/` | Power (the Settings half is at its end) |
@@ -25,7 +24,7 @@ Text that reaches a post also passes Invisible characters and Hebrew, whatever s
 
 ## Repository Status
 
-**All five phases are done; v1 is feature-complete.** Chrome debug-profile launcher and CDP session (1), CustomTkinter UI (2), SQLite persistence and the safety guards (3), the automation engine in `fbposter/automation/` (4), and the scheduler/worker in `fbposter/worker.py` (5).
+**All five phases are done; v1 is feature-complete.** Chrome debug-profile launcher and CDP session (1), the UI (2; CustomTkinter then, Qt now), SQLite persistence and the safety guards (3), the automation engine in `fbposter/automation/` (4), and the scheduler/worker in `fbposter/worker.py` (5).
 
 **The app now posts on its own.** Opening the GUI starts the worker, and any due batch will go out. `README.md` holds the full spec. Per-group text editing, the Compose preview, the Qt rewrite and **repeating posts** all shipped after v1; the content-variation warning is now actionable, so it should be rare rather than constant. Since then: a post a group holds for an admin is tracked as its own outcome and resolved by the app itself (`TARGET_AWAITING_APPROVAL` and `_follow_up_pending`, see the Worker rules), a dropped Chrome connection defers a batch instead of throwing it away, and `scripts/setup_always_on.ps1` covers the laptop that has to post with its lid shut (see Power). Most recently, two things that were silent are not: removing a group archives it rather than deleting its posting history out from under the repeat guard, and closing the window warns when doing so would strand a queued batch or an active schedule.
 
@@ -47,7 +46,6 @@ python -m venv .venv
 
 .\.venv\Scripts\python.exe main.py start    # everyday use: Chrome if needed, then the app
 .\.venv\Scripts\python.exe main.py gui      # the app alone, no Chrome handling
-.\.venv\Scripts\python.exe main.py gui --tk # the old Tkinter window (legacy)
 .\.venv\Scripts\python.exe main.py setup    # Chrome on-screen, for the one-time manual login
 .\.venv\Scripts\python.exe main.py launch   # Chrome off-screen, ready for automation
 .\.venv\Scripts\python.exe main.py status   # attach over CDP, report the session state
@@ -75,7 +73,7 @@ powershell -ExecutionPolicy Bypass -File packaging\build.ps1 -SkipInstaller  # .
 
 `status` exits 0 when logged in, 1 when not, 2 on error (Chrome not running, etc.).
 
-There is no linter or formatter configured, and no pytest config file — the suite is the whole check. Baseline: **1584 tests, 75-170s** — the spread is machine load, not the suite; the Qt and Tk GUI files are ~80s of it on their own. A run of *five minutes or more* means something is reaching the network; see the `SilentNamer` note below.
+There is no linter or formatter configured, and no pytest config file — the suite is the whole check. Baseline: **1408 tests, 75-170s** — the spread is machine load, not the suite; the Qt GUI files are much of it. A run of *five minutes or more* means something is reaching the network; see the `SilentNamer` note below.
 
 **Do not add `playwright install`.** It is unnecessary and was verified so against Chrome 150: the app attaches to the user's real Chrome over CDP and never launches Playwright's bundled Chromium, so the driver shipped inside the pip package is all that is required.
 
@@ -93,13 +91,13 @@ The user logs into Facebook manually inside that profile, once. Playwright then 
 
 Three layers that must stay separate:
 
-- **UI (main thread)** — the Qt event loop (`qtui/`; `main.py gui --tk` runs the legacy CustomTkinter one). Never touches Playwright objects or the database directly during long operations.
+- **UI (main thread)** — the Qt event loop (`qtui/`). Never touches Playwright objects or the database directly during long operations.
 - **Worker (exactly one background thread)** — owns the Playwright sync API and processes the task queue strictly serially. One group at a time, globally. There is never a second worker, and batches never overlap; a "Post Now" issued mid-batch is appended to the queue rather than run concurrently.
 - **SQLite** — the source of truth for queue state, not just persistence. Each group's outcome is committed as it completes so a crash or restart resumes the batch instead of re-posting. Duplicate posts are the single worst failure mode here (strong spam signal), so idempotency belongs in the schema, not in memory.
 
 UI and worker communicate through a thread-safe queue. The tables as built are `groups`, `templates`, `tasks`, `task_targets`, `schedules`, `schedule_targets` and `settings`; `tags`, `group_tags` and `run_log` were cut (README §9 and §10) — do not write code expecting them.
 
-Core: `config.py` (paths, port, Chrome flags), `chrome.py` (find/launch Chrome, probe the debug port), `session.py` (CDP attach, `c_user` cookie check), `strings.py` (every Facebook URL and UI string, in all three languages), `clock.py` (Israel-time judgement), `power.py` (`SleepBlocker`, `on_battery`), `always_on.py` (the Settings screen's start-with-Windows and keep-awake switches, which run `setup_always_on.ps1`), `guards.py` (the safety rules as pure functions), `recurrence.py` (repeating-schedule rules, also pure), `groups.py` (group-URL parsing), `text.py` (the invisible-character list), `single.py` (the one-app mutex), `onboarding.py` (what setup step the user is on, pure), `login.py` (putting a visible Chrome in front of them), `keepalive.py` (when to restart a Chrome that has closed, pure), `tabs.py` (finding and closing a tab that has stopped answering, and the last-resort restart), `cdp.py` (a DevTools client on the standard library, for when Playwright is the thing hanging), `errors.py`, `worker.py` (`PostingWorker` and `LivePoster`).
+Core: `config.py` (paths, port, Chrome flags), `chrome.py` (find/launch Chrome, probe the debug port), `session.py` (CDP attach, `c_user` cookie check), `connection.py` (the check behind the connection pill: `ConnectionState`, `check_connection`), `strings.py` (every Facebook URL and UI string, in all three languages), `clock.py` (Israel-time judgement), `power.py` (`SleepBlocker`, `on_battery`), `always_on.py` (the Settings screen's start-with-Windows and keep-awake switches, which run `setup_always_on.ps1`), `guards.py` (the safety rules as pure functions), `recurrence.py` (repeating-schedule rules, also pure), `groups.py` (group-URL parsing), `text.py` (the invisible-character list), `single.py` (the one-app mutex), `onboarding.py` (what setup step the user is on, pure), `login.py` (putting a visible Chrome in front of them), `keepalive.py` (when to restart a Chrome that has closed, pure), `tabs.py` (finding and closing a tab that has stopped answering, and the last-resort restart), `cdp.py` (a DevTools client on the standard library, for when Playwright is the thing hanging), `errors.py`, `worker.py` (`PostingWorker` and `LivePoster`).
 
 Scripts: `scripts/setup_always_on.ps1` — the laptop power plan and the logon task. See the Power section.
 
@@ -107,9 +105,7 @@ Packaging: `packaging/` — `fbposter.spec` (PyInstaller), `installer.iss` (Inno
 
 Automation: `automation/poster.py` (`GroupPoster` — arrive → compose → type → attach → publish → verify, plus the read-only `probe`), `detect.py` (`classify` a page as OK / checkpoint / login / rate-limit / unavailable), `humanize.py` (`Humanizer`: keystroke timing, hovers, arrival scroll, the inter-group gap), `groupinfo.py` (read a group's display name off the `h1` **inside `[role="main"]`**; cosmetic, and must never raise into a caller).
 
-UI (Qt, current): `qtui/app.py` (window, sidebar, connection pill, paused line, worker-event pump, background thread helper), `qtui/views/` (compose, groups, publish, queue — the nav order is the flow; `settings`, at the foot of the sidebar; plus `welcome`, the first-run wizard, which is deliberately not in the sidebar), `qtui/theme.py` (palette + one stylesheet), `qtui/widgets.py` (`card`, `row`, `clear`), `qtui/assets/`. It reuses `ui/connection.py` and every non-UI module unchanged.
-
-UI (Tk, legacy — `main.py gui --tk`): `ui/app.py`, `ui/views/`, `theme.py`, `toast.py`, `background.py`, `connection.py`, `preview.py`, `textdir.py`.
+UI: `qtui/app.py` (window, sidebar, connection pill, paused line, worker-event pump, background thread helper), `qtui/views/` (compose, groups, publish, queue — the nav order is the flow; `settings`, at the foot of the sidebar; plus `welcome`, the first-run wizard, which is deliberately not in the sidebar), `qtui/theme.py` (palette + one stylesheet), `qtui/widgets.py` (`card`, `row`, `clear`), `qtui/assets/`.
 
 Storage: `db/` — `connection.py` (per-thread connections), `schema.py` (migrations), `models.py`, `repo.py` (`GroupRepo`, `TemplateRepo`, `TaskRepo`, `ScheduleRepo`, `SettingsRepo`).
 
@@ -120,7 +116,7 @@ Storage: `db/` — `connection.py` (per-thread connections), `schema.py` (migrat
 - **`guards.normalise`** folds them, so `check_repeat_text` cannot be defeated by a paste from Word or WhatsApp. Before this, the same ad pasted twice compared as *different text* and the guard waved through the exact repeat it exists to stop. Folding in `normalise` rather than only at the input is deliberate: bodies already stored with marks in them have to compare correctly too.
 - **`distinctive_snippet`** strips them, because Facebook drops them when it renders. A snippet still carrying one is searched for and never found, which reports a post that went out fine as failed and halts the batch.
 
-Both Qt entry points clean on the way in as well — `ComposeView.get_text()` and `PublishView.alternates()`. The Tk `textdir.strip_controls()` now delegates to the same list. **Qt needing no direction marks of its own is not the same as no marks arriving**; that gap is how this shipped.
+Both Qt entry points clean on the way in as well — `ComposeView.get_text()` and `PublishView.alternates()`. **Qt needing no direction marks of its own is not the same as no marks arriving**; that gap is how this shipped.
 
 ### Time: stored in UTC, judged in Israel time
 
@@ -153,7 +149,7 @@ The rules used to be absolute. The user asked for an override, and there is exac
 - **Repeat is judged on real gaps, not averages.** `recurrence.check_schedule` is the same set of rules the worker applies when the schedule fires. 09:00 and 12:00 average twelve hours apart, yet the 12:00 run is skipped every day. `interval_violation` walks the actual occurrences, across midnight and across chosen days. Three runs a day inside a 08:00-23:00 window can never all be 8h apart, so they always need "Post anyway".
 - **It is visible afterwards.** The Queue card and the repeating-post card both say which rules the batch was allowed to break, so a post at 23:40 is never a mystery.
 - **A refusal states a fact, never an outcome.** The panel once listed "...so the 11:00 run would be skipped" directly above the button that posts it. Messages in `guards.py` and `recurrence.py` say what is true ("only 2h apart, less than the 8h cooldown"); what each button does is said once, by the panel (`publish.ANYWAY_EFFECT`). `tests/test_wording.py` rejects "skip", "would", "will" and "reword" in any refusal, and `test_onboarding.py` now scans every string in the package for terminal commands, after one reached the user from the scheduler.
-- **The cooldown is no longer per group in the UI.** There is one rule, the default gap, and migration 009 put every group on it. A value set earlier would otherwise have gone on applying where nobody could see it. `groups.cooldown_hours` still exists and **the worker and Compose read it, not the setting** — so the Settings screen changes the rule through `SettingsRepo.set_posting_rules` (or `set_default_cooldown`), which writes the setting and every group's row (archived ones too) in one transaction, together with the posting hours and the daily limit. Writing only `default_cooldown_hours` would change what Publish previews and nothing that actually decides a post. Never below 1 hour: nought switches the rule off for good, and breaking it once is what "Post anyway" is for. The same goes for the other two rules on that screen, and `set_posting_rules` refuses them before writing anything: a daily limit of 0 is "no limit" to `check_daily_cap`, and posting hours that start and end on the same hour are "no posting hours" to `clock.inside_window` — a 4am post. Hours that cross midnight are fine. The legacy Tk window still has its old per-group control.
+- **The cooldown is no longer per group in the UI.** There is one rule, the default gap, and migration 009 put every group on it. A value set earlier would otherwise have gone on applying where nobody could see it. `groups.cooldown_hours` still exists and **the worker and Compose read it, not the setting** — so the Settings screen changes the rule through `SettingsRepo.set_posting_rules` (or `set_default_cooldown`), which writes the setting and every group's row (archived ones too) in one transaction, together with the posting hours and the daily limit. Writing only `default_cooldown_hours` would change what Publish previews and nothing that actually decides a post. Never below 1 hour: nought switches the rule off for good, and breaking it once is what "Post anyway" is for. The same goes for the other two rules on that screen, and `set_posting_rules` refuses them before writing anything: a daily limit of 0 is "no limit" to `check_daily_cap`, and posting hours that start and end on the same hour are "no posting hours" to `clock.inside_window` — a 4am post. Hours that cross midnight are fine.
 
 ### Playwright is imported lazily, and must stay that way
 
@@ -236,23 +232,23 @@ warning, and the app's main protection against a restriction silently off.
 
 ### Hebrew, and why the UI is Qt
 
-**`fbposter/qtui/` is the UI. `fbposter/ui/` is the old Tkinter one**, kept runnable with `main.py gui --tk` and still covered by `tests/test_ui.py`. Build new UI work in `qtui/`.
+**`fbposter/qtui/` is the only UI.** The original CustomTkinter window (`fbposter/ui/`, `main.py gui --tk`) was removed on 2026-09-30; the one piece of it the app still used, the connection check, is now `fbposter/connection.py`.
 
 The move was forced by Hebrew, which is most of what this app is used to write. **Tk 8.6 has no bidirectional text support at all**: it lays characters out in logical order, left to right, always — `Text.bbox()` proves it, and no tag, `justify`, RLM, RLE or RLI moves a single x-coordinate. What made Hebrew look right in Tk was Windows reordering each *run* it draws (one unbroken stretch of one script), so a pure-Hebrew line came out fine while any line mixing Hebrew with English or digits came out a **mirror image** of the truth. Three rounds of increasingly elaborate workarounds in Tk — per-line justify tags, an invisible U+202B embedding, `python-bidi` reordering in the preview — never got the editor right.
 
-Qt shapes text itself and needs none of it. `qtui/views/compose.py` contains **no direction code whatsoever**, and a plain `QTextEdit` renders the mixed sentence identically to Facebook, aligning Hebrew paragraphs right on its own. Do not port `textdir.py` into `qtui/`; if Hebrew ever looks wrong there, the cause is something else.
+Qt shapes text itself and needs none of it. `qtui/views/compose.py` contains **no direction code whatsoever**, and a plain `QTextEdit` renders the mixed sentence identically to Facebook, aligning Hebrew paragraphs right on its own. Do not add direction code (bidi marks, reordering) to `qtui/`; if Hebrew ever looks wrong there, the cause is something else.
 
 **Verifying anything about Hebrew rendering:** never read glyph order off a screenshot — that produced two confidently wrong diagnoses in a row. Split the image into halves and identify an unambiguous anchor (a Latin word, a digit run), or compare pixels against a known-correct rendering. In the test sentence "…אני רוצה … kalofan והמחיר … 1000 שקל", correct output puts `אני` at the far right and `1000` in the left half.
 
-### UI rules that carry over to both UIs
+### UI rules
 
-The Tk widget specifics — `CTkFrame`/`CTkButton` defaults, pack order, and the whole `textdir.py` bidi apparatus — now live in **`fbposter/ui/CLAUDE.md`**, which loads on its own when you open a file in `fbposter/ui/`. None of it applies to `qtui/`, whose own rules — the flow, redrawing, the Compose preview, the visual rules — are in **`fbposter/qtui/CLAUDE.md`**. What follows holds in both windows.
+The window's own rules — the flow, redrawing, the Compose preview, the visual rules — are in **`fbposter/qtui/CLAUDE.md`**. What follows is the part that holds for any UI code.
 
-- **Only the main thread touches widgets.** Blocking work goes through a background thread → `queue.Queue` → a pump on the UI thread: `BackgroundRunner` and `widget.after()` in Tk, `App.run_in_background` and a `QTimer` driving `App._drain_worker_events` in Qt. The posting worker reports progress the same way and never touches a widget itself.
+- **Only the main thread touches widgets.** Blocking work goes through a background thread → `queue.Queue` → a pump on the UI thread: `App.run_in_background`, and a `QTimer` driving `App._drain_worker_events`. The posting worker reports progress the same way and never touches a widget itself.
 - **No modal dialogs for status, ever** — use `app.toast`. There are exactly three permitted, and all three share one justification: they can only appear because the user just acted, so the app already has focus and they cannot interrupt anything. One is the media file picker in Compose. The second is `qtui.app.ask_before_closing`, raised only from `closeEvent`, only when `App.unfinished_work()` finds something still due — see the close rule below. The third is the single-instance refusal in `run()`, which exists because the packaged `.exe` has no console for the `print` it used to be. Chrome's native file dialog is a different thing entirely and is never acceptable — see the Photo/video rule below.
 - **Closing the window stops the posting, so it says so first.** The worker is the window's own thread; `closeEvent` stopped it silently, so a daily repeat set up and then closed away simply never ran again with nothing on screen to show it. `App.unfinished_work()` returns a phrase naming what is still due — unfinished batches, active schedules — or `None`, and only a non-`None` answer costs the user a dialog. **The confirmation is injectable (`App(confirm_close=)`) and defaults to the real one**, exactly like `check_fn` and `group_namer`: the GUI suite closes every window it builds, so a real modal would hang the run rather than fail it. It is also skipped entirely while `self.worker is None`, which is every window a test builds.
 - **Compose owns per-group wording, and `body_for()` is the only way to read it.** `_base_body` is the shared text, `_bodies` holds per-group rewrites, `_editing` is the active tab. `body_for()` reads committed state only, so `capture()` must run first — it once returned the live editor contents when that group was active, which handed back the wrong text as soon as `_editing` was assigned before the read. Editing the base clears the rewrites (the user's choice) and toasts, and only when the text genuinely changed — a tab switch must never cost someone their wording.
-- **Anything in a view that reaches for a browser must be injectable, and the shared test App must be given a stub.** The Groups view looks up group names on its own whenever it is shown, and `chrome.probe()` succeeds on any machine with Chrome running — so before `SilentNamer` existed, the GUI suite silently opened real Facebook pages and took nearly three minutes instead of twenty seconds. Both `App`s take `check_fn=`, `db=` and `group_namer=` for this reason.
+- **Anything in a view that reaches for a browser must be injectable, and the shared test App must be given a stub.** The Groups view looks up group names on its own whenever it is shown, and `chrome.probe()` succeeds on any machine with Chrome running — so before `SilentNamer` existed, the GUI suite silently opened real Facebook pages and took nearly three minutes instead of twenty seconds. The `App` takes `check_fn=`, `db=` and `group_namer=` for this reason.
 
 ### How the tests avoid a browser and a real clock
 
@@ -261,7 +257,7 @@ Nothing in the suite opens Chrome, hits Facebook, or waits out a real delay. Kee
 - **`tests/fake_page.py`** stands in for a Playwright `Page`, recording every call into `page.calls`. It implements only the surface `GroupPoster` actually uses, so a poster that starts calling something new fails loudly instead of quietly passing. Its knobs (`missing`, `redirect_to`, `body_text`, `wait_fails_for`, `never_detaches`) are how the halt paths, the slow-publish path and the dry-run boundary get exercised.
 - **`Humanizer(rng=, sleep=)`** — pass a seeded `Random` and a no-op sleep and the human pacing is deterministic and instant.
 - **`PostingWorker(poster=, now=, sleep=, blocker=, tick_seconds=)`** — the whole loop, including the inter-group gap and crash recovery, runs without a thread, a browser or the wall clock.
-- **`App(check_fn=, db=, group_namer=)`** — a temporary database and `SilentNamer`. Constructing an `App` deliberately does not start the worker. Both the Tk and the Qt window take the same three seams.
+- **`App(check_fn=, db=, group_namer=)`** — a temporary database and `SilentNamer`. Constructing an `App` deliberately does not start the worker.
 - **Looking inside Chrome is inert until `qtui.app.run()` switches it on.** `session.before_attach` is `None`, and a window's `_clear_stuck_tabs` and `_restart_chrome` do nothing, unless `run()` wires up `tabs.py`. The suite never does, so no test can look inside, let alone close a tab in, the app's Chrome running on the developer's machine. `tests/test_tabs.py` tests the DevTools client against a WebSocket server on a thread of its own.
 - **Qt tests run offscreen.** `tests/conftest.py` has a session-scoped `qt_application` (one `QApplication`, `QT_QPA_PLATFORM=offscreen`) and a per-test `qt_app` window on a temporary database. Offscreen is not tidiness: this app's central promise is that it never takes focus, and a suite that popped real windows would break that on the developer's own machine every time it ran. Drive views through their own methods rather than synthesised clicks. Note that `deleteLater()` widgets keep painting until the event loop turns, so anything that reads pixels needs a real loop turn first — two "duplicate row" and "giant blue rectangle" scares came from screenshotting without one.
 
@@ -273,7 +269,7 @@ Nothing in the suite opens Chrome, hits Facebook, or waits out a real delay. Kee
 
 The app ships to a client as `dist\FacebookAutoPoster-Setup-x.y.z.exe`. How that is built, and the five things a frozen build loses without a word, are in **`packaging/CLAUDE.md`**. What stays here is the app side — and the one packaging fact that shapes app code: **the packaged app has no console, so `print()` reaches nobody.** Anything the user must see goes through the window.
 
-**The app used to answer "what now?" with terminal commands.** `ui/connection.py` said *"Start it with 'main.py launch'"* and `automation/detect.py` said *"Run 'main.py setup' and sign in again"* — both of which reach the user through the connection pill. They are good developer instructions and useless to somebody holding an `.exe` with no console behind it. `tests/test_onboarding.py::TestNothingTellsTheUserToOpenATerminal` greps the wizard copy, the halt messages and the connection details so a third one cannot be written.
+**The app used to answer "what now?" with terminal commands.** `connection.py` said *"Start it with 'main.py launch'"* and `automation/detect.py` said *"Run 'main.py setup' and sign in again"* — both of which reach the user through the connection pill. They are good developer instructions and useless to somebody holding an `.exe` with no console behind it. `tests/test_onboarding.py::TestNothingTellsTheUserToOpenATerminal` greps the wizard copy, the halt messages and the connection details so a third one cannot be written.
 
 - **`onboarding.py` is pure and `login.py` drives the browser** — the same split `guards.py` has against `worker.py`. What the app decides to tell the user next is worth testing without Chrome, a profile directory or a Facebook session, and it is: 26 tests, half a second.
 - **One problem at a time.** `plan()` returns a single `SetupStep`, never a list. A screen reporting four problems at once is four times as intimidating and no more useful, because they have to be fixed in order anyway — there is no point mentioning Facebook when Chrome is not installed.
@@ -426,7 +422,7 @@ One `PostingWorker`, one thread, started by `App.start_worker()` and by nothing 
 - A missed slot older than `MISSED_GRACE` (2h) is marked `missed`, never fired late in a burst. **A batch the worker deferred on purpose is exempt** — `resume_at` being set means it is waiting for the window to reopen, not that the machine was asleep, and without that exemption a 23:30 slot deferred to 08:00 came back nine hours "late" and was thrown away at the moment it was finally allowed to run.
 - **Due schedules are materialised at the top of `run_once`**, before any task is claimed, and creating one counts as a step. See the Repeating posts section above.
 - **`LivePoster` reattaches over CDP per group** and closes its page afterwards. Holding one connection open across a multi-hour batch would mean a Chrome restart kills the run; reattaching costs a second and survives it.
-- The worker never touches a widget. It puts `WorkerEvent`s on a `queue.Queue` that the UI drains on its own thread — `App._drain_worker_events` on a `QTimer` in Qt, `App._pump_worker_events` via `after()` in Tk.
+- The worker never touches a widget. It puts `WorkerEvent`s on a `queue.Queue` that the UI drains on its own thread — `App._drain_worker_events`, on a `QTimer`.
 
 ## Rules for the Automation Engine
 

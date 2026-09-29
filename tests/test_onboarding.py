@@ -12,7 +12,7 @@ import pytest
 from fbposter import onboarding
 from fbposter.automation import detect
 from fbposter.onboarding import RowState, SetupStep
-from fbposter.ui.connection import ConnectionResult, ConnectionState
+from fbposter.connection import ConnectionResult, ConnectionState
 
 
 def result(state: ConnectionState) -> ConnectionResult:
@@ -117,7 +117,7 @@ class TestNothingTellsTheUserToOpenATerminal:
 
     def test_the_connection_messages_are_clean(self, monkeypatch):
         from fbposter import chrome
-        from fbposter.ui import connection
+        from fbposter import connection
 
         monkeypatch.setattr(chrome, "probe", lambda *a, **k: None)
         assert self.offenders(connection.check_connection().detail) == []

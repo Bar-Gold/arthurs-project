@@ -14,10 +14,10 @@ This is a low-volume, human-paced workload. The system should be tuned for *look
 
 ## 3. Technical Stack
 *   **Language:** Python 3.10+
-*   **UI Framework:** **Qt, through PySide6.** CustomTkinter was the original choice and was replaced: Tk 8.6 has no bidirectional text support, so any line mixing Hebrew with English or digits rendered mirrored. Qt shapes the text itself. The old Tk window is still runnable with `main.py gui --tk`.
+*   **UI Framework:** **Qt, through PySide6.** CustomTkinter was the original choice and was replaced: Tk 8.6 has no bidirectional text support, so any line mixing Hebrew with English or digits rendered mirrored. Qt shapes the text itself. The old Tk window has since been removed.
 *   **Browser Automation:** Playwright (Python, **sync API**) connecting to a running Chrome over CDP via `connect_over_cdp`.
 *   **Database:** SQLite (local `.db` file) for groups, templates, one-off and repeating posts, and the queue with its per-group history.
-*   **Images:** Qt decodes attachments for the Compose preview itself. Pillow is read only by the legacy Tk window's preview, and is optional there — without it that preview draws a tile per image and nothing else changes.
+*   **Images:** Qt decodes attachments for the Compose preview itself. Pillow is installed only for the tests, which use it to write test images.
 *   **Threading model:** Qt event loop on the main thread; one single worker thread owns Playwright and processes the queue serially. UI and worker communicate through a thread-safe queue — Playwright objects never touch the UI thread.
 
 ## 4. Chrome Session Setup (read before Phase 1)

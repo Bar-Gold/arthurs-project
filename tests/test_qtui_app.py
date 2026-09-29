@@ -14,7 +14,7 @@ import pytest
 from fbposter.db import Database
 from fbposter.db.models import SCHEDULE_PAUSED, TASK_DONE
 from fbposter.db.repo import GroupRepo, ScheduleRepo, TaskRepo
-from fbposter.ui.connection import ConnectionResult, ConnectionState
+from fbposter.connection import ConnectionResult, ConnectionState
 
 from .conftest import SilentNamer
 

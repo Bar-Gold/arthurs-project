@@ -15,7 +15,7 @@ from fbposter.always_on import Status
 from fbposter.db.repo import GroupRepo, SettingsRepo, TaskRepo
 from fbposter.db.schema import DEFAULT_SETTINGS
 from fbposter.qtui.app import FLOW_STEPS, NAV_ITEMS
-from fbposter.ui.connection import ConnectionResult, ConnectionState
+from fbposter.connection import ConnectionResult, ConnectionState
 
 DEFAULT_COOLDOWN = int(DEFAULT_SETTINGS["default_cooldown_hours"])
 DEFAULT_CAP = int(DEFAULT_SETTINGS["daily_cap"])

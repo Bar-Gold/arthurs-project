@@ -6,7 +6,7 @@ half that drives a browser. The split is the same one `guards.py` has against
 its own, without Chrome, a profile directory or a Facebook session.
 
 This module exists because the app used to answer the question with terminal
-commands. `ui/connection.py` told the user to "Start it with 'main.py launch'"
+commands. `connection.py` told the user to "Start it with 'main.py launch'"
 and `automation/detect.py` told them to "Run 'main.py setup' and sign in
 again", both of which surface in the connection pill. That is fine for the
 developer and useless to everybody else -- the app it is shipped to a client as
@@ -19,7 +19,7 @@ from __future__ import annotations
 import enum
 from dataclasses import dataclass
 
-from .ui.connection import ConnectionResult, ConnectionState
+from .connection import ConnectionResult, ConnectionState
 
 
 class SetupStep(enum.Enum):

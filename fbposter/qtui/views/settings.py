@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
 
 from fbposter import onboarding
 from fbposter.db.schema import DEFAULT_SETTINGS
-from fbposter.ui.connection import ConnectionState
+from fbposter.connection import ConnectionState
 
 from .. import theme
 from ..widgets import card, row

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from fbposter import login, onboarding
 from fbposter.onboarding import SetupStep
-from fbposter.ui.connection import ConnectionResult, ConnectionState
+from fbposter.connection import ConnectionResult, ConnectionState
 
 
 def build_app(tmp_path, *, setup_complete: bool):

@@ -10,8 +10,8 @@ from __future__ import annotations
 import enum
 from dataclasses import dataclass
 
-from .. import chrome, session
-from ..errors import CheckpointError, FBPosterError
+from . import chrome, session
+from .errors import CheckpointError, FBPosterError
 
 
 class ConnectionState(enum.Enum):

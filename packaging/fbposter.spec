@@ -46,15 +46,13 @@ hiddenimports = [
     "zoneinfo",
 ]
 
-# The legacy Tkinter window is not shipped. main.py's --tk flag imports it
-# lazily, so nothing in the packaged path touches these, and dropping them
-# takes ~18MB and three dependencies out of the bundle.
+# Nothing in the app imports these. Tkinter is in the standard library and
+# Pillow is installed for the tests, so both are named here to keep them out of
+# the bundle whatever a hook might pull in.
 excludes = [
-    "customtkinter",
     "tkinter",
     "_tkinter",
     "PIL",
-    "bidi",
     "pytest",
     # Qt modules this app has no use for. QtSvg is deliberately NOT here: no
     # Python code imports it, but Qt needs its image plugin to draw the SVG the

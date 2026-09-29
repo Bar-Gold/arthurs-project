@@ -31,7 +31,7 @@ from ..automation.groupinfo import LiveGroupNamer
 from ..db import Database
 from ..db.models import SCHEDULE_ACTIVE
 from ..db.repo import GroupRepo, ScheduleRepo, SettingsRepo, TaskRepo, TemplateRepo
-from ..ui.connection import ConnectionResult, ConnectionState, check_connection
+from ..connection import ConnectionResult, ConnectionState, check_connection
 from ..worker import PostingWorker
 from . import theme
 from .views.compose import ComposeView

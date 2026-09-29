@@ -120,7 +120,7 @@ class TestTheStartupCheckGetsExactlyOneSecondChance:
         )
 
     def test_a_failed_startup_check_is_retried_once(self, qt_app, monkeypatch):
-        from fbposter.ui.connection import ConnectionResult, ConnectionState
+        from fbposter.connection import ConnectionResult, ConnectionState
 
         scheduled = []
         self.arm(qt_app, monkeypatch, scheduled)
@@ -132,7 +132,7 @@ class TestTheStartupCheckGetsExactlyOneSecondChance:
         assert scheduled == [app_recheck_ms()]
 
     def test_a_successful_startup_check_schedules_nothing(self, qt_app, monkeypatch):
-        from fbposter.ui.connection import ConnectionResult, ConnectionState
+        from fbposter.connection import ConnectionResult, ConnectionState
 
         scheduled = []
         self.arm(qt_app, monkeypatch, scheduled)
@@ -146,7 +146,7 @@ class TestTheStartupCheckGetsExactlyOneSecondChance:
     def test_the_retry_itself_is_not_retried(self, qt_app, monkeypatch):
         """Otherwise a machine that is simply offline reopens Facebook every
         fifteen seconds, for ever."""
-        from fbposter.ui.connection import ConnectionResult, ConnectionState
+        from fbposter.connection import ConnectionResult, ConnectionState
 
         scheduled = []
         self.arm(qt_app, monkeypatch, scheduled)
@@ -160,7 +160,7 @@ class TestTheStartupCheckGetsExactlyOneSecondChance:
 
     def test_an_ordinary_check_never_schedules_one(self, qt_app, monkeypatch):
         """Pressing "Check connection" is not a startup check."""
-        from fbposter.ui.connection import ConnectionResult, ConnectionState
+        from fbposter.connection import ConnectionResult, ConnectionState
 
         scheduled = []
         self.arm(qt_app, monkeypatch, scheduled)

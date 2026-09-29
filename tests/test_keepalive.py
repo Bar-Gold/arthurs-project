@@ -20,7 +20,7 @@ import pytest
 from fbposter import chrome
 from fbposter.errors import ChromeLaunchError
 from fbposter.keepalive import BACKOFF_S, MAX_ATTEMPTS, ChromeKeeper
-from fbposter.ui.connection import ConnectionState
+from fbposter.connection import ConnectionState
 
 
 class TestTheKeeper:
@@ -511,7 +511,7 @@ class TestACheckCannotHangForever:
     @pytest.fixture
     def stalling(self, qt_app, monkeypatch):
         from fbposter import tabs
-        from fbposter.ui.connection import ConnectionResult
+        from fbposter.connection import ConnectionResult
 
         runner = Held()
         monkeypatch.setattr(qt_app, "run_in_background", runner)
@@ -581,7 +581,7 @@ class TestACheckCannotHangForever:
         assert app.connection_state is ConnectionState.CONNECTED
 
     def test_the_answer_of_the_check_given_up_on_is_ignored(self, stalling):
-        from fbposter.ui.connection import ConnectionResult
+        from fbposter.connection import ConnectionResult
 
         app, runner, _clock = stalling
         _fn, ok, _err = self.stall(app, runner)
