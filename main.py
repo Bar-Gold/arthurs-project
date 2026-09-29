@@ -187,6 +187,8 @@ def cmd_dry_run(args: argparse.Namespace) -> int:
     for path in media:
         if not path.is_file():
             raise FBPosterError(f"No such image: {path}")
+    if not args.text.strip() and not media:
+        raise FBPosterError("Nothing to rehearse: give --text, --image, or both.")
 
     print(
         f"Dry run against {args.group_url}\n"
@@ -245,7 +247,9 @@ def build_parser() -> argparse.ArgumentParser:
         "dry-run", help="full rehearsal against a real group that never clicks Post"
     )
     dry_run.add_argument("group_url", help="a Facebook group URL")
-    dry_run.add_argument("--text", required=True, help="the post body to rehearse")
+    dry_run.add_argument(
+        "--text", default="", help="the post body to rehearse; leave out for pictures only"
+    )
     dry_run.add_argument(
         "--image", action="append", help="image to attach; repeat for several"
     )

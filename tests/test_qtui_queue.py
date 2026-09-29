@@ -255,3 +255,16 @@ class TestResolvingAPendingPostFromTheQueue:
         qt_app.show_view("queue")
         view.resolve_pending(target.id, approved=False)
         assert qt_app.task_repo.targets_for(task.id)[0].state == TARGET_DECLINED
+
+
+class TestAPicturesOnlyBatch:
+    def test_its_card_says_so_rather_than_nothing(self, qt_app, repos):
+        from PySide6.QtWidgets import QLabel
+
+        group = qt_app.group_repo.list()[0]
+        qt_app.task_repo.create("", [(group.id, "")], media_paths=["a.jpg", "b.jpg"])
+        view = qt_app.views["queue"]
+        qt_app.show_view("queue")
+
+        titles = [label.text() for label in view.findChildren(QLabel)]
+        assert any(t.endswith("— Pictures only — 2 pictures, no text") for t in titles)

@@ -499,6 +499,9 @@ class GroupPoster:
             self.discard()
             raise
 
+        if not distinctive_snippet(request.body):
+            return self._pictures_only_outcome(request, closed)
+
         # Verification is the source of truth, not whether the dialog closed.
         if self.verify(request.body, request.group_url):
             # Seeing it is not the same as it being published. Facebook shows
@@ -540,6 +543,52 @@ class GroupPoster:
             "the group afterwards. It may well have gone out — check the group "
             "before queueing it again, because posting it twice is worse than not "
             "posting it at all."
+        )
+
+    def _pictures_only_outcome(self, request: PostRequest, closed: bool) -> PostOutcome:
+        """Judge a post that has pictures and no words.
+
+        verify() finds a post by the user's own words, and there are none --
+        nothing on the page ties a photo in the feed back to the file that was
+        uploaded, because Facebook re-encodes it. So the evidence is what
+        Facebook did with the composer: it closes when the post is accepted.
+
+        Still open after PUBLISH_TIMEOUT_MS is not proof it did not go out, and
+        with no words there is no second look to settle it, so this halts with
+        the cautious message rather than the "safe to try again" one.
+        """
+        if not closed:
+            self.discard()
+            raise PostNotVerified(
+                "Clicked Post, but the composer was still open a minute later. A "
+                "post with only pictures has no words to look for, so whether it "
+                "went out cannot be checked — look at the group before queueing it "
+                "again, because posting it twice is worse than not posting it."
+            )
+
+        # One look at the group, as a person would after posting -- and the
+        # same look verify() takes. A "posting too fast" warning or checkpoint
+        # shown on arrival must still halt the batch.
+        if request.group_url:
+            self.page.goto(
+                request.group_url, timeout=NAV_TIMEOUT_MS, wait_until="domcontentloaded"
+            )
+            self.page.wait_for_timeout(FEED_SETTLE_MS)
+            self.guard()
+
+        # In a group that holds posts for an admin, the banner is the only sign
+        # there is. It cannot be tied to this post, but a group holding posts
+        # holds every member's, so it is read as this one waiting.
+        if self.awaiting_approval():
+            return self._pending_outcome()
+        return PostOutcome(
+            posted=True,
+            verified=False,
+            detail=(
+                "Posted the pictures: Facebook accepted the post and closed the "
+                "composer. With no text to search for, it was not looked up in "
+                "the feed."
+            ),
         )
 
     # -- read-only ---------------------------------------------------------

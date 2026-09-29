@@ -13,6 +13,7 @@ tests.
 from __future__ import annotations
 
 from datetime import timedelta
+from pathlib import Path
 
 import pytest
 
@@ -596,3 +597,58 @@ class TestTheSnippet:
         compose.capture()
         qt_app.show_view("publish")
         assert publish.preview_note.text().endswith("…”")
+
+
+class TestPicturesOnly:
+    """Pictures with no text: a post of its own, for Now and Once."""
+
+    PICTURE = Path("C:/pictures/bike.jpg")
+
+    @pytest.fixture
+    def pictures(self, views, monkeypatch):
+        compose, publish = views
+        compose._show("")
+        compose.capture()
+        compose.attachments = [self.PICTURE]
+        said = []
+        monkeypatch.setattr(compose, "notify", lambda m, level="info": said.append(m))
+        monkeypatch.setattr(publish, "notify", lambda m, level="info": said.append(m))
+        return compose, publish, said
+
+    def test_post_now_queues_it(self, qt_app, pictures):
+        _compose, publish, _said = pictures
+        publish.set_mode(NOW)
+        assert publish.publish() is True
+
+        task = qt_app.task_repo.list_recent()[0]
+        assert task.media_paths == [str(self.PICTURE)]
+        assert all(t.body == "" for t in qt_app.task_repo.targets_for(task.id))
+        assert len(qt_app.task_repo.targets_for(task.id)) == 3
+
+    def test_once_queues_it(self, qt_app, pictures):
+        _compose, publish, _said = pictures
+        publish.set_mode(ONCE)
+        publish.schedule_entry.setDateTime(publish.schedule_entry.dateTime().addDays(1))
+        assert publish.publish() is True
+        assert qt_app.task_repo.list_recent()[0].scheduled_for is not None
+
+    def test_no_text_and_no_pictures_is_still_refused(self, qt_app, pictures):
+        compose, publish, said = pictures
+        compose.attachments = []
+        publish.set_mode(NOW)
+        assert publish.publish() is False
+        assert qt_app.task_repo.list_recent() == []
+        assert "text or a picture" in said[-1]
+
+    def test_repeat_is_refused_and_says_why(self, qt_app, pictures):
+        """Rotating wordings is what stops each run being the same post."""
+        _compose, publish, said = pictures
+        publish.set_mode(REPEAT)
+        assert publish.publish() is False
+        assert qt_app.schedule_repo.list() == []
+        assert "needs some text as well as pictures" in said[-1]
+
+    def test_the_summary_says_pictures_only(self, pictures):
+        _compose, publish, _said = pictures
+        publish.refresh_recipients()
+        assert publish.preview_note.text() == "Pictures only — 1 picture, no text."

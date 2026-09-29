@@ -157,6 +157,84 @@ class TestMedia:
         assert not any("file_chooser" in str(call) for call in page.calls)
 
 
+class TestPicturesOnly:
+    """A post with pictures and no words.
+
+    Verification looks for the user's own words, and there are none, so what
+    Facebook did with the composer is the evidence. Posted live to a real group
+    on 2026-09-29: the composer closed and the picture was in the feed.
+    """
+
+    PICTURES = (Path("a.png"), Path("b.png"))
+
+    def post(self, page: FakePage, body: str = ""):
+        return make_poster(page).post(request(body=body, media_paths=self.PICTURES))
+
+    def test_it_posts_without_typing_a_word(self):
+        page = FakePage()
+        outcome = self.post(page)
+
+        assert outcome.posted
+        assert not outcome.pending
+        assert page.typed_text == ""
+        assert page.clicked(POST_BUTTON)
+        assert ("set_input_files", 'role=dialog:None >> input[type="file"]', ("a.png", "b.png")) in page.calls
+
+    def test_it_is_not_claimed_as_seen_in_the_feed(self):
+        """Nothing was looked for, so nothing may be reported as found."""
+        outcome = self.post(FakePage())
+        assert outcome.verified is False
+        assert "not looked up" in outcome.detail
+
+    def test_a_leftover_draft_is_still_cleared_first(self):
+        """No words to type is not a reason to post whatever was there before."""
+        page = FakePage()
+        self.post(page)
+        assert ("press", "Control+A") in page.calls
+        assert ("press", "Delete") in page.calls
+
+    def test_invisible_characters_alone_are_no_words(self):
+        """A bidi mark pasted on its own must not send it hunting for itself."""
+        outcome = self.post(FakePage(), body="‏ \n")
+        assert outcome.posted
+
+    def test_it_looks_at_the_group_once_afterwards(self):
+        page = FakePage()
+        self.post(page)
+        assert [c for c in page.calls if c[0] == "goto"] == [("goto", GROUP_URL)] * 2
+
+    def test_a_checkpoint_on_that_look_halts_the_batch(self):
+        page = FakePage()
+        page.on_click[f"role=dialog:None >> {POST_BUTTON}"] = lambda: setattr(
+            page, "redirect_to", "https://www.facebook.com/checkpoint/1/"
+        )
+        with pytest.raises(AutomationHalted):
+            self.post(page)
+
+    def test_a_composer_that_never_closes_halts_without_saying_it_is_safe(self):
+        """With no words there is no second look, so it cannot say "did not go
+        out" the way a text post that was searched for and missing can."""
+        page = FakePage(never_detaches=True)
+        with pytest.raises(PostNotVerified) as caught:
+            self.post(page)
+
+        message = str(caught.value)
+        assert "cannot be checked" in message
+        assert "safe to try again" not in message
+        assert ("press", "Escape") in page.calls
+
+    def test_a_group_holding_posts_reports_it_pending(self):
+        page = FakePage(body_text=f"A group feed. {strings.PENDING_APPROVAL_MARKERS[0]}")
+        outcome = self.post(page)
+        assert outcome.pending is True
+        assert outcome.posted is True
+
+    def test_pictures_with_words_are_still_verified_by_the_words(self):
+        page = FakePage()
+        outcome = make_poster(page).post(request(media_paths=self.PICTURES))
+        assert outcome.verified is True
+
+
 class TestDryRun:
     def test_it_never_clicks_post(self):
         page = FakePage()

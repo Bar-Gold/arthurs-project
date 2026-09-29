@@ -67,6 +67,12 @@ MIN_SINGLE_HEIGHT = 180
 MAX_SINGLE_HEIGHT = 560
 
 NO_TEXT = "(no text — the post would be images only)"
+
+
+def pictures_only(count: int) -> str:
+    """How a post with pictures and no words is named on Publish and Queue."""
+    return f"Pictures only — {count} picture{'s' if count != 1 else ''}, no text"
+
 # Below this, a picture-less post is set large, the way a feed does it.
 BIG_TEXT_CHARS = 85
 
@@ -598,8 +604,10 @@ class ComposeView(QWidget):
         if not selected:
             self.notify("Pick at least one group.", "error")
             return False
-        if any(not self.body_for(gid).strip() for gid in selected):
-            self.notify("Every selected group needs some text.", "error")
+        # Pictures go to every group in the batch, so with any attached a group
+        # left without words still has something to post: a pictures-only post.
+        if not self.attachments and any(not self.body_for(gid).strip() for gid in selected):
+            self.notify("Every selected group needs some text or a picture.", "error")
             return False
 
         now = utcnow()

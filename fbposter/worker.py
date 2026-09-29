@@ -521,6 +521,12 @@ class PostingWorker:
             if age is not None and (age < FOLLOW_UP_AFTER or age > FOLLOW_UP_GIVE_UP):
                 continue
 
+            if not target.body.strip():
+                # Pictures only: the pending list is searched by the post's
+                # words, so it can only ever answer "unknown". It stays awaiting
+                # for the user to settle from the Queue, and costs no browser.
+                continue
+
             group = self.groups.active(target.group_id)
             if group is None:
                 # A post in a group the user has removed can never be resolved
@@ -1071,6 +1077,16 @@ class PostingWorker:
             if group is None:
                 self.tasks.mark_target(
                     target.id, TARGET_FAILED, error="Group was removed."
+                )
+                continue
+
+            if not target.body.strip():
+                # Both checks below find a post by its words, and a post of
+                # pictures alone has none: verify() would answer no and the
+                # pending list "unknown", for two hours, holding the machine
+                # awake to learn nothing. Straight to the user instead.
+                self._escalate_unchecked(
+                    target, "a post with only pictures has no words to look for"
                 )
                 continue
 

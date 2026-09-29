@@ -1856,3 +1856,69 @@ class TestRecoveryLooksTwiceBeforeSendingAgain:
         assert target.state == TARGET_FAILED
         assert "twice" in target.error
         assert tasks.get(task.id).state == TASK_HALTED
+
+
+class TestPicturesOnly:
+    """A post with pictures and no words.
+
+    Every after-the-fact check this worker makes finds a post by its words, so
+    for one with none those checks can only ever answer "unknown". They are not
+    asked, rather than asked for nothing.
+    """
+
+    def batch(self, tasks, group, tmp_path):
+        picture = tmp_path / "picture.png"
+        picture.write_bytes(b"not really a png")
+        return tasks.create("", [(group.id, "")], media_paths=[str(picture)])
+
+    def test_it_is_posted(self, db, repos, tmp_path):
+        groups, tasks, _ = repos
+        one, _ = add_groups(groups)
+        task = self.batch(tasks, one, tmp_path)
+
+        poster = FakePoster()
+        drain(make_worker(db, poster))
+
+        assert poster.requests[0].body == ""
+        assert [p.name for p in poster.requests[0].media_paths] == ["picture.png"]
+        assert tasks.targets_for(task.id)[0].state == TARGET_DONE
+
+    def test_an_interrupted_one_goes_straight_to_the_user(self, db, repos, tmp_path):
+        """Not two hours of "unknown" with the machine held awake."""
+        groups, tasks, _ = repos
+        one, _ = add_groups(groups)
+        task = self.batch(tasks, one, tmp_path)
+        target = tasks.targets_for(task.id)[0]
+        tasks.mark_target(target.id, TARGET_RUNNING, attempted=True)
+
+        poster = FakePoster()
+        worker = make_worker(db, poster)
+        worker.recover()
+
+        stored = tasks.targets_for(task.id)[0]
+        assert stored.state == TARGET_FAILED
+        assert "only pictures" in stored.error
+        assert "twice" in stored.error
+        assert tasks.get(task.id).state == TASK_HALTED
+        assert poster.verify_calls == [] and poster.verdict_calls == []
+        assert poster.requests == [], "sent again after an interruption"
+
+    def test_one_awaiting_an_admin_is_not_chased(self, db, repos, tmp_path):
+        """The pending list is searched by words; it stays for the user."""
+        groups, tasks, _ = repos
+        one, _ = add_groups(groups)
+        task = self.batch(tasks, one, tmp_path)
+        target = tasks.targets_for(task.id)[0]
+        tasks.mark_target(target.id, TARGET_AWAITING_APPROVAL, posted=True)
+        from fbposter.db.models import to_iso
+
+        tasks.db.write(
+            "UPDATE task_targets SET posted_at = ? WHERE id = ?",
+            (to_iso(NOON - timedelta(hours=3)), target.id),
+        )
+
+        poster = FakePoster()
+        make_worker(db, poster)._follow_up_pending(NOON)
+
+        assert poster.verdict_calls == []
+        assert tasks.targets_for(task.id)[0].state == TARGET_AWAITING_APPROVAL

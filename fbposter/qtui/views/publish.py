@@ -51,6 +51,7 @@ from fbposter.db.models import SCHEDULE_ACTIVE, SCHEDULE_PAUSED, utcnow
 
 from .. import theme
 from ..widgets import card, clear, row
+from .compose import pictures_only
 
 RIGHT_COLUMN_WIDTH = 340
 # Room for the column's scroll bar, so the column keeps its width when it shows.
@@ -420,9 +421,13 @@ class PublishView(QWidget):
         # read as though the rest of it was missing.
         flat = " ".join(body.split())
         snippet = flat[:SNIPPET_CHARS] + ("…" if len(flat) > SNIPPET_CHARS else "")
-        self.preview_note.setText(
-            f"“{snippet}”" if snippet else "Nothing written yet — start on Compose."
-        )
+        if snippet:
+            note = f"“{snippet}”"
+        elif self.compose.attachments:
+            note = f"{pictures_only(len(self.compose.attachments))}."
+        else:
+            note = "Nothing written yet — start on Compose."
+        self.preview_note.setText(note)
 
         # None never equals a list, so the first call always draws -- including
         # the empty case, which has its own "no groups picked" note.
@@ -947,6 +952,17 @@ class PublishView(QWidget):
 
     def create_schedule(self, allow: frozenset[str] = frozenset()) -> bool:
         wordings = self.wordings()
+        if not wordings and self.compose.attachments:
+            # The rotation of wordings is what keeps each run from being the
+            # same post to the same group; pictures alone are identical every
+            # run, which is the repetition the repeat guard exists to stop.
+            self.notify(
+                "A repeating post needs some text as well as pictures — each run "
+                "gives every group a wording it has not had yet. Pictures on "
+                "their own can go out with Now or Once.",
+                "error",
+            )
+            return False
         if not wordings:
             self.notify("Write the post on Compose first.", "error")
             return False

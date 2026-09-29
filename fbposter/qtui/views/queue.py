@@ -24,6 +24,7 @@ from fbposter.db.models import (
 
 from .. import theme
 from ..widgets import card, clear, replace_at
+from .compose import pictures_only
 
 STATE_COLOURS = {
     "done": "SUCCESS",
@@ -258,6 +259,8 @@ class QueueView(QWidget):
             when = f"{when} · {self._schedule_name(task.schedule_id, schedule_names)}"
         flat = " ".join(task.body.split())
         snippet = flat[:SNIPPET_CHARS] + ("…" if len(flat) > SNIPPET_CHARS else "")
+        if not snippet and task.media_paths:
+            snippet = pictures_only(len(task.media_paths))
         title = QLabel(f"{when} — {snippet}")
         title.setStyleSheet("font-weight: 600;")
         title.setWordWrap(True)
