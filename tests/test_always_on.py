@@ -135,6 +135,69 @@ class TestFailuresAreSaid:
         assert run.calls == []
 
 
+class FakeElevate:
+    def __init__(self, returncode=0, raises=None) -> None:
+        self.returncode = returncode
+        self.raises = raises
+        self.calls: list[list[str]] = []
+
+    def __call__(self, command, timeout):
+        self.calls.append(list(command))
+        if self.raises is not None:
+            raise self.raises
+        return self.returncode
+
+
+class TestAdministratorRightsWhenWindowsRefuses:
+    """The installer runs elevated, so the logon task it registers can be read
+    by the user but not deleted. Unticking "Start with Windows" failed on that,
+    and the box ticked itself straight back. The script now says so with its
+    own exit code, and the change is run again with administrator rights."""
+
+    def test_a_refusal_is_run_again_as_administrator(self):
+        run = FakeRun(returncode=always_on.NEEDS_ADMIN)
+        elevate = FakeElevate(returncode=0)
+        AlwaysOn(run, elevate).set_autostart(False)
+        assert elevate.calls == [run.calls[-1]]
+
+    def test_the_same_change_is_asked_for(self):
+        run = FakeRun(returncode=always_on.NEEDS_ADMIN)
+        elevate = FakeElevate()
+        AlwaysOn(run, elevate).set_autostart(False)
+        call = elevate.calls[0]
+        assert call[call.index("-File") + 2:] == ["-Revert", "-SkipPower"]
+
+    def test_nothing_else_is_ever_elevated(self):
+        """Any other failure is reported, never retried with more rights."""
+        elevate = FakeElevate()
+        with pytest.raises(AlwaysOnError):
+            AlwaysOn(FakeRun(returncode=1), elevate).set_autostart(False)
+        AlwaysOn(FakeRun(returncode=0), elevate).set_autostart(False)
+        assert elevate.calls == []
+
+    def test_saying_no_is_said(self):
+        run = FakeRun(returncode=always_on.NEEDS_ADMIN)
+        elevate = FakeElevate(raises=PermissionError())
+        with pytest.raises(AlwaysOnError, match="administrator permission"):
+            AlwaysOn(run, elevate).set_autostart(False)
+
+    def test_a_failure_even_as_administrator_is_said(self):
+        run = FakeRun(returncode=always_on.NEEDS_ADMIN)
+        elevate = FakeElevate(returncode=1)
+        with pytest.raises(AlwaysOnError, match="even with administrator"):
+            AlwaysOn(run, elevate).set_autostart(False)
+
+    def test_a_prompt_left_unanswered_is_a_failure_not_a_hang(self):
+        run = FakeRun(returncode=always_on.NEEDS_ADMIN)
+        elevate = FakeElevate(raises=TimeoutError())
+        with pytest.raises(AlwaysOnError, match="too long"):
+            AlwaysOn(run, elevate).set_autostart(False)
+
+    def test_the_prompt_gets_longer_than_the_script_does(self):
+        """Someone has to find and answer it."""
+        assert always_on.ELEVATED_TIMEOUT_S > always_on.SCRIPT_TIMEOUT_S
+
+
 class TestTheScript:
     def test_it_ships_where_this_checkout_looks(self):
         assert always_on.script_path() is not None
@@ -195,6 +258,15 @@ class TestTheScript:
         """The app reads the exit code; the installer ignores it."""
         text = always_on.script_path().read_text(encoding="utf-8")
         assert "exit 1" in text
+
+    def test_a_refused_task_removal_has_its_own_exit_code(self):
+        """Judged on the error code, which is the same in every language --
+        never on the message, which Windows translates."""
+        text = always_on.script_path().read_text(encoding="utf-8")
+        revert = text[text.index("if ($Revert) {"):text.index("# --- apply")]
+        assert f"exit {always_on.NEEDS_ADMIN}" in revert
+        assert "HRESULT 0x80070005" in revert
+        assert "if ($denied -eq $failed)" in revert
 
 
 def test_the_inert_one_changes_nothing_and_reads_as_off():

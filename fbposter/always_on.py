@@ -17,10 +17,19 @@ What it reads, and why those are the right things to read:
 Nothing here touches Facebook or Chrome. It does change the machine, which is
 why `App` holds an inert `Inert` until `qtui.app.run()` swaps in the real one:
 a test suite that toggled this would change the power plan of whoever ran it.
+
+**Administrator rights are asked for only when Windows refuses without them.**
+The installer runs elevated, and the logon task it registers can then be read
+by the user but not deleted -- so unticking "Start with Windows" failed, and
+the box ticked itself straight back. The script exits `NEEDS_ADMIN` for exactly
+that refusal, and the change is run once more with administrator rights, which
+Windows asks the user for. They just clicked the box, so the prompt answers
+their own action.
 """
 
 from __future__ import annotations
 
+import ctypes
 import os
 import subprocess
 import sys
@@ -33,6 +42,11 @@ SCRIPT_NAME = "setup_always_on.ps1"
 # Long enough for powercfg on a slow laptop; the script normally takes 2-4s.
 SCRIPT_TIMEOUT_S = 120
 QUERY_TIMEOUT_S = 15
+# The script's exit code when the only thing refused was for want of
+# administrator rights. 1 is every other failure.
+NEEDS_ADMIN = 2
+# Longer than SCRIPT_TIMEOUT_S: the user has to read and answer Windows' prompt.
+ELEVATED_TIMEOUT_S = 300
 
 # No console window flashing up behind the app. Windows only, and 0 elsewhere
 # so importing this on another platform does not fail.
@@ -79,11 +93,88 @@ def app_path() -> str | None:
     return sys.executable if getattr(sys, "frozen", False) else None
 
 
-class AlwaysOn:
-    """The real thing. `run` is the one seam, for the tests of this module."""
+def run_elevated(command: list[str], timeout: float) -> int:
+    """Run `command` with administrator rights and return its exit code.
 
-    def __init__(self, run: Callable[..., subprocess.CompletedProcess] = subprocess.run) -> None:
+    Windows asks the user first. PermissionError if they said no, TimeoutError
+    if the command has not finished within `timeout` seconds.
+
+    ShellExecuteEx with "runas" rather than subprocess, because subprocess
+    cannot elevate. The price is that the elevated process's output cannot be
+    read, so only its exit code comes back.
+    """
+    from ctypes import wintypes
+
+    class ShellExecuteInfo(ctypes.Structure):
+        _fields_ = [
+            ("cbSize", wintypes.DWORD),
+            ("fMask", ctypes.c_ulong),
+            ("hwnd", wintypes.HWND),
+            ("lpVerb", wintypes.LPCWSTR),
+            ("lpFile", wintypes.LPCWSTR),
+            ("lpParameters", wintypes.LPCWSTR),
+            ("lpDirectory", wintypes.LPCWSTR),
+            ("nShow", ctypes.c_int),
+            ("hInstApp", wintypes.HINSTANCE),
+            ("lpIDList", ctypes.c_void_p),
+            ("lpClass", wintypes.LPCWSTR),
+            ("hkeyClass", wintypes.HKEY),
+            ("dwHotKey", wintypes.DWORD),
+            ("hIconOrMonitor", wintypes.HANDLE),
+            ("hProcess", wintypes.HANDLE),
+        ]
+
+    see_mask_nocloseprocess = 0x00000040
+    see_mask_noasync = 0x00000100
+    see_mask_flag_no_ui = 0x00000400
+    sw_hide = 0
+    error_cancelled = 1223
+    wait_timeout = 0x00000102
+
+    shell32 = ctypes.WinDLL("shell32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    shell32.ShellExecuteExW.argtypes = [ctypes.POINTER(ShellExecuteInfo)]
+    shell32.ShellExecuteExW.restype = wintypes.BOOL
+    kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel32.WaitForSingleObject.restype = wintypes.DWORD
+    kernel32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+
+    info = ShellExecuteInfo()
+    info.cbSize = ctypes.sizeof(info)
+    info.fMask = see_mask_nocloseprocess | see_mask_noasync | see_mask_flag_no_ui
+    info.lpVerb = "runas"
+    info.lpFile = command[0]
+    info.lpParameters = subprocess.list2cmdline(command[1:])
+    info.nShow = sw_hide
+    if not shell32.ShellExecuteExW(ctypes.byref(info)):
+        error = ctypes.get_last_error()
+        if error == error_cancelled:
+            raise PermissionError("Administrator permission was not given.")
+        raise ctypes.WinError(error)
+    try:
+        if kernel32.WaitForSingleObject(info.hProcess, int(timeout * 1000)) == wait_timeout:
+            raise TimeoutError
+        code = wintypes.DWORD()
+        if not kernel32.GetExitCodeProcess(info.hProcess, ctypes.byref(code)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return code.value
+    finally:
+        kernel32.CloseHandle(info.hProcess)
+
+
+class AlwaysOn:
+    """The real thing. `run` and `elevate` are the seams, for the tests of
+    this module."""
+
+    def __init__(
+        self,
+        run: Callable[..., subprocess.CompletedProcess] = subprocess.run,
+        elevate: Callable[[list[str], float], int] = run_elevated,
+    ) -> None:
         self._run = run
+        self._elevate = elevate
 
     def status(self) -> Status:
         return Status(self._task_exists(), backup_file().exists())
@@ -120,10 +211,11 @@ class AlwaysOn:
                 "The setup script is missing from this installation. "
                 "Reinstalling the app puts it back."
             )
+        command = ["powershell.exe", "-ExecutionPolicy", "Bypass", "-NoProfile",
+                   "-NonInteractive", "-File", str(script), *args]
         try:
             result = self._run(
-                ["powershell.exe", "-ExecutionPolicy", "Bypass", "-NoProfile",
-                 "-NonInteractive", "-File", str(script), *args],
+                command,
                 capture_output=True, text=True, timeout=SCRIPT_TIMEOUT_S,
                 creationflags=_NO_WINDOW,
             )
@@ -131,8 +223,28 @@ class AlwaysOn:
             raise AlwaysOnError("Windows took too long to answer. Try again.") from exc
         except OSError as exc:
             raise AlwaysOnError(f"Windows would not run the setup: {exc}") from exc
+        if result.returncode == NEEDS_ADMIN:
+            self._script_elevated(command)
+            return
         if result.returncode != 0:
             raise AlwaysOnError(_first_failure(result.stdout, result.stderr))
+
+    def _script_elevated(self, command: list[str]) -> None:
+        """The same run again, with administrator rights, which Windows asks for."""
+        try:
+            code = self._elevate(command, ELEVATED_TIMEOUT_S)
+        except PermissionError as exc:
+            raise AlwaysOnError(
+                "This needs administrator permission, and Windows was not given it."
+            ) from exc
+        except TimeoutError as exc:
+            raise AlwaysOnError("Windows took too long to answer. Try again.") from exc
+        except OSError as exc:
+            raise AlwaysOnError(f"Windows would not run the setup: {exc}") from exc
+        if code != 0:
+            raise AlwaysOnError(
+                "Windows did not accept the change, even with administrator permission."
+            )
 
 
 def _first_failure(stdout: str | None, stderr: str | None) -> str:

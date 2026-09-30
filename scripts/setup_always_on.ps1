@@ -52,6 +52,13 @@
     tell without reading the output. The installer ignores the exit code; the
     app's Settings screen does not.
 
+    Exits 2 instead when the only thing that did not happen was removing the
+    logon task, and Windows refused it for want of administrator rights. The
+    installer runs elevated, and a task it registers can be read by the user
+    but not deleted, so unticking "Start with Windows" in the app hit exactly
+    this. The app answers 2 by asking Windows for administrator rights and
+    running the script again.
+
 .PARAMETER AppPath
     Full path to the packaged FacebookAutoPoster.exe. Supplied by the installer,
     where there is no source checkout and no .venv to find: without it the task
@@ -193,6 +200,8 @@ function Find-Python {
 if ($Revert) {
     Write-Host "`nUndoing the always-on setup." -ForegroundColor Cyan
     $failed = 0
+    # Failures that were Windows refusing for want of administrator rights.
+    $denied = 0
 
     if ($SkipPower) {
         Write-Step "Leaving the power settings as they are."
@@ -229,6 +238,9 @@ if ($Revert) {
                 Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
                 Write-Good "Removed the '$TaskName' logon task."
             } catch {
+                # 0x80070005 is "access denied" in any language; the message
+                # itself is translated, so it is never what is tested.
+                if ($_.FullyQualifiedErrorId -like 'HRESULT 0x80070005,*') { $denied++ }
                 Write-Bad "Could not remove the task: $($_.Exception.Message)"
                 $failed++
             }
@@ -239,6 +251,7 @@ if ($Revert) {
 
     if ($failed -gt 0) {
         Write-Host "`nFinished with $failed problem(s) above.`n" -ForegroundColor Yellow
+        if ($denied -eq $failed) { exit 2 }
         exit 1
     }
     Write-Host "`nDone.`n" -ForegroundColor Cyan
