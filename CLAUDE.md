@@ -11,13 +11,15 @@ Most of this file is a rule that already cost a live bug. They are grouped by wh
 | anything | Repository Status, Architecture, Scope Discipline |
 | `worker.py`, scheduling | Rules for the Worker; Power; Repeating posts; Time |
 | `guards.py`, `recurrence.py`, Publish | "Post anyway"; Repeating posts |
-| `automation/` | Rules for the Automation Engine; Selector Strategy; Non-Interfering Operation |
+| `automation/`, `strings.py` | Rules for the Automation Engine; Selector Strategy; Non-Interfering Operation |
+| `clock.py` | Time |
+| `text.py` | Invisible characters |
 | `chrome.py`, `keepalive.py`, `tabs.py`, `cdp.py`, `session.py` | Handing this to a non-technical user (the keep-alive and stuck-tab rules live there); Playwright is imported lazily; "Never call `browser.close()`" under the tests section |
 | `qtui/` | `fbposter/qtui/CLAUDE.md` — loads on its own when you open a file there, but not from `tests/`: open it before editing a `test_qtui_*` file |
 | `db/`, retention, removing groups | Database rules; the two retentions; Queue retention; Removing a group archives it |
 | tests | How the tests avoid a browser and a real clock |
-| `onboarding.py`, `login.py`, the wizard | Handing this to a non-technical user; Changing which Facebook account it posts as |
-| `always_on.py`, `scripts/` | Power (the Settings half is at its end) |
+| `onboarding.py`, `login.py`, `connection.py`, the wizard | Handing this to a non-technical user; Changing which Facebook account it posts as |
+| `always_on.py`, `power.py`, `scripts/` | Power (the Settings half is at its end) |
 | `packaging/` | `packaging/CLAUDE.md` — loads on its own when you open a file there |
 
 Text that reaches a post also passes Invisible characters and Hebrew, whatever screen it came from.
@@ -53,6 +55,7 @@ python -m venv .venv
 # Phase 4, both safe to run against a real group:
 .\.venv\Scripts\python.exe main.py probe   <group-url>              # resolve selectors; types nothing
 .\.venv\Scripts\python.exe main.py dry-run <group-url> --text "..." # full rehearsal, never clicks Post
+.\.venv\Scripts\python.exe main.py dry-run <group-url> --image a.jpg --image b.jpg  # pictures; --text optional
 ```
 
 ```powershell
@@ -73,7 +76,7 @@ powershell -ExecutionPolicy Bypass -File packaging\build.ps1 -SkipInstaller  # .
 
 `status` exits 0 when logged in, 1 when not, 2 on error (Chrome not running, etc.).
 
-There is no linter or formatter configured, and no pytest config file — the suite is the whole check. Baseline: **1408 tests, 75-170s** — the spread is machine load, not the suite; the Qt GUI files are much of it. A run of *five minutes or more* means something is reaching the network; see the `SilentNamer` note below.
+There is no linter or formatter configured, and no pytest config file — the suite is the whole check. Baseline: **1462 tests, 75-170s** — the spread is machine load, not the suite; the Qt GUI files are much of it. A run of *five minutes or more* means something is reaching the network; see the `SilentNamer` note below.
 
 **Do not add `playwright install`.** It is unnecessary and was verified so against Chrome 150: the app attaches to the user's real Chrome over CDP and never launches Playwright's bundled Chromium, so the driver shipped inside the pip package is all that is required.
 
@@ -105,7 +108,7 @@ Packaging: `packaging/` — `fbposter.spec` (PyInstaller), `installer.iss` (Inno
 
 Automation: `automation/poster.py` (`GroupPoster` — arrive → compose → type → attach → publish → verify, plus the read-only `probe`), `detect.py` (`classify` a page as OK / checkpoint / login / rate-limit / unavailable), `humanize.py` (`Humanizer`: keystroke timing, hovers, arrival scroll, the inter-group gap), `groupinfo.py` (read a group's display name off the `h1` **inside `[role="main"]`**; cosmetic, and must never raise into a caller).
 
-UI: `qtui/app.py` (window, sidebar, connection pill, paused line, worker-event pump, background thread helper), `qtui/views/` (compose, groups, publish, queue — the nav order is the flow; `settings`, at the foot of the sidebar; plus `welcome`, the first-run wizard, which is deliberately not in the sidebar), `qtui/theme.py` (palette + one stylesheet), `qtui/widgets.py` (`card`, `row`, `clear`), `qtui/assets/`.
+UI: `qtui/app.py` (window, sidebar, connection pill, paused line, worker-event pump, background thread helper), `qtui/views/` (compose, groups, publish, queue — the nav order is the flow; `settings`, at the foot of the sidebar; plus `welcome`, the first-run wizard, and `schedule_edit`, which edits one repeating post from its card on Publish — neither is in the sidebar), `qtui/theme.py` (palette + one stylesheet), `qtui/widgets.py` (`card`, `row`, `clear`), `qtui/assets/`.
 
 Storage: `db/` — `connection.py` (per-thread connections), `schema.py` (migrations), `models.py`, `repo.py` (`GroupRepo`, `TemplateRepo`, `TaskRepo`, `ScheduleRepo`, `SettingsRepo`).
 
@@ -136,6 +139,7 @@ A `schedules` row is a **definition**, never a queue entry. When one comes due t
 - **A missed slot is dropped, never fired late.** Same `MISSED_GRACE` as everywhere else. Waking the machine at 19:00 must not fire the 09:00 and 14:00 slots as a burst — that is exactly the activity pattern the schedule exists to avoid.
 - **A schedule never stacks a batch on top of an unfinished one of its own** (`TaskRepo.unfinished_for_schedule`); the occurrence is skipped instead.
 - Resuming a paused schedule recomputes `next_run_at` rather than firing the slot that went by while it was paused.
+- **A schedule can be edited, and an edit changes only the definition** (`ScheduleRepo.update`, the `schedule_edit` view). Every part can change — name, wordings, groups, pictures, times, days — and nothing the worker keeps for itself does: not the state (saving never pauses or resumes), not `run_count` (it rotates the wordings), not `last_run_at`. `next_run_at` moves only when the times or days did, and only for an active schedule; unchanged times keep the slot, which the worker may have advanced since the screen opened. A batch it already queued is an ordinary task and goes out as it was. A group archived since stays in the schedule, because it is not on screen to untick and re-adding it must still resume the post. Saving re-judges the rules with the same `publish.schedule_violations` as creating; only a rule not already in `overrides` is offered as "Post anyway", and one no longer broken is dropped. All of that was the user's choice (2026-09-30).
 - **The per-group cooldown defaults to 8 hours**, lowered from 24 by the user so that two or three posts a day to one group is possible at all. Migration 005 carries that onto databases seeded with the old value, and moves groups still sitting on 24 — but leaves a group the user deliberately set to something else alone. `tests/test_db.py` reads the number off `DEFAULT_SETTINGS` rather than writing it out, so changing it again is a one-line job.
 - `recurrence.preview()` is what warns, before anything is written, that a chosen time sits outside the posting window, that the frequency is inside the per-group cooldown, or that there are too few wordings for the number of groups. Those are the three ways this feature quietly disappoints; none of them block.
 
@@ -245,7 +249,7 @@ Qt shapes text itself and needs none of it. `qtui/views/compose.py` contains **n
 The window's own rules — the flow, redrawing, the Compose preview, the visual rules — are in **`fbposter/qtui/CLAUDE.md`**. What follows is the part that holds for any UI code.
 
 - **Only the main thread touches widgets.** Blocking work goes through a background thread → `queue.Queue` → a pump on the UI thread: `App.run_in_background`, and a `QTimer` driving `App._drain_worker_events`. The posting worker reports progress the same way and never touches a widget itself.
-- **No modal dialogs for status, ever** — use `app.toast`. There are exactly three permitted, and all three share one justification: they can only appear because the user just acted, so the app already has focus and they cannot interrupt anything. One is the media file picker in Compose. The second is `qtui.app.ask_before_closing`, raised only from `closeEvent`, only when `App.unfinished_work()` finds something still due — see the close rule below. The third is the single-instance refusal in `run()`, which exists because the packaged `.exe` has no console for the `print` it used to be. Chrome's native file dialog is a different thing entirely and is never acceptable — see the Photo/video rule below.
+- **No modal dialogs for status, ever** — use `app.toast`. There are exactly three permitted, and all three share one justification: they can only appear because the user just acted, so the app already has focus and they cannot interrupt anything. One is the media file picker, in Compose and on the repeating-post edit screen. The second is `qtui.app.ask_before_closing`, raised only from `closeEvent`, only when `App.unfinished_work()` finds something still due — see the close rule below. The third is the single-instance refusal in `run()`, which exists because the packaged `.exe` has no console for the `print` it used to be. Chrome's native file dialog is a different thing entirely and is never acceptable — see the Photo/video rule below.
 - **Closing the window stops the posting, so it says so first.** The worker is the window's own thread; `closeEvent` stopped it silently, so a daily repeat set up and then closed away simply never ran again with nothing on screen to show it. `App.unfinished_work()` returns a phrase naming what is still due — unfinished batches, active schedules — or `None`, and only a non-`None` answer costs the user a dialog. **The confirmation is injectable (`App(confirm_close=)`) and defaults to the real one**, exactly like `check_fn` and `group_namer`: the GUI suite closes every window it builds, so a real modal would hang the run rather than fail it. It is also skipped entirely while `self.worker is None`, which is every window a test builds.
 - **Compose owns per-group wording, and `body_for()` is the only way to read it.** `_base_body` is the shared text, `_bodies` holds per-group rewrites, `_editing` is the active tab. `body_for()` reads committed state only, so `capture()` must run first — it once returned the live editor contents when that group was active, which handed back the wrong text as soon as `_editing` was assigned before the read. Editing the base clears the rewrites (the user's choice) and toasts, and only when the text genuinely changed — a tab switch must never cost someone their wording.
 - **Anything in a view that reaches for a browser must be injectable, and the shared test App must be given a stub.** The Groups view looks up group names on its own whenever it is shown, and `chrome.probe()` succeeds on any machine with Chrome running — so before `SilentNamer` existed, the GUI suite silently opened real Facebook pages and took nearly three minutes instead of twenty seconds. The `App` takes `check_fn=`, `db=` and `group_namer=` for this reason.
@@ -487,3 +491,9 @@ Never hardcode a UI string outside `strings.py`, and never assert on a literal i
 ## Known Context
 
 Automating posts violates Facebook's Terms of Service. The measures above reduce detection risk but do not eliminate it; this tradeoff is understood and accepted by the user, and is documented in the Known Risks section of `README.md`.
+
+
+## My rules
+All your answers need to be short and clear.
+Never assume anything, if you are not sure about something you ask me.
+Explain technical stuff as simple as you can. 

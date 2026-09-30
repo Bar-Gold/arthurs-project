@@ -689,15 +689,15 @@ class PostingWorker:
             targets.append((group.id, body.strip()))
 
         if stale:
-            # A schedule cannot be edited, so "add another wording" was advice
-            # nobody could follow: the way on is a new one.
+            # The way on is a wording the group has not had, which the post's
+            # own Edit screen can add.
             many = len(stale) != 1
             self.emit(
                 "skipped",
                 f"{schedule.display_name}: {', '.join(stale)} "
                 f"{'have' if many else 'has'} already been sent every wording, so "
                 f"{'they were' if many else 'it was'} left out of this run. To keep "
-                "posting there, start a new repeating post with fresh wordings — "
+                "posting there, edit this repeating post and add a new wording — "
                 "reposting the same text is what gets accounts restricted.",
             )
         if not targets:

@@ -73,6 +73,7 @@ The **connection indicator lives in the sidebar**, not in a screen of its own: i
     *   **Once** — at a single chosen moment, up to a year ahead. Defaults to the current time; the field ignores the mouse wheel and starts on the minutes, so a stray scroll cannot move a post into a different year.
     *   **Repeat** — daily, or on chosen days of the week, at up to three times of day (Israel local, DST-safe).
         *   Several **wordings** per schedule, rotated so no group ever sees the same text twice. Without this the rule in §7 would refuse the second run, and a repeating post would work exactly once.
+        *   **Editable after it is made** — name, wordings, groups, pictures, times and days — from an Edit button on its card. Changes apply from the next run; a batch already queued goes out as it was, and saving never pauses or resumes it.
         *   The Compose text is the first wording; this screen collects alternates.
         *   Pause, resume and delete; the next run is shown before and after creating one.
     *   Warns before creating anything that a time falls outside the posting window, that the frequency is inside the per-group cooldown, or that there are too few wordings for the number of groups.

@@ -100,6 +100,44 @@ STEP_SECONDS = {
 }
 
 
+def schedule_violations(app, rule, group_ids, wordings, history: bool = True):
+    """Every posting rule a schedule would break.
+
+    Shared by creating a repeating post here and editing one on its own
+    screen, so the two can never judge the same schedule differently.
+
+    `history=False` skips each group's last post and past wordings -- a
+    query or two per group -- for the live summary, which runs on every
+    keystroke. The button always judges with them.
+    """
+    targets = []
+    for group_id in group_ids:
+        group = app.group_repo.get(group_id)
+        if group is None:
+            continue
+        targets.append(
+            recurrence.ScheduleTarget(
+                name=group.display_name,
+                last_posted_at=group.last_posted_at if history else None,
+                recent_bodies=(
+                    tuple(app.group_repo.recent_bodies(group.id))
+                    if history else ()
+                ),
+            )
+        )
+    settings = app.settings_repo
+    return recurrence.check_schedule(
+        rule,
+        utcnow(),
+        targets=targets,
+        wordings=wordings if history else (),
+        cooldown_hours=settings.get_int("default_cooldown_hours", 8),
+        window_start_hour=settings.get_int("posting_window_start_hour", 8),
+        window_end_hour=settings.get_int("posting_window_end_hour", 23),
+        daily_cap=settings.get_int("daily_cap", 25),
+    )
+
+
 class ScheduleEntry(QDateTimeEdit):
     """The one-off date picker, with the two ways it went wrong closed off.
 
@@ -886,38 +924,7 @@ class PublishView(QWidget):
         self.summary.setText("\n".join(lines))
 
     def _schedule_violations(self, rule, group_ids, wordings, history: bool = True):
-        """Every posting rule a schedule would break.
-
-        `history=False` skips each group's last post and past wordings -- a
-        query or two per group -- for the live summary, which runs on every
-        keystroke. The button always judges with them.
-        """
-        targets = []
-        for group_id in group_ids:
-            group = self.app.group_repo.get(group_id)
-            if group is None:
-                continue
-            targets.append(
-                recurrence.ScheduleTarget(
-                    name=group.display_name,
-                    last_posted_at=group.last_posted_at if history else None,
-                    recent_bodies=(
-                        tuple(self.app.group_repo.recent_bodies(group.id))
-                        if history else ()
-                    ),
-                )
-            )
-        settings = self.app.settings_repo
-        return recurrence.check_schedule(
-            rule,
-            utcnow(),
-            targets=targets,
-            wordings=wordings if history else (),
-            cooldown_hours=settings.get_int("default_cooldown_hours", 8),
-            window_start_hour=settings.get_int("posting_window_start_hour", 8),
-            window_end_hour=settings.get_int("posting_window_end_hour", 23),
-            daily_cap=settings.get_int("daily_cap", 25),
-        )
+        return schedule_violations(self.app, rule, group_ids, wordings, history)
 
     def _preview(self, rule, group_count: int, variant_count: int, ahead: int = 1):
         settings = self.app.settings_repo
@@ -1050,6 +1057,16 @@ class PublishView(QWidget):
             self.notify(f"{schedule.display_name} resumed.", "success")
         self.refresh_schedules()
 
+    def edit_schedule(self, schedule_id: int) -> bool:
+        """Open the repeating post on its own screen, where all of it can change."""
+        editor = self.app.views["schedule_edit"]
+        if not editor.load(schedule_id):
+            self.notify("That repeating post no longer exists.", "error")
+            self.refresh_schedules()
+            return False
+        self.app.show_view("schedule_edit")
+        return True
+
     def delete_schedule(self, schedule_id: int) -> None:
         schedule = self.app.schedule_repo.get(schedule_id)
         self.app.schedule_repo.delete(schedule_id)
@@ -1091,6 +1108,9 @@ class PublishView(QWidget):
         toggle = QPushButton("Pause" if schedule.active else "Resume")
         toggle.clicked.connect(lambda _c, s=schedule.id: self.toggle_schedule(s))
         header.addWidget(toggle)
+        edit = QPushButton("Edit")
+        edit.clicked.connect(lambda _c, s=schedule.id: self.edit_schedule(s))
+        header.addWidget(edit)
         remove = QPushButton("Delete")
         remove.setObjectName("Link")
         remove.clicked.connect(lambda _c, s=schedule.id: self.delete_schedule(s))

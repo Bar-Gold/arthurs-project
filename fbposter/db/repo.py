@@ -40,6 +40,9 @@ from .models import (
 # must be the same one, or pruning quietly weakens the guard.
 RECENT_BODIES_LIMIT = 20
 
+# "Leave this column as it is", where None already means "clear it".
+KEEP = object()
+
 
 class SettingsRepo:
     def __init__(self, db: Database) -> None:
@@ -877,6 +880,75 @@ class ScheduleRepo:
                 ),
             )
             schedule_id = cursor.lastrowid
+            connection.executemany(
+                "INSERT INTO schedule_targets (schedule_id, group_id, position) "
+                "VALUES (?, ?, ?)",
+                [
+                    (schedule_id, group_id, position)
+                    for position, group_id in enumerate(dict.fromkeys(group_ids))
+                ],
+            )
+
+        stored = self.get(schedule_id)
+        assert stored is not None
+        return stored
+
+    def update(
+        self,
+        schedule_id: int,
+        *,
+        name: str,
+        bodies: Sequence[str],
+        group_ids: Sequence[int],
+        times: Sequence[str],
+        days: Sequence[int] = (),
+        media_paths: Sequence[str] = (),
+        overrides: Iterable[str] = (),
+        next_run_at: datetime | None | object = KEEP,
+    ) -> Schedule:
+        """Rewrite what a schedule posts, where, and when, in one transaction.
+
+        Everything the worker keeps for itself is left alone: the state, so an
+        edit never pauses or resumes anything; run_count, which rotates the
+        wordings; and last_run_at. next_run_at changes only when it is passed,
+        because the caller is the one that knows whether the times moved.
+
+        Batches it has already queued are ordinary tasks with their own text
+        and groups, so they go out as they were; only later runs see this.
+        """
+        cleaned = [b for b in bodies if b.strip()]
+        if not cleaned:
+            raise ValueError("A repeating post needs at least one wording.")
+        if not group_ids:
+            raise ValueError("A repeating post needs at least one group.")
+        if not times:
+            raise ValueError("A repeating post needs at least one time of day.")
+
+        columns = (
+            "name = ?, bodies = ?, media_paths = ?, times = ?, days = ?, overrides = ?"
+        )
+        values: list[Any] = [
+            name,
+            json.dumps(list(cleaned)),
+            json.dumps([str(p) for p in media_paths]),
+            json.dumps(list(times)),
+            json.dumps([int(d) for d in days]),
+            json.dumps(sorted(overrides)),
+        ]
+        if next_run_at is not KEEP:
+            columns += ", next_run_at = ?"
+            values.append(to_iso(next_run_at))
+
+        with self.db.transaction() as connection:
+            cursor = connection.execute(
+                f"UPDATE schedules SET {columns} WHERE id = ?",
+                (*values, schedule_id),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("That repeating post no longer exists.")
+            connection.execute(
+                "DELETE FROM schedule_targets WHERE schedule_id = ?", (schedule_id,)
+            )
             connection.executemany(
                 "INSERT INTO schedule_targets (schedule_id, group_id, position) "
                 "VALUES (?, ?, ?)",

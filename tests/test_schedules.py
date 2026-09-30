@@ -590,3 +590,159 @@ class TestAScheduleWithNothingLeftToPostTo:
         assert "schedule_error" not in seen
         assert schedules.get(made.id).state == SCHEDULE_ACTIVE
 
+
+
+class TestEditingASchedule:
+    """An edit rewrites the definition and nothing the worker keeps for itself.
+
+    State, run_count and last_run_at belong to the worker: an edit that reset
+    run_count would restart the rotation, and one that touched the state would
+    pause or resume a post nobody asked to.
+    """
+
+    @staticmethod
+    def edit(schedules, schedule_id, **changes):
+        fields = dict(
+            name="Bikes",
+            bodies=WORDINGS,
+            group_ids=[],
+            times=["12:00"],
+        )
+        fields.update(changes)
+        return schedules.update(schedule_id, **fields)
+
+    def test_it_rewrites_what_where_and_when(self, repos):
+        groups, _tasks, schedules, _settings = repos
+        one, two, three = add_groups(groups, 3)
+        made = make_schedule(schedules, [one.id, two.id])
+
+        self.edit(
+            schedules,
+            made.id,
+            name="Bikes, edited",
+            bodies=["New one", "New two"],
+            group_ids=[three.id, one.id],
+            times=["09:00", "18:00"],
+            days=[0, 4],
+            media_paths=["C:/pictures/new.jpg"],
+            overrides={"cooldown"},
+        )
+
+        stored = schedules.get(made.id)
+        assert stored.name == "Bikes, edited"
+        assert stored.bodies == ["New one", "New two"]
+        assert stored.group_ids == [three.id, one.id]
+        assert stored.times == ["09:00", "18:00"]
+        assert stored.days == [0, 4]
+        assert stored.media_paths == ["C:/pictures/new.jpg"]
+        assert stored.overrides == frozenset({"cooldown"})
+
+    def test_it_leaves_the_state_and_the_rotation_alone(self, repos):
+        groups, _tasks, schedules, _settings = repos
+        one, _two = add_groups(groups)
+        made = make_schedule(schedules, [one.id])
+        schedules.record_run(made.id, NOON, NOON + timedelta(days=1))
+        schedules.set_state(made.id, SCHEDULE_PAUSED)
+
+        self.edit(schedules, made.id, group_ids=[one.id], bodies=["Other words"])
+
+        stored = schedules.get(made.id)
+        assert stored.state == SCHEDULE_PAUSED
+        assert stored.run_count == 1
+        assert stored.last_run_at == NOON
+
+    def test_the_next_run_is_kept_unless_one_is_given(self, repos):
+        groups, _tasks, schedules, _settings = repos
+        one, _two = add_groups(groups)
+        made = make_schedule(schedules, [one.id], next_run_at=NOON)
+
+        self.edit(schedules, made.id, group_ids=[one.id])
+        assert schedules.get(made.id).next_run_at == NOON
+
+        later = NOON + timedelta(hours=3)
+        self.edit(schedules, made.id, group_ids=[one.id], next_run_at=later)
+        assert schedules.get(made.id).next_run_at == later
+
+    def test_a_group_listed_twice_is_stored_once(self, repos):
+        groups, _tasks, schedules, _settings = repos
+        one, two = add_groups(groups)
+        made = make_schedule(schedules, [one.id])
+        self.edit(schedules, made.id, group_ids=[two.id, one.id, two.id])
+        assert schedules.get(made.id).group_ids == [two.id, one.id]
+
+    @pytest.mark.parametrize(
+        "changes",
+        [
+            {"bodies": ["   "]},
+            {"group_ids": []},
+            {"times": []},
+        ],
+        ids=["no wording", "no group", "no time"],
+    )
+    def test_a_refused_edit_writes_nothing(self, repos, changes):
+        groups, _tasks, schedules, _settings = repos
+        one, _two = add_groups(groups)
+        made = make_schedule(schedules, [one.id])
+        fields = {"group_ids": [one.id], "name": "Changed", **changes}
+
+        with pytest.raises(ValueError):
+            self.edit(schedules, made.id, **fields)
+
+        stored = schedules.get(made.id)
+        assert stored.name == "Bikes"
+        assert stored.bodies == WORDINGS
+        assert stored.group_ids == [one.id]
+
+    def test_a_deleted_schedule_cannot_be_edited(self, db, repos):
+        """And the refusal leaves no orphan group rows behind it."""
+        groups, _tasks, schedules, _settings = repos
+        one, _two = add_groups(groups)
+        made = make_schedule(schedules, [one.id])
+        schedules.delete(made.id)
+
+        with pytest.raises(ValueError):
+            self.edit(schedules, made.id, group_ids=[one.id])
+        assert db.query("SELECT * FROM schedule_targets") == []
+
+    def test_the_next_run_uses_the_edited_wordings_and_groups(self, db, repos):
+        groups, tasks, schedules, _settings = repos
+        one, two = add_groups(groups)
+        made = make_schedule(schedules, [one.id])
+        self.edit(schedules, made.id, group_ids=[two.id], bodies=["Brand new words"])
+
+        make_worker(db).run_once()
+
+        (task,) = tasks.list_recent()
+        (target,) = tasks.targets_for(task.id)
+        assert target.group_id == two.id
+        assert target.body == "Brand new words"
+
+    def test_a_batch_already_queued_keeps_what_it_was_given(self, db, repos):
+        """Only later runs change: the queued batch is an ordinary task, and
+        part of it may already be out."""
+        groups, tasks, schedules, _settings = repos
+        one, two = add_groups(groups)
+        made = make_schedule(schedules, [one.id])
+        make_worker(db).run_once()
+        (task,) = tasks.list_recent()
+        before = [(t.group_id, t.body) for t in tasks.targets_for(task.id)]
+
+        self.edit(schedules, made.id, group_ids=[two.id], bodies=["Brand new words"])
+
+        assert [(t.group_id, t.body) for t in tasks.targets_for(task.id)] == before
+        assert tasks.get(task.id).body == WORDINGS[0]
+
+    def test_running_out_of_wordings_now_points_at_editing(self, db, repos):
+        groups, _tasks, schedules, _settings = repos
+        one, _two = add_groups(groups)
+        make_schedule(schedules, [one.id], bodies=["Only one wording"])
+
+        ticker = Clock()
+        worker = make_worker(db, FakePoster(), ticker)
+        drain(worker)
+        messages(worker)
+        ticker.now = clock.parse_local("2026-08-11 12:00")
+        drain(worker)
+
+        said = " ".join(messages(worker))
+        assert "edit this repeating post and add a new wording" in said

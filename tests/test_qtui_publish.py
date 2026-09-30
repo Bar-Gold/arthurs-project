@@ -406,8 +406,10 @@ class TestTheWindowItself:
     def test_every_view_builds(self, qt_app):
         # "welcome" is built like the rest but deliberately kept out of the
         # sidebar -- setup is something you finish, not a step you return to.
+        # So is "schedule_edit", reached from a repeating post's card.
         assert set(qt_app.views) == {
-            "compose", "publish", "groups", "queue", "settings", "welcome"
+            "compose", "publish", "groups", "queue", "settings", "welcome",
+            "schedule_edit",
         }
 
     def test_the_wizard_is_not_a_sidebar_step(self, qt_app):

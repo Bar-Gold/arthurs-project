@@ -38,6 +38,7 @@ from .views.compose import ComposeView
 from .views.groups import GroupsView
 from .views.publish import PublishView
 from .views.queue import QueueView
+from .views.schedule_edit import ScheduleEditView
 from .views.settings import SettingsView
 from .views.welcome import WelcomeView
 from .widgets import AppStyle, card
@@ -336,6 +337,10 @@ class App(QMainWindow):
         # the first launch are the two ways in.
         self.views["welcome"] = WelcomeView(self)
         self.stack.addWidget(self.views["welcome"])
+        # Not in the sidebar either: it edits one repeating post, and is
+        # reached from that post's card on Publish.
+        self.views["schedule_edit"] = ScheduleEditView(self)
+        self.stack.addWidget(self.views["schedule_edit"])
         column.addWidget(self.stack, 1)
 
         # Status lives here, never in a dialog.
