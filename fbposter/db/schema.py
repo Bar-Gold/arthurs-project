@@ -314,6 +314,23 @@ def _migration_009(connection: sqlite3.Connection) -> None:
     connection.execute("UPDATE groups SET cooldown_hours = ?", (hours,))
 
 
+def _migration_010(connection: sqlite3.Connection) -> None:
+    """Take groups already removed out of the repeating posts that still hold them.
+
+    Removing a group now takes it out of every repeating post, so re-adding it
+    does not restart posting there (the user's choice, 2026-09-30). A group
+    removed before that is still in its posts, and re-adding it would restart
+    exactly what the user no longer wants.
+
+    Only `schedule_targets` is touched. The group row and its posting history
+    stay, because the repeated-text guard reads that history.
+    """
+    connection.execute(
+        "DELETE FROM schedule_targets "
+        "WHERE group_id IN (SELECT id FROM groups WHERE archived = 1)"
+    )
+
+
 # Index i applies when user_version == i, and bumps it to i + 1.
 MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _migration_001,
@@ -325,6 +342,7 @@ MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _migration_007,
     _migration_008,
     _migration_009,
+    _migration_010,
 ]
 
 LATEST_VERSION = len(MIGRATIONS)

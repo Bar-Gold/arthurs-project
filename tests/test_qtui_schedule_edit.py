@@ -285,21 +285,26 @@ class TestWhatItLeavesAlone:
             (groups[0].id, WORDINGS[0]), (groups[1].id, WORDINGS[1])
         ]
 
-    def test_a_group_removed_from_the_list_stays_in_the_post(self, qt_app, groups):
+    def test_a_group_removed_from_the_list_is_out_of_the_post(self, qt_app, groups):
+        """Removing it took it out, and saving must not write it back."""
         schedule = make_schedule(qt_app, [g.id for g in groups])
         qt_app.group_repo.remove(groups[2].id)
         editor = qt_app.views["schedule_edit"]
         editor.load(schedule.id)
 
         assert groups[2].id not in editor._group_boxes
-        assert not editor.removed_note.isHidden()
         editor._group_boxes[groups[0].id].setChecked(False)
         editor.save()
-        assert stored(qt_app, schedule).group_ids == [groups[1].id, groups[2].id]
+        assert stored(qt_app, schedule).group_ids == [groups[1].id]
 
-    def test_no_removed_group_no_note(self, editing):
-        editor, _schedule = editing
-        assert editor.removed_note.isHidden()
+    def test_adding_it_back_leaves_it_unticked(self, qt_app, groups):
+        schedule = make_schedule(qt_app, [g.id for g in groups])
+        qt_app.group_repo.remove(groups[2].id)
+        qt_app.group_repo.add_from_url(groups[2].url)
+        editor = qt_app.views["schedule_edit"]
+        editor.load(schedule.id)
+
+        assert not editor._group_boxes[groups[2].id].isChecked()
 
 
 class TestBackWithoutSaving:

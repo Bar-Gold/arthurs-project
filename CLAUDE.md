@@ -76,7 +76,7 @@ powershell -ExecutionPolicy Bypass -File packaging\build.ps1 -SkipInstaller  # .
 
 `status` exits 0 when logged in, 1 when not, 2 on error (Chrome not running, etc.).
 
-There is no linter or formatter configured, and no pytest config file — the suite is the whole check. Baseline: **1470 tests, 75-170s** — the spread is machine load, not the suite; the Qt GUI files are much of it. A run of *five minutes or more* means something is reaching the network; see the `SilentNamer` note below.
+There is no linter or formatter configured, and no pytest config file — the suite is the whole check. Baseline: **1474 tests, 75-170s** — the spread is machine load, not the suite; the Qt GUI files are much of it. A run of *five minutes or more* means something is reaching the network; see the `SilentNamer` note below.
 
 **Do not add `playwright install`.** It is unnecessary and was verified so against Chrome 150: the app attaches to the user's real Chrome over CDP and never launches Playwright's bundled Chromium, so the driver shipped inside the pip package is all that is required.
 
@@ -139,7 +139,7 @@ A `schedules` row is a **definition**, never a queue entry. When one comes due t
 - **A missed slot is dropped, never fired late.** Same `MISSED_GRACE` as everywhere else. Waking the machine at 19:00 must not fire the 09:00 and 14:00 slots as a burst — that is exactly the activity pattern the schedule exists to avoid.
 - **A schedule never stacks a batch on top of an unfinished one of its own** (`TaskRepo.unfinished_for_schedule`); the occurrence is skipped instead.
 - Resuming a paused schedule recomputes `next_run_at` rather than firing the slot that went by while it was paused.
-- **A schedule can be edited, and an edit changes only the definition** (`ScheduleRepo.update`, the `schedule_edit` view). Every part can change — name, wordings, groups, pictures, times, days — and nothing the worker keeps for itself does: not the state (saving never pauses or resumes), not `run_count` (it rotates the wordings), not `last_run_at`. `next_run_at` moves only when the times or days did, and only for an active schedule; unchanged times keep the slot, which the worker may have advanced since the screen opened. A batch it already queued is an ordinary task and goes out as it was. A group archived since stays in the schedule, because it is not on screen to untick and re-adding it must still resume the post. Saving re-judges the rules with the same `publish.schedule_violations` as creating; only a rule not already in `overrides` is offered as "Post anyway", and one no longer broken is dropped. All of that was the user's choice (2026-09-30).
+- **A schedule can be edited, and an edit changes only the definition** (`ScheduleRepo.update`, the `schedule_edit` view). Every part can change — name, wordings, groups, pictures, times, days — and nothing the worker keeps for itself does: not the state (saving never pauses or resumes), not `run_count` (it rotates the wordings), not `last_run_at`. `next_run_at` moves only when the times or days did, and only for an active schedule; unchanged times keep the slot, which the worker may have advanced since the screen opened. A batch it already queued is an ordinary task and goes out as it was. A removed group is not in the schedule at all (see "Removing a group archives it"), so the screen never writes one back. Saving re-judges the rules with the same `publish.schedule_violations` as creating; only a rule not already in `overrides` is offered as "Post anyway", and one no longer broken is dropped. All of that was the user's choice (2026-09-30).
 - **The per-group cooldown defaults to 8 hours**, lowered from 24 by the user so that two or three posts a day to one group is possible at all. Migration 005 carries that onto databases seeded with the old value, and moves groups still sitting on 24 — but leaves a group the user deliberately set to something else alone. `tests/test_db.py` reads the number off `DEFAULT_SETTINGS` rather than writing it out, so changing it again is a one-line job.
 - `recurrence.preview()` is what warns, before anything is written, that a chosen time sits outside the posting window, that the frequency is inside the per-group cooldown, or that there are too few wordings for the number of groups. Those are the three ways this feature quietly disappoints; none of them block.
 
@@ -213,13 +213,18 @@ warning, and the app's main protection against a restriction silently off.
   `recent_bodies`, so that wording goes on being refused to that group whether
   or not anyone ever learns what the admin did with it.
 - **`add_from_url` un-archives**, so pasting the link again is the undo, and it
-  brings the history back with it. The Groups screen says so, because the user
+  brings the history back with it — but not its place in repeating posts. The Groups screen says so, because the user
   is otherwise about to wonder why the repeat guard already knows this group.
-- **A schedule keeps the archived group's id** rather than losing the row to a
-  cascade, so re-adding resumes it unchanged. A schedule left with *no* usable
-  groups is paused and reported, like one with an unusable repeat rule —
-  otherwise it comes round two or three times a day for ever, posts nothing and
-  says nothing.
+- **Removing a group takes it out of every repeating post, and re-adding it
+  does not put it back** — the user's choice (2026-09-30), reversing the earlier
+  "re-adding resumes it". `GroupRepo.remove` deletes its `schedule_targets` rows
+  in the same transaction as the archive, and returns how many posts it left so
+  the Groups screen can say so. Migration 010 did the same for groups removed
+  before. To post there again, the user ticks it on the post's Edit screen. The
+  worker's `active()` check in `_fire_schedule` stays as a second line. A
+  schedule left with *no* groups is paused and reported, like one with an
+  unusable repeat rule — otherwise it comes round two or three times a day for
+  ever, posts nothing and says nothing.
 - A batch queued before the removal marks that target failed at posting time
   ("Group was removed.") and carries on to the rest, which is what it did when
   the row vanished.

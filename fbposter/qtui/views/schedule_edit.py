@@ -5,15 +5,16 @@ post back into Compose, Groups and Publish: those three hold whatever the user
 is writing next, and editing a repeating post must not cost them that draft.
 
 Everything a repeating post is made of can change here -- name, wordings,
-groups, pictures, times and days. Three things deliberately do not:
+groups, pictures, times and days. Two things deliberately do not:
 
 * **Paused or active.** Saving never pauses or resumes; that stays the card's
   Pause/Resume button.
 * **A batch it has already queued.** That is an ordinary task with its own text
   and groups, possibly half posted, so it goes out as it was. Changes apply
   from the next run.
-* **A group removed from the Groups list.** The post keeps it, exactly as it
-  did before editing existed, so adding the group back resumes posting there.
+
+A group removed from the Groups list is not here at all: removing it took it
+out of every repeating post (`GroupRepo.remove`).
 
 Saving judges the rules exactly as creating does (`publish.schedule_violations`),
 but only a rule the post did not already have "Post anyway" for is offered
@@ -76,8 +77,8 @@ class ScheduleEditView(QWidget):
         super().__init__()
         self.app = app
         self.schedule_id: int | None = None
-        # The post as it was loaded: its groups' order, the removed groups it
-        # keeps, and the rule it had, so Save can tell what moved.
+        # The post as it was loaded: its groups' order and the rule it had, so
+        # Save can tell what moved.
         self._loaded = None
         self._loading = False
         self._wordings: list[QTextEdit] = []
@@ -154,11 +155,6 @@ class ScheduleEditView(QWidget):
         self.group_box.setSpacing(theme.PAD_XS)
         groups_layout.addLayout(self.group_box)
         column.addWidget(groups_card)
-
-        self.removed_note = QLabel("")
-        self.removed_note.setObjectName("Muted")
-        self.removed_note.setWordWrap(True)
-        column.addWidget(self.removed_note)
         column.addSpacing(theme.PAD_S)
 
         pictures_header = QHBoxLayout()
@@ -323,7 +319,6 @@ class ScheduleEditView(QWidget):
                 self.add_wording(body)
 
             active = self.app.group_repo.list()
-            active_ids = {group.id for group in active}
             clear(self.group_box)
             self._group_boxes = {}
             for group in active:
@@ -336,16 +331,6 @@ class ScheduleEditView(QWidget):
                 note = QLabel("No groups yet — add them on the Groups screen.")
                 note.setObjectName("Muted")
                 self.group_box.addWidget(note)
-            removed = [g for g in schedule.group_ids if g not in active_ids]
-            self.removed_note.setVisible(bool(removed))
-            self.removed_note.setText(
-                f"It also includes {len(removed)} group"
-                f"{'s' if len(removed) != 1 else ''} you removed from the Groups "
-                "list. Saving keeps "
-                f"{'them' if len(removed) != 1 else 'it'}: add "
-                f"{'them' if len(removed) != 1 else 'it'} back there and this "
-                "post goes on posting there."
-            )
 
             self._pictures = list(schedule.media_paths)
             self._render_pictures()
@@ -410,15 +395,12 @@ class ScheduleEditView(QWidget):
         """What the post will hold: its old order first, new groups after.
 
         Keeping the old order keeps the rotation where it was -- the position
-        is part of which wording a group gets next -- and a removed group the
-        post still holds is carried over, since it is not on screen to untick.
+        is part of which wording a group gets next. Only ticked groups are
+        kept, and only groups on the list can be ticked, so a group removed
+        from the list is never written back into the post.
         """
         ticked = self.ticked_group_ids()
-        on_screen = set(self._group_boxes)
-        kept = [
-            gid for gid in self._loaded.group_ids
-            if gid in ticked or gid not in on_screen
-        ]
+        kept = [gid for gid in self._loaded.group_ids if gid in ticked]
         return kept + [gid for gid in ticked if gid not in kept]
 
     # -- pictures ----------------------------------------------------------

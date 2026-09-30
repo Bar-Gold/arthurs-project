@@ -923,3 +923,39 @@ class TestNamesReadFromTheWrongHeadingAreRepaired:
             assert got["identifier"] == "g1"
         finally:
             raw.close()
+
+
+class TestGroupsRemovedEarlierLeaveTheirRepeatingPosts:
+    """Removing a group now takes it out of every repeating post. Migration 010
+    does the same for groups removed before that, so re-adding one does not
+    restart posting there."""
+
+    def test_only_removed_groups_are_taken_out(self):
+        from fbposter.db import schema
+
+        raw = sqlite3.connect(":memory:", isolation_level=None)
+        try:
+            for index in range(9):
+                schema.MIGRATIONS[index](raw)
+            raw.execute(
+                "INSERT INTO groups (identifier, url, name, archived, created_at) "
+                "VALUES ('kept', 'u1', '', 0, '2026-09-01'), "
+                "('gone', 'u2', '', 1, '2026-09-01')"
+            )
+            raw.execute(
+                "INSERT INTO schedules (name, created_at) VALUES ('Bikes', '2026-09-01')"
+            )
+            raw.execute(
+                "INSERT INTO schedule_targets (schedule_id, group_id, position) "
+                "VALUES (1, 1, 0), (1, 2, 1)"
+            )
+            schema._migration_010(raw)
+            left = [
+                row[0]
+                for row in raw.execute("SELECT group_id FROM schedule_targets")
+            ]
+            assert left == [1]
+            # The group row, and with it the history the repeat guard reads, stays.
+            assert raw.execute("SELECT COUNT(*) FROM groups").fetchone()[0] == 2
+        finally:
+            raw.close()

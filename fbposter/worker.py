@@ -673,7 +673,9 @@ class PostingWorker:
         stale: list[str] = []
         for position, group_id in enumerate(schedule.group_ids):
             group = self.groups.active(group_id)
-            if group is None:  # removed since the schedule was made
+            if group is None:
+                # Removing a group takes it out of its schedules, so this is a
+                # second line, not the rule: never post to a removed group.
                 continue
             # Rotating by run_count as well as position is what stops one
             # wording going to every group at once, run after run.
@@ -702,9 +704,11 @@ class PostingWorker:
             )
         if not targets:
             if not stale:
-                # Every group has been removed. Left active it would come round
-                # two or three times a day for ever, post nothing and say
-                # nothing -- so it is paused, like an unusable repeat rule.
+                # Every group has been removed, and removing a group takes it
+                # out of the schedule, so none are left. Left active it would
+                # come round two or three times a day for ever, post nothing
+                # and say nothing -- so it is paused, like an unusable repeat
+                # rule.
                 self.schedules.set_state(schedule.id, SCHEDULE_PAUSED)
                 self.emit(
                     "schedule_error",

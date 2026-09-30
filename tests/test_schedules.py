@@ -188,17 +188,30 @@ class TestScheduleStorage:
             schedules.create(name="x", bodies=WORDINGS, group_ids=[], times=["09:00"])
         assert schedules.list() == []
 
-    def test_removing_a_group_leaves_its_schedule_rows_alone(self, repos):
-        """This asserted the cascade until removing a group started archiving
-        it instead. The schedule keeps the id; the worker is what declines to
-        post to an archived group, so re-adding it resumes the schedule
-        unchanged rather than silently dropping a recipient for ever.
-        """
+    def test_removing_a_group_takes_it_out_of_its_schedules(self, repos):
+        """The user's choice (2026-09-30): a removed group leaves every
+        repeating post, rather than staying in it to resume when re-added."""
+        groups, _tasks, schedules, _settings = repos
+        one, two = add_groups(groups)
+        made = make_schedule(schedules, [one.id, two.id])
+        other = make_schedule(schedules, [one.id])
+        assert groups.remove(one.id) == 2
+        assert schedules.get(made.id).group_ids == [two.id]
+        assert schedules.get(other.id).group_ids == []
+
+    def test_adding_it_back_does_not_put_it_back_in(self, repos):
         groups, _tasks, schedules, _settings = repos
         one, two = add_groups(groups)
         made = make_schedule(schedules, [one.id, two.id])
         groups.remove(one.id)
-        assert schedules.get(made.id).group_ids == [one.id, two.id]
+        groups.add_from_url(one.url)
+        assert schedules.get(made.id).group_ids == [two.id]
+
+    def test_removing_a_group_in_no_schedule_counts_none(self, repos):
+        groups, _tasks, schedules, _settings = repos
+        one, two = add_groups(groups)
+        make_schedule(schedules, [two.id])
+        assert groups.remove(one.id) == 0
 
     def test_due_returns_only_active_schedules(self, repos):
         groups, _tasks, schedules, _settings = repos
@@ -375,10 +388,12 @@ class TestFiring:
         assert "schedule_error" in kinds(worker)
 
     def test_a_removed_group_is_skipped_not_fatal(self, db, repos):
+        """remove() takes the group out of the schedule, so this archives it
+        behind the repository's back to reach the worker's own check."""
         groups, tasks, schedules, _settings = repos
         one, two = add_groups(groups)
         make_schedule(schedules, [one.id, two.id])
-        groups.remove(two.id)
+        db.write("UPDATE groups SET archived = 1 WHERE id = ?", (two.id,))
 
         make_worker(db).run_once()
         queued = tasks.list_recent()[0]
@@ -536,10 +551,9 @@ class TestScheduledBatchesGoThroughTheNormalPath:
 
 
 class TestAScheduleWithNothingLeftToPostTo:
-    """Removing a group no longer deletes it, so `schedule_targets` no longer
-    cascades away with it and a schedule can be left pointing only at groups
-    the user has taken off the list. Left active it would come round two or
-    three times a day for ever, post nothing, and say nothing.
+    """Removing a group takes it out of every schedule, so removing all of a
+    schedule's groups leaves it with none. Left active it would come round two
+    or three times a day for ever, post nothing, and say nothing.
     """
 
     def test_it_is_paused_rather_than_firing_into_the_void(self, db, repos):

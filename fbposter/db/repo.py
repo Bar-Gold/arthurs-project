@@ -196,7 +196,7 @@ class GroupRepo:
         assert stored is not None
         return stored
 
-    def remove(self, group_id: int) -> None:
+    def remove(self, group_id: int) -> int:
         """Take a group out of the list without destroying what went to it.
 
         This was a DELETE, and `task_targets.group_id` is ON DELETE CASCADE --
@@ -211,8 +211,18 @@ class GroupRepo:
         Archiving hides the row and keeps the history. `list()` already
         excludes archived groups, so the screens need no change; `add_from_url`
         un-archives, so pasting the URL again is the undo.
+
+        It also takes the group out of every repeating post, and adding it back
+        does not put it back in: that is the user's choice (2026-09-30). A
+        removed group used to stay in the post and resume the moment it was
+        re-added. Returns how many repeating posts it was taken out of.
         """
-        self.db.write("UPDATE groups SET archived = 1 WHERE id = ?", (group_id,))
+        with self.db.transaction() as connection:
+            connection.execute("UPDATE groups SET archived = 1 WHERE id = ?", (group_id,))
+            cursor = connection.execute(
+                "DELETE FROM schedule_targets WHERE group_id = ?", (group_id,)
+            )
+        return cursor.rowcount
 
     def active(self, group_id: int) -> "Group | None":
         """The group, but only if it is still in the user's list.

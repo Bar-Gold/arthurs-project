@@ -111,6 +111,15 @@ class TestAddingAndRemoving:
         assert group_id not in qt_app.selected_group_ids()
         assert group_id not in qt_app.selected_groups
 
+    def test_removing_a_group_says_it_left_its_repeating_posts(self, qt_app, groups_view):
+        """Adding the group back does not undo that, so it is said now."""
+        group_id = qt_app.group_repo.list()[0].id
+        qt_app.schedule_repo.create(
+            name="Bikes", bodies=["one", "two"], group_ids=[group_id], times=["09:00"]
+        )
+        groups_view.remove_group(group_id)
+        assert "taken out of 1 repeating post." in qt_app.toast_label.text()
+
 
 class TestTheFlowBetweenScreens:
     def test_the_sidebar_reads_in_flow_order(self, qt_app):

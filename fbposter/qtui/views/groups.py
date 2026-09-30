@@ -197,10 +197,19 @@ class GroupsView(QWidget):
         return True
 
     def remove_group(self, group_id: int) -> None:
-        self.app.group_repo.remove(group_id)
+        taken_out = self.app.group_repo.remove(group_id)
         self.app.set_group_selected(group_id, False)
         self.refresh()
-        self.notify("Group removed. Paste its link again to bring it back.", "info")
+        if taken_out:
+            # Said here because adding the group back does not undo it.
+            self.notify(
+                f"Group removed, and taken out of {taken_out} repeating "
+                f"post{'s' if taken_out != 1 else ''}. Paste its link again to "
+                "bring it back to the list.",
+                "info",
+            )
+        else:
+            self.notify("Group removed. Paste its link again to bring it back.", "info")
 
     # -- names -------------------------------------------------------------
     def look_up_missing_names(self) -> None:
