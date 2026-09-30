@@ -110,7 +110,7 @@ TOAST_COLOURS = {
 
 
 class App(QMainWindow):
-    """Same seams as the Tk App: check_fn, db and group_namer are injectable.
+    """check_fn, db, group_namer and confirm_close are injectable.
 
     Constructing one deliberately does not start the posting worker; only
     start_worker() does, which is what lets a test build a window without a
@@ -124,9 +124,10 @@ class App(QMainWindow):
                  group_namer=None, confirm_close=None) -> None:
         super().__init__()
         self._check_fn = check_fn
-        # Inert unless supplied, like check_fn and group_namer: the real one
-        # opens a modal dialog, and a suite that popped one would hang rather
-        # than fail.
+        # The real one by default, which opens a modal dialog. closeEvent asks
+        # only while a worker is attached, which a test window does not have
+        # unless it adds one -- and then it passes a stub here, or detaches the
+        # worker before closing, since a real dialog would hang the suite.
         self._confirm_close = confirm_close if confirm_close is not None else ask_before_closing
         self.worker: PostingWorker | None = None
         self.worker_events: "queue.Queue" = queue.Queue()
