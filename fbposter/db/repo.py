@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from datetime import datetime, timedelta
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, NamedTuple, Sequence
 
 from ..errors import DuplicateGroup, InvalidGroupURL
 from ..groups import parse_group_url
@@ -22,7 +22,9 @@ from .models import (
     TARGET_DONE,
     TARGET_PENDING,
     TARGET_RUNNING,
+    TARGET_SKIPPED,
     TASK_CANCELLED,
+    TASK_DONE,
     TASK_PENDING,
     TASK_RUNNING,
     Group,
@@ -42,6 +44,16 @@ RECENT_BODIES_LIMIT = 20
 
 # "Leave this column as it is", where None already means "clear it".
 KEEP = object()
+
+# What a queued post records for a group the user removed before its turn.
+GROUP_REMOVED = "Group was removed."
+
+
+class Removal(NamedTuple):
+    """What removing a group took it out of, for the Groups screen to say."""
+
+    schedules: int
+    batches: int
 
 
 class SettingsRepo:
@@ -196,7 +208,7 @@ class GroupRepo:
         assert stored is not None
         return stored
 
-    def remove(self, group_id: int) -> int:
+    def remove(self, group_id: int) -> Removal:
         """Take a group out of the list without destroying what went to it.
 
         This was a DELETE, and `task_targets.group_id` is ON DELETE CASCADE --
@@ -212,17 +224,60 @@ class GroupRepo:
         excludes archived groups, so the screens need no change; `add_from_url`
         un-archives, so pasting the URL again is the undo.
 
-        It also takes the group out of every repeating post, and adding it back
-        does not put it back in: that is the user's choice (2026-09-30). A
-        removed group used to stay in the post and resume the moment it was
-        re-added. Returns how many repeating posts it was taken out of.
+        It also takes the group out of every repeating post and every queued
+        post still to go out, and adding it back puts it in neither: the user's
+        choice (2026-09-30 and 2026-10-01). A removed group used to stay in both
+        and be posted to again the moment it was re-added.
+
+        In a queued post only a *pending* turn is taken: one already running is
+        mid-post and cannot be taken back. The turn is marked skipped rather
+        than deleted, so the Queue says what became of it, and the conditional
+        state is what stops this racing the worker's `claim_target`. A queued
+        post left with nothing to do is finished here rather than at its time:
+        cancelled if it never started, done if it did, as the worker would.
         """
+        unfinished = (TASK_PENDING, TASK_RUNNING)
         with self.db.transaction() as connection:
             connection.execute("UPDATE groups SET archived = 1 WHERE id = ?", (group_id,))
-            cursor = connection.execute(
+            schedules = connection.execute(
                 "DELETE FROM schedule_targets WHERE group_id = ?", (group_id,)
+            ).rowcount
+
+            in_unfinished = "task_id IN (SELECT id FROM tasks WHERE state IN (?, ?))"
+            batches = [
+                row["task_id"]
+                for row in connection.execute(
+                    "SELECT DISTINCT task_id FROM task_targets "
+                    f"WHERE group_id = ? AND state = ? AND {in_unfinished}",
+                    (group_id, TARGET_PENDING, *unfinished),
+                )
+            ]
+            connection.execute(
+                "UPDATE task_targets SET state = ?, error = ? "
+                f"WHERE group_id = ? AND state = ? AND {in_unfinished}",
+                (TARGET_SKIPPED, GROUP_REMOVED, group_id, TARGET_PENDING, *unfinished),
             )
-        return cursor.rowcount
+
+            for task_id in batches:
+                left = connection.execute(
+                    "SELECT COUNT(*) FROM task_targets WHERE task_id = ? AND state IN (?, ?)",
+                    (task_id, TARGET_PENDING, TARGET_RUNNING),
+                ).fetchone()[0]
+                if left:
+                    continue
+                task = connection.execute(
+                    "SELECT started_at FROM tasks WHERE id = ?", (task_id,)
+                ).fetchone()
+                state, error = (
+                    (TASK_DONE, "") if task["started_at"]
+                    else (TASK_CANCELLED, "Every group in it was removed.")
+                )
+                connection.execute(
+                    "UPDATE tasks SET state = ?, error = ?, finished_at = ?, "
+                    "resume_at = NULL WHERE id = ?",
+                    (state, error, to_iso(utcnow()), task_id),
+                )
+        return Removal(schedules=schedules, batches=len(batches))
 
     def active(self, group_id: int) -> "Group | None":
         """The group, but only if it is still in the user's list.

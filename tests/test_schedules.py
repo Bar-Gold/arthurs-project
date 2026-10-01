@@ -195,7 +195,7 @@ class TestScheduleStorage:
         one, two = add_groups(groups)
         made = make_schedule(schedules, [one.id, two.id])
         other = make_schedule(schedules, [one.id])
-        assert groups.remove(one.id) == 2
+        assert groups.remove(one.id).schedules == 2
         assert schedules.get(made.id).group_ids == [two.id]
         assert schedules.get(other.id).group_ids == []
 
@@ -211,7 +211,7 @@ class TestScheduleStorage:
         groups, _tasks, schedules, _settings = repos
         one, two = add_groups(groups)
         make_schedule(schedules, [two.id])
-        assert groups.remove(one.id) == 0
+        assert groups.remove(one.id).schedules == 0
 
     def test_due_returns_only_active_schedules(self, repos):
         groups, _tasks, schedules, _settings = repos

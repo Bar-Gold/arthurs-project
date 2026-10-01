@@ -28,7 +28,7 @@ Text that reaches a post also passes Invisible characters and Hebrew, whatever s
 
 **All five phases are done; v1 is feature-complete.** Chrome debug-profile launcher and CDP session (1), the UI (2; CustomTkinter then, Qt now), SQLite persistence and the safety guards (3), the automation engine in `fbposter/automation/` (4), and the scheduler/worker in `fbposter/worker.py` (5).
 
-**The app now posts on its own.** Opening the GUI starts the worker, and any due batch will go out. `README.md` holds the full spec. Per-group text editing, the Compose preview, the Qt rewrite and **repeating posts** all shipped after v1; the content-variation warning is now actionable, so it should be rare rather than constant. Since then: a post a group holds for an admin is tracked as its own outcome and resolved by the app itself (`TARGET_AWAITING_APPROVAL` and `_follow_up_pending`, see the Worker rules), a dropped Chrome connection defers a batch instead of throwing it away, and `scripts/setup_always_on.ps1` covers the laptop that has to post with its lid shut (see Power). Removing a group archives it rather than deleting its posting history out from under the repeat guard, and closing the window warns when doing so would strand a queued batch or an active schedule. Later still: "Post anyway" (see its section), a Chrome that restarts itself and closes a stuck tab, a Settings screen (pause, the posting rules, the account switch, start with Windows and keep awake), posts of pictures with no text, editing a repeating post after it is made, and the old Tk window removed. Most recently, removing a group also takes it out of every repeating post.
+**The app now posts on its own.** Opening the GUI starts the worker, and any due batch will go out. `README.md` holds the full spec. Per-group text editing, the Compose preview, the Qt rewrite and **repeating posts** all shipped after v1; the content-variation warning is now actionable, so it should be rare rather than constant. Since then: a post a group holds for an admin is tracked as its own outcome and resolved by the app itself (`TARGET_AWAITING_APPROVAL` and `_follow_up_pending`, see the Worker rules), a dropped Chrome connection defers a batch instead of throwing it away, and `scripts/setup_always_on.ps1` covers the laptop that has to post with its lid shut (see Power). Removing a group archives it rather than deleting its posting history out from under the repeat guard, and closing the window warns when doing so would strand a queued batch or an active schedule. Later still: "Post anyway" (see its section), a Chrome that restarts itself and closes a stuck tab, a Settings screen (pause, the posting rules, the account switch, start with Windows and keep awake), posts of pictures with no text, editing a repeating post after it is made, and the old Tk window removed. Most recently, removing a group also takes it out of every repeating and queued post.
 
 **It is now shipped, not just run.** The app is packaged as an installer for a non-technical client: a first-run wizard replaces the terminal commands the app used to print, and `packaging/` builds a signed-nothing-but-working `Setup.exe`. The wizard also owns the one thing a finished setup might still need changing — which Facebook account it posts as. See "Handing this to a non-technical user".
 
@@ -76,7 +76,7 @@ powershell -ExecutionPolicy Bypass -File packaging\build.ps1 -SkipInstaller  # .
 
 `status` exits 0 when logged in, 1 when not, 2 on error (Chrome not running, etc.).
 
-There is no linter or formatter configured, and no pytest config file — the suite is the whole check. Baseline: **1474 tests, 75-170s** — the spread is machine load, not the suite; the Qt GUI files are much of it. A run of *five minutes or more* means something is reaching the network; see the `SilentNamer` note below.
+There is no linter or formatter configured, and no pytest config file — the suite is the whole check. Baseline: **1481 tests, 75-170s** — the spread is machine load, not the suite; the Qt GUI files are much of it. A run of *five minutes or more* means something is reaching the network; see the `SilentNamer` note below.
 
 **Do not add `playwright install`.** It is unnecessary and was verified so against Chrome 150: the app attaches to the user's real Chrome over CDP and never launches Playwright's bundled Chromium, so the driver shipped inside the pip package is all that is required.
 
@@ -213,21 +213,30 @@ warning, and the app's main protection against a restriction silently off.
   `recent_bodies`, so that wording goes on being refused to that group whether
   or not anyone ever learns what the admin did with it.
 - **`add_from_url` un-archives**, so pasting the link again is the undo, and it
-  brings the history back with it — but not its place in repeating posts. The Groups screen says so, because the user
-  is otherwise about to wonder why the repeat guard already knows this group.
-- **Removing a group takes it out of every repeating post, and re-adding it
-  does not put it back** — the user's choice (2026-09-30), reversing the earlier
-  "re-adding resumes it". `GroupRepo.remove` deletes its `schedule_targets` rows
-  in the same transaction as the archive, and returns how many posts it left so
-  the Groups screen can say so. Migration 010 did the same for groups removed
-  before. To post there again, the user ticks it on the post's Edit screen. The
-  worker's `active()` check in `_fire_schedule` stays as a second line. A
-  schedule left with *no* groups is paused and reported, like one with an
-  unusable repeat rule — otherwise it comes round two or three times a day for
-  ever, posts nothing and says nothing.
-- A batch queued before the removal marks that target failed at posting time
-  ("Group was removed.") and carries on to the rest, which is what it did when
-  the row vanished.
+  brings the history back with it — but not its place in any repeating or
+  queued post. The Groups screen says so, because the user is otherwise about to
+  wonder why the repeat guard already knows this group.
+- **Removing a group takes it out of every repeating post and every queued
+  post, and re-adding it puts it back in neither** — the user's choice
+  (2026-09-30 for repeating, 2026-10-01 for queued), reversing the earlier
+  "re-adding resumes it". All of it happens in the one transaction that
+  archives the group, and `GroupRepo.remove` returns a `Removal` (how many of
+  each) so the Groups screen can say what it was taken out of.
+  - Repeating: its `schedule_targets` rows are deleted. Migration 010 did the
+    same for groups removed before. To post there again, the user ticks it on
+    the post's Edit screen. A schedule left with *no* groups is paused and
+    reported when it next comes due, like one with an unusable repeat rule —
+    otherwise it comes round two or three times a day for ever, posts nothing
+    and says nothing.
+  - Queued: every `pending` turn in an unfinished batch is marked `skipped`
+    with `GROUP_REMOVED` ("Group was removed."), not deleted, so the Queue says
+    what became of it. A `running` turn is mid-post and is left alone. The
+    `WHERE state = 'pending'` is what stops this racing `claim_target`. A batch
+    left with nothing to do is finished on the spot: `cancelled` ("Every group
+    in it was removed.") if it never started, `done` if it had, as the worker
+    would have recorded. Finished batches are history and are not touched.
+  - The worker's `active()` checks in `_attempt` and `_fire_schedule` stay as a
+    second line; `_attempt` records the same `skipped` / `GROUP_REMOVED`.
 
 ### Database rules
 

@@ -32,7 +32,7 @@ from fbposter.db.models import (
     TASK_RUNNING,
     from_iso,
 )
-from fbposter.db.repo import GroupRepo, SettingsRepo, TaskRepo
+from fbposter.db.repo import GROUP_REMOVED, GroupRepo, SettingsRepo, TaskRepo
 from fbposter.errors import AutomationHalted, ConnectionFailed, PostNotVerified
 from fbposter.power import SleepBlocker
 from fbposter.worker import (
@@ -1559,25 +1559,108 @@ class TestASweepCannotRunAway:
 class TestAGroupTakenOffTheListIsNotPostedTo:
     """Removing a group archives it rather than deleting it, so its history
     survives for the repeated-text guard. The row surviving must not mean the
-    post still goes out: before archiving, a removed group was simply gone and
-    the target failed, and that is the behaviour to keep.
+    post still goes out.
+
+    Removing it also takes it out of every queued post there and then, and
+    adding it back does not put it back in (the user's choice, 2026-10-01).
     """
 
-    def test_the_target_fails_and_the_batch_carries_on(self, db, repos):
+    def test_its_turn_is_skipped_and_the_batch_carries_on(self, db, repos):
         groups, tasks, _ = repos
         one, two = add_groups(groups)
         task = tasks.create(BODY, [(one.id, "a"), (two.id, "b")])
 
-        groups.remove(one.id)
+        assert groups.remove(one.id).batches == 1
+        first = tasks.targets_for(task.id)[0]
+        assert (first.state, first.error) == (TARGET_SKIPPED, GROUP_REMOVED)
 
         poster = FakePoster()
         worker = make_worker(db, poster)
         drain(worker)
 
         states = [t.state for t in tasks.targets_for(task.id)]
-        assert states[0] == TARGET_FAILED
-        assert states[1] == TARGET_DONE
+        assert states == [TARGET_SKIPPED, TARGET_DONE]
         assert poster.group_urls == [two.url], "posted to a group the user removed"
+
+    def test_adding_it_back_before_the_post_goes_out_does_not_restore_it(
+        self, db, repos
+    ):
+        groups, tasks, _ = repos
+        one, two = add_groups(groups)
+        later = NOON + timedelta(hours=3)
+        task = tasks.create(BODY, [(one.id, "a"), (two.id, "b")], scheduled_for=later)
+
+        groups.remove(one.id)
+        groups.add_from_url(one.url)
+
+        poster = FakePoster()
+        worker = make_worker(db, poster, Clock(later))
+        drain(worker)
+
+        assert tasks.targets_for(task.id)[0].state == TARGET_SKIPPED
+        assert poster.group_urls == [two.url]
+
+    def test_a_queued_post_left_with_no_groups_is_cancelled_at_once(self, db, repos):
+        groups, tasks, _ = repos
+        (one,) = add_groups(groups, count=1)
+        task = tasks.create(BODY, [(one.id, "a")], scheduled_for=NOON + timedelta(hours=3))
+
+        groups.remove(one.id)
+
+        stored = tasks.get(task.id)
+        assert stored.state == TASK_CANCELLED
+        assert stored.error == "Every group in it was removed."
+        assert tasks.unfinished_count() == 0, "closing the window would still warn"
+
+    def test_a_started_batch_left_with_nothing_to_do_is_done(self, db, repos):
+        """What the worker would have recorded when it got there."""
+        groups, tasks, _ = repos
+        one, two = add_groups(groups)
+        task = tasks.create(BODY, [(one.id, "a"), (two.id, "b")])
+        worker = make_worker(db)
+        drain(worker)  # posts to one, then waits out the gap before two
+        assert tasks.targets_for(task.id)[1].state == TARGET_PENDING
+
+        groups.remove(two.id)
+
+        stored = tasks.get(task.id)
+        assert stored.state == TASK_DONE
+        assert stored.resume_at is None
+
+    def test_a_post_already_under_way_is_left_alone(self, db, repos):
+        """A running turn is mid-post; it cannot be taken back."""
+        groups, tasks, _ = repos
+        (one,) = add_groups(groups, count=1)
+        task = tasks.create(BODY, [(one.id, "a")])
+        target = tasks.targets_for(task.id)[0]
+        tasks.claim_target(target.id)
+
+        assert groups.remove(one.id).batches == 0
+        assert tasks.targets_for(task.id)[0].state == TARGET_RUNNING
+        assert tasks.get(task.id).state != TASK_CANCELLED
+
+    def test_finished_batches_are_history_and_untouched(self, db, repos):
+        groups, tasks, _ = repos
+        (one,) = add_groups(groups, count=1)
+        task = tasks.create(BODY, [(one.id, "a")])
+        tasks.cancel(task.id)
+
+        assert groups.remove(one.id).batches == 0
+        assert tasks.targets_for(task.id)[0].state == TARGET_PENDING
+
+    def test_the_workers_own_check_still_refuses_a_removed_group(self, db, repos):
+        """Archived behind the repository's back, to reach the second line."""
+        groups, tasks, _ = repos
+        one, two = add_groups(groups)
+        task = tasks.create(BODY, [(one.id, "a"), (two.id, "b")])
+        db.write("UPDATE groups SET archived = 1 WHERE id = ?", (one.id,))
+
+        poster = FakePoster()
+        drain(make_worker(db, poster))
+
+        first = tasks.targets_for(task.id)[0]
+        assert (first.state, first.error) == (TARGET_SKIPPED, GROUP_REMOVED)
+        assert poster.group_urls == [two.url]
 
     def test_bringing_it_back_makes_it_postable_again(self, db, repos):
         groups, tasks, _ = repos

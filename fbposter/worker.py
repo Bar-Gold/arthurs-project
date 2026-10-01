@@ -59,7 +59,7 @@ from .db.models import (
     from_iso,
     to_iso,
 )
-from .db.repo import GroupRepo, ScheduleRepo, SettingsRepo, TaskRepo
+from .db.repo import GROUP_REMOVED, GroupRepo, ScheduleRepo, SettingsRepo, TaskRepo
 from .errors import AutomationHalted, ConnectionFailed, PostNotVerified
 from .guards import (
     COOLDOWN,
@@ -750,11 +750,12 @@ class PostingWorker:
 
         # active(), not get(): removing a group archives it now, and a batch
         # queued before the removal must not post to a group the user has
-        # taken out of the list.
+        # taken out of the list. GroupRepo.remove already skips its pending
+        # turns, so this is a second line, recorded the same way.
         group = self.groups.active(target.group_id)
         if group is None:
             self.tasks.mark_target(
-                target.id, TARGET_FAILED, error="Group was removed.", attempted=True
+                target.id, TARGET_SKIPPED, error=GROUP_REMOVED, attempted=True
             )
             return True
 

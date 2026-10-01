@@ -120,6 +120,17 @@ class TestAddingAndRemoving:
         groups_view.remove_group(group_id)
         assert "taken out of 1 repeating post." in qt_app.toast_label.text()
 
+    def test_removing_a_group_says_it_left_its_queued_posts(self, qt_app, groups_view):
+        group_id = qt_app.group_repo.list()[0].id
+        qt_app.schedule_repo.create(
+            name="Bikes", bodies=["one", "two"], group_ids=[group_id], times=["09:00"]
+        )
+        qt_app.task_repo.create("Selling a bike", [(group_id, "Selling a bike")])
+        groups_view.remove_group(group_id)
+        assert (
+            "taken out of 1 repeating post and 1 queued post." in qt_app.toast_label.text()
+        )
+
 
 class TestTheFlowBetweenScreens:
     def test_the_sidebar_reads_in_flow_order(self, qt_app):
