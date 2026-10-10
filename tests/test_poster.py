@@ -8,6 +8,7 @@ never left behind.
 
 from __future__ import annotations
 
+import json
 import random
 from pathlib import Path
 
@@ -15,7 +16,12 @@ import pytest
 
 from fbposter import strings
 from fbposter.automation.humanize import HumanProfile, Humanizer
-from fbposter.automation.poster import GroupPoster, PostRequest, distinctive_snippet
+from fbposter.automation.poster import (
+    GroupPoster,
+    PostRequest,
+    created_post_url,
+    distinctive_snippet,
+)
 from fbposter.errors import AutomationHalted, ComposerNotFound, PostNotVerified
 
 from .fake_page import FakePage
@@ -181,10 +187,10 @@ class TestPicturesOnly:
         assert ("set_input_files", 'role=dialog:None >> input[type="file"]', ("a.png", "b.png")) in page.calls
 
     def test_it_is_not_claimed_as_seen_in_the_feed(self):
-        """Nothing was looked for, so nothing may be reported as found."""
+        """Without Facebook's reply nothing confirms it, so it says so."""
         outcome = self.post(FakePage())
         assert outcome.verified is False
-        assert "not looked up" in outcome.detail
+        assert "could not check that it posted" in outcome.detail
 
     def test_a_leftover_draft_is_still_cleared_first(self):
         """No words to type is not a reason to post whatever was there before."""
@@ -706,3 +712,190 @@ class TestFindingOutWhatBecameOfAPendingPost:
         pending post is never resolved on its own."""
         page = FakePage(body_text=f"{page_text} {BODY}")
         assert make_poster(page).pending_verdict(GROUP_URL, BODY) == "pending"
+
+
+class TestAFailureAfterThePostClick:
+    """Once Post is clicked, the post may be live whatever happens next.
+
+    A timeout while checking used to reach the worker as a plain error, which
+    recorded "Nothing was posted" -- about a post that may well have gone out.
+    """
+
+    POST_CLICK = f"role=dialog:None >> {POST_BUTTON}"
+
+    def test_a_timeout_while_checking_says_it_may_have_gone_out(self):
+        page = FakePage(missing=(f"text={distinctive_snippet(BODY)}",))
+
+        def stalls(url, timeout=0, wait_until=""):
+            raise TimeoutError("Timeout 45000ms exceeded.")
+
+        page.on_click[self.POST_CLICK] = lambda: setattr(page, "goto", stalls)
+        with pytest.raises(PostNotVerified) as caught:
+            make_poster(page).post(request())
+
+        assert caught.value.may_have_posted is True
+        assert "may well have gone out" in str(caught.value)
+        assert "Nothing was posted" not in str(caught.value)
+
+    def test_a_block_after_the_click_still_halts_and_says_it_may_be_out(self):
+        page = FakePage()
+        page.on_click[self.POST_CLICK] = lambda: setattr(
+            page, "url", "https://www.facebook.com/checkpoint/1/"
+        )
+        with pytest.raises(AutomationHalted) as caught:
+            make_poster(page).post(request())
+
+        assert caught.value.may_have_posted is True
+        assert "may have gone out" in str(caught.value)
+
+    def test_a_block_before_the_click_is_not_marked_that_way(self):
+        page = FakePage(redirect_to="https://www.facebook.com/checkpoint/1/")
+        with pytest.raises(AutomationHalted) as caught:
+            make_poster(page).post(request())
+        assert caught.value.may_have_posted is False
+
+    def test_a_failure_before_the_click_is_left_alone(self):
+        with pytest.raises(ComposerNotFound):
+            make_poster(FakePage(missing=NO_COMPOSER)).post(request())
+
+    def test_a_post_window_that_never_closed_is_not_marked_maybe(self):
+        """The post is not in the group and the window never closed: that one
+        really did not go out, and the Queue may say so."""
+        snippet = distinctive_snippet(BODY)
+        page = FakePage(never_detaches=True, missing=(f"text={snippet}",))
+        with pytest.raises(PostNotVerified) as caught:
+            make_poster(page).post(request())
+        assert caught.value.may_have_posted is False
+
+
+def creation_reply(post_id: str = "1746810129710285", url: bool = True) -> str:
+    """Shaped like Facebook's reply read live on 2026-10-07, trimmed."""
+    story = {
+        "id": "UzpfSTEwMDAxMDIyMDcwNzIyNTpWSzoxNzQ2ODEwMTI5NzEwMjg1",
+        "legacy_story_hideable_id": post_id,
+    }
+    if url:
+        story["url"] = f"{GROUP_URL}permalink/{post_id}/"
+    return json.dumps(
+        {
+            "data": {
+                "story_create": {
+                    "story_id": None,
+                    "post_id": None,
+                    "publishing_flow": "FALLBACK",
+                    "story": story,
+                }
+            },
+            "extensions": {},
+        }
+    )
+
+
+class TestReadingFacebooksReply:
+    def test_the_live_shape_gives_the_post_its_link(self):
+        assert created_post_url(creation_reply()) == (
+            f"{GROUP_URL}permalink/1746810129710285/"
+        )
+
+    def test_the_link_is_built_from_the_id_when_there_is_no_url(self):
+        reply = creation_reply("42", url=False)
+        assert created_post_url(reply, GROUP_URL) == f"{GROUP_URL}permalink/42/"
+
+    def test_a_reply_with_no_post_is_nothing(self):
+        refused = json.dumps({"errors": [{"message": "nope"}], "data": None})
+        empty = json.dumps({"data": {"story_create": {"story": None}}})
+        for reply in (refused, empty, "", "not json at all"):
+            assert created_post_url(reply, GROUP_URL) == ""
+
+    def test_the_old_json_guard_prefix_is_read_through(self):
+        assert created_post_url("for (;;);" + creation_reply()).endswith("/1746810129710285/")
+
+
+class TestFacebooksReplyConfirmsThePost:
+    """Every post gets its own id in Facebook's reply to the Post click, so it
+    confirms *this* post -- which finding its words in the feed cannot, once
+    the same words may go to a group every day. Read live on 2026-10-07."""
+
+    def test_a_text_post_is_confirmed_with_its_link(self):
+        page = FakePage(created_reply=creation_reply())
+        outcome = make_poster(page).post(request())
+        assert outcome.posted and outcome.verified
+        assert outcome.post_url.endswith("/permalink/1746810129710285/")
+
+    def test_it_does_not_depend_on_finding_the_words(self):
+        snippet = distinctive_snippet(BODY)
+        page = FakePage(created_reply=creation_reply(), missing=(f"text={snippet}",))
+        outcome = make_poster(page).post(request())
+        assert outcome.verified
+
+    def test_text_sent_before_is_confirmed_by_the_reply(self):
+        page = FakePage(created_reply=creation_reply())
+        outcome = make_poster(page).post(request(sent_before=True))
+        assert outcome.verified
+
+    def test_pictures_are_confirmed_too(self):
+        page = FakePage(created_reply=creation_reply())
+        outcome = make_poster(page).post(
+            request(body="", media_paths=(Path("a.png"),))
+        )
+        assert outcome.verified is True
+        assert outcome.post_url
+
+    def test_a_reply_read_after_navigating_is_gone(self):
+        """Live, the reply could not be read once the page had moved on. The
+        fake refuses the same way, which is what makes the tests above fail
+        if the poster ever reads it after looking at the group."""
+        page = FakePage(created_reply=creation_reply())
+        seen = []
+        page.on("response", seen.append)
+        page._clicked(f"role=dialog:None >> {POST_BUTTON}")
+        page.goto(GROUP_URL)
+        with pytest.raises(RuntimeError):
+            seen[0].text()
+
+    def test_a_group_holding_posts_is_still_pending(self):
+        page = FakePage(
+            created_reply=creation_reply(),
+            body_text=f"A group feed. {strings.PENDING_APPROVAL_MARKERS[0]}",
+        )
+        outcome = make_poster(page).post(
+            request(body="", media_paths=(Path("a.png"),))
+        )
+        assert outcome.pending is True
+        assert outcome.post_url
+
+    def test_a_block_after_the_post_still_halts(self):
+        page = FakePage(created_reply=creation_reply())
+        page.on_click[f"role=dialog:None >> {POST_BUTTON}"] = lambda: setattr(
+            page, "redirect_to", "https://www.facebook.com/checkpoint/1/"
+        )
+        with pytest.raises(AutomationHalted):
+            make_poster(page).post(request())
+
+    def test_the_listener_is_removed_afterwards(self):
+        page = FakePage(created_reply=creation_reply())
+        make_poster(page).post(request())
+        assert page.listeners.get("response") == []
+
+
+class TestWithoutFacebooksReply:
+    """If the reply never comes -- Facebook renamed the call, say -- the older
+    checks decide, and they must not be fooled by an older post."""
+
+    def test_text_never_sent_before_is_found_by_its_words(self):
+        outcome = make_poster(FakePage()).post(request())
+        assert outcome.verified
+
+    def test_text_sent_before_is_not_confirmed_by_its_words(self):
+        """The words may belong to yesterday's post."""
+        with pytest.raises(PostNotVerified) as caught:
+            make_poster(FakePage()).post(request(sent_before=True))
+        assert caught.value.may_have_posted is True
+        assert "posted there before" in str(caught.value)
+
+    def test_pictures_say_they_could_not_be_checked(self):
+        outcome = make_poster(FakePage()).post(
+            request(body="", media_paths=(Path("a.png"),))
+        )
+        assert outcome.posted and not outcome.verified
+        assert "could not check that it posted" in outcome.detail

@@ -16,6 +16,38 @@ from typing import Any
 from fbposter import strings
 
 
+@dataclass
+class FakeRequest:
+    post_data: str
+    headers: dict = field(default_factory=dict)
+
+
+class FakeResponse:
+    """Facebook's reply to the Post click.
+
+    Like the real one, its body cannot be read once the page has navigated
+    away -- seen live on 2026-10-07, and the reason the poster reads it
+    straight after the click.
+    """
+
+    def __init__(self, page: "FakePage", text: str) -> None:
+        self.page = page
+        self.url = f"{strings.BASE_URL}{strings.GRAPHQL_PATH}/"
+        self.request = FakeRequest(
+            f"fb_api_req_friendly_name={strings.POST_CREATED_CALL}&doc_id=1"
+        )
+        self._text = text
+        self._seen_at = len(page.calls)
+
+    def text(self) -> str:
+        if any(call[0] == "goto" for call in self.page.calls[self._seen_at:]):
+            raise RuntimeError(
+                "Response body is not available for a response that was "
+                "navigated away from."
+            )
+        return self._text
+
+
 class FakeLocator:
     def __init__(
         self,
@@ -59,6 +91,7 @@ class FakeLocator:
         handler = self.page.on_click.get(self.description)
         if handler is not None:
             handler()
+        self.page._clicked(self.description)
 
     def wait_for(self, state: str = "visible", timeout: float = 0) -> None:
         self.page.calls.append(("wait_for", self.description, state))
@@ -117,6 +150,9 @@ class FakePage:
     never_detaches: bool = False
     calls: list[tuple] = field(default_factory=list)
     on_click: dict[str, Any] = field(default_factory=dict)
+    # What Facebook replies when Post is clicked; "" sends no reply at all.
+    created_reply: str = ""
+    listeners: dict[str, list] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         self.keyboard = FakeKeyboard(self)
@@ -143,7 +179,22 @@ class FakePage:
     def call_names(self) -> list[str]:
         return [call[0] for call in self.calls]
 
+    def _clicked(self, description: str) -> None:
+        is_post = any(
+            description.endswith(f"role=button:{name}") for name in strings.POST_BUTTONS
+        )
+        if is_post and self.created_reply:
+            response = FakeResponse(self, self.created_reply)
+            for handler in list(self.listeners.get("response", [])):
+                handler(response)
+
     # -- Page surface ------------------------------------------------------
+    def on(self, event: str, handler: Any) -> None:
+        self.listeners.setdefault(event, []).append(handler)
+
+    def remove_listener(self, event: str, handler: Any) -> None:
+        self.listeners.get(event, []).remove(handler)
+
     def goto(self, url: str, timeout: float = 0, wait_until: str = "") -> None:
         self.calls.append(("goto", url))
         self.url = self.redirect_to or url

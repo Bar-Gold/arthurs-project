@@ -87,6 +87,8 @@ class PlannedTarget:
     body: str
     last_posted_at: datetime | None = None
     cooldown_hours: int = 8
+    # Text already sent to this group on the day the batch runs -- not all
+    # of its history, since the same words may go to a group once a day.
     recent_bodies: tuple[str, ...] = ()
 
 
@@ -193,12 +195,17 @@ def check_repeat_text(
     body: str,
     recent_bodies: Sequence[str],
     group_name: str = "this group",
+    day: str = "today",
 ) -> Violation | None:
-    """Never send the same words to the same group twice.
+    """The same words to the same group at most once a day.
 
-    This is the rule that does the real work. Meta restricts accounts at *low*
-    posting frequencies when the content is repetitive, so posting often to an
-    active group is safe only while the wording changes.
+    `recent_bodies` is what was sent to the group on the day judged, and
+    `day` names it: "today", or "that day" for a batch scheduled for another.
+
+    This used to be "never again". The user chose once a day (2026-10-07), so
+    a daily advert can run with one wording. Meta restricts accounts at *low*
+    posting frequencies when the content is repetitive, so varying the
+    wording is still the safer way to post often.
     """
     if not body.strip():
         return None
@@ -207,7 +214,7 @@ def check_repeat_text(
     if any(normalise(previous) == target for previous in recent_bodies):
         return Violation(
             REPEAT_TEXT,
-            f"This exact text has already been posted to {group_name}.",
+            f"This exact text was already sent to {group_name} {day}.",
         )
     return None
 
@@ -274,7 +281,12 @@ def evaluate_batch(
         if cooldown is not None:
             blocked.append(cooldown)
 
-        repeat = check_repeat_text(target.body, target.recent_bodies, target.group_name)
+        repeat = check_repeat_text(
+            target.body,
+            target.recent_bodies,
+            target.group_name,
+            "that day" if later else "today",
+        )
         if repeat is not None:
             blocked.append(repeat)
 

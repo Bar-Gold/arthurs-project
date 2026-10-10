@@ -26,6 +26,7 @@ from fbposter.db.models import (
     SCHEDULE_ACTIVE,
     SCHEDULE_PAUSED,
     TARGET_DONE,
+    TASK_DONE,
     TASK_MISSED,
     TASK_PENDING,
 )
@@ -434,7 +435,7 @@ class TestWordingRotation:
         assert len(poster.bodies) == 2
         assert poster.bodies[1] != first
 
-    def test_a_wording_already_posted_to_a_group_is_never_chosen_again(self, db, repos):
+    def test_the_rotation_walks_through_every_wording(self, db, repos):
         groups, tasks, schedules, _settings = repos
         one, _two = add_groups(groups, 2)
         make_schedule(schedules, [one.id])
@@ -448,10 +449,14 @@ class TestWordingRotation:
 
         assert sorted(poster.bodies) == sorted(WORDINGS)
 
-    def test_running_out_of_wordings_skips_the_group_and_says_so(self, db, repos):
+    def test_running_out_of_wordings_for_the_day_skips_the_group_and_says_so(
+        self, db, repos
+    ):
         groups, tasks, schedules, _settings = repos
         one, _two = add_groups(groups, 2)
-        make_schedule(schedules, [one.id], bodies=["Only one wording"])
+        make_schedule(
+            schedules, [one.id], times=("12:00", "21:00"), bodies=["Only one wording"]
+        )
 
         poster = FakePoster()
         ticker = Clock()
@@ -459,34 +464,62 @@ class TestWordingRotation:
         drain(worker)
         assert len(poster.bodies) == 1
 
-        ticker.now = clock.parse_local("2026-08-11 12:00")
+        ticker.now = clock.parse_local("2026-08-10 21:00")
         drain(worker)
 
-        assert len(poster.bodies) == 1, "reposted text that had already gone out"
+        assert len(poster.bodies) == 1, "the same text went to a group twice in a day"
         assert len(tasks.list_recent()) == 1, "queued a batch with nothing in it"
-        assert any("wording" in event for event in messages(worker))
+        assert any("wording today" in event for event in messages(worker))
 
-    def test_running_out_for_one_group_does_not_stop_the_others(self, db, repos):
-        groups, tasks, schedules, _settings = repos
-        one, two = add_groups(groups, 2)
-        make_schedule(schedules, [one.id, two.id], bodies=["Alpha wording", "Beta wording"])
+    def test_the_same_wording_goes_again_the_next_day(self, db, repos):
+        """Once a day, not never again: the user's choice, 2026-10-07. A daily
+        advert can run on one wording."""
+        groups, _tasks, schedules, _settings = repos
+        one, _two = add_groups(groups, 2)
+        make_schedule(schedules, [one.id], bodies=["Only one wording"])
 
         poster = FakePoster()
         ticker = Clock()
         worker = make_worker(db, poster, ticker)
         drain(worker)
-
-        # Only group one has seen "Alpha"; group two has seen "Beta". Force the
-        # rotation so group one has nothing left by giving it Beta as well.
         ticker.now = clock.parse_local("2026-08-11 12:00")
         drain(worker)
-        ticker.now = clock.parse_local("2026-08-12 12:00")
+
+        assert poster.bodies == ["Only one wording", "Only one wording"]
+
+    def test_running_out_for_one_group_does_not_stop_the_others(self, db, repos):
+        groups, tasks, schedules, _settings = repos
+        one, two = add_groups(groups, 2)
+        # Group one already had "Alpha" this morning, so by the evening run it
+        # has had both wordings today and group two has not.
+        morning = tasks.create("Alpha wording", [(one.id, "Alpha wording")])
+        tasks.mark_target(
+            tasks.targets_for(morning.id)[0].id,
+            TARGET_DONE,
+            posted=True,
+            posted_at=NOON - timedelta(hours=3),
+        )
+        tasks.mark_task(morning.id, TASK_DONE, finished=True)
+        make_schedule(
+            schedules,
+            [one.id, two.id],
+            times=("12:00", "21:00"),
+            bodies=["Alpha wording", "Beta wording"],
+        )
+
+        ticker = Clock()
+        worker = make_worker(db, FakePoster(), ticker)
+        drain(worker)
+        ticker.advance(minutes=26)
+        drain(worker)
+        ticker.now = clock.parse_local("2026-08-10 21:00")
         drain(worker)
 
-        # Every group-post that happened used text that group had not seen.
+        evening = max(tasks.list_recent(), key=lambda task: task.id)
+        assert [t.group_id for t in tasks.targets_for(evening.id)] == [two.id]
         for group in (one, two):
-            seen = groups.recent_bodies(group.id)
-            assert len(seen) == len(set(seen)), "a group was sent the same text twice"
+            today = groups.sent_on_day(group.id, ticker.now)
+            assert len(today) == len(set(today)), "a group got the same text twice today"
 
 
 def messages(worker) -> list[str]:
@@ -594,7 +627,9 @@ class TestAScheduleWithNothingLeftToPostTo:
         task = tasks.create("only wording", [(one.id, "only wording")])
         target = tasks.targets_for(task.id)[0]
         tasks.claim_target(target.id)
-        tasks.mark_target(target.id, TARGET_DONE)
+        tasks.mark_target(
+            target.id, TARGET_DONE, posted=True, posted_at=NOON - timedelta(hours=1)
+        )
 
         worker = make_worker(db)
         worker.run_once()
@@ -749,14 +784,16 @@ class TestEditingASchedule:
     def test_running_out_of_wordings_now_points_at_editing(self, db, repos):
         groups, _tasks, schedules, _settings = repos
         one, _two = add_groups(groups)
-        make_schedule(schedules, [one.id], bodies=["Only one wording"])
+        make_schedule(
+            schedules, [one.id], times=("12:00", "21:00"), bodies=["Only one wording"]
+        )
 
         ticker = Clock()
         worker = make_worker(db, FakePoster(), ticker)
         drain(worker)
         messages(worker)
-        ticker.now = clock.parse_local("2026-08-11 12:00")
+        ticker.now = clock.parse_local("2026-08-10 21:00")
         drain(worker)
 
         said = " ".join(messages(worker))
-        assert "edit this repeating post and add a new wording" in said
+        assert "edit this repeating post and add another wording" in said

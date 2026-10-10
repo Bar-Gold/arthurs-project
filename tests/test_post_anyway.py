@@ -261,3 +261,56 @@ def repos(db):
     from fbposter.db.repo import GroupRepo, SettingsRepo, TaskRepo
 
     return GroupRepo(db), TaskRepo(db), SettingsRepo(db)
+
+
+class TestWhatTheQueueIsToldAfterwards:
+    """A batch marked "Post anyway" must never read as if the choice was
+    ignored -- neither a post that went out, nor one held back by a rule the
+    choice did not cover."""
+
+    def test_a_post_that_went_out_has_no_note_against_it(self, db, repos):
+        groups, tasks, _ = repos
+        (one,) = add_groups(groups, 1)
+        ticker = Clock()
+        groups.mark_posted(one.id, ticker.now - timedelta(hours=1))
+        task = tasks.create(BODY, [(one.id, BODY)], overrides={COOLDOWN})
+        drain(make_worker(db, FakePoster(), ticker))
+
+        target = tasks.targets_for(task.id)[0]
+        assert (target.state, target.error) == (TARGET_DONE, "")
+        assert tasks.get(task.id).error == ""
+
+    def test_a_rule_it_did_not_cover_says_so(self, db, repos):
+        """Allowed outside posting hours; the cooldown was not broken when it
+        was queued, but is by the time it posts."""
+        groups, tasks, _ = repos
+        (one,) = add_groups(groups, 1)
+        ticker = Clock()
+        groups.mark_posted(one.id, ticker.now - timedelta(hours=1))
+        task = tasks.create(BODY, [(one.id, BODY)], overrides={POSTING_WINDOW})
+        make_worker(db, FakePoster(), ticker).run_once()
+
+        target = tasks.targets_for(task.id)[0]
+        assert target.state == TARGET_SKIPPED
+        assert "cooldown" in target.error
+        assert f"chosen for the {rule_labels({POSTING_WINDOW})} only" in target.error
+
+    def test_a_wait_it_did_not_cover_says_so_too(self, db, repos):
+        groups, tasks, _ = repos
+        (one,) = add_groups(groups, 1)
+        ticker = Clock(clock.parse_local("2026-08-10 23:30"))
+        task = tasks.create(BODY, [(one.id, BODY)], overrides={COOLDOWN})
+        make_worker(db, FakePoster(), ticker).run_once()
+
+        note = tasks.get(task.id).error
+        assert "posting hours" in note
+        assert f"chosen for the {rule_labels({COOLDOWN})} only" in note
+
+    def test_without_post_anyway_there_is_no_such_sentence(self, db, repos):
+        groups, tasks, _ = repos
+        (one,) = add_groups(groups, 1)
+        ticker = Clock()
+        groups.mark_posted(one.id, ticker.now - timedelta(hours=1))
+        task = tasks.create(BODY, [(one.id, BODY)])
+        make_worker(db, FakePoster(), ticker).run_once()
+        assert "Post anyway" not in tasks.targets_for(task.id)[0].error

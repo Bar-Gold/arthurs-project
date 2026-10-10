@@ -47,6 +47,7 @@ from .db.models import (
     TARGET_PENDING,
     TARGET_RUNNING,
     TARGET_SKIPPED,
+    TARGET_UNCONFIRMED,
     TASK_CANCELLED,
     TASK_DONE,
     TASK_HALTED,
@@ -60,7 +61,7 @@ from .db.models import (
     to_iso,
 )
 from .db.repo import GROUP_REMOVED, GroupRepo, ScheduleRepo, SettingsRepo, TaskRepo
-from .errors import AutomationHalted, ConnectionFailed, PostNotVerified
+from .errors import AutomationHalted, ConnectionFailed, FBPosterError, PostNotVerified
 from .guards import (
     COOLDOWN,
     DAILY_CAP,
@@ -68,6 +69,8 @@ from .guards import (
     REPEAT_TEXT,
     check_cooldown,
     check_repeat_text,
+    normalise,
+    rule_labels,
 )
 from .power import SleepBlocker
 
@@ -128,15 +131,26 @@ def _readable(exc: Exception) -> str:
     A locator timeout stringifies into a wall of obfuscated Facebook class
     names, which told the user nothing and buried the one useful fact: it timed
     out waiting for the page.
+
+    Only failures from before Post was clicked get here -- `GroupPoster.post`
+    turns any later one into PostNotVerified -- which is what makes "nothing
+    was posted" true.
     """
+    if isinstance(exc, FBPosterError):
+        # Already written for the user, like "could not find where to write".
+        return str(exc)
     text = str(exc)
     if "Timeout" in text and "exceeded" in text:
         return (
-            "Timed out waiting for Facebook to respond. Usually a slow or dropped "
-            "connection. Nothing was posted; the batch stopped rather than guessing."
+            "Facebook took too long to respond, usually a slow or dropped internet "
+            "connection. Nothing was posted, and the batch stopped rather than "
+            "guessing."
         )
     first_line = text.strip().splitlines()[0] if text.strip() else exc.__class__.__name__
-    return f"Unexpected failure: {first_line[:300]}"
+    return (
+        "Something unexpected went wrong before anything was posted, so the batch "
+        f"stopped. Details: {first_line[:300]}"
+    )
 
 
 @dataclass(frozen=True)
@@ -169,8 +183,17 @@ class LivePoster:
         self.dry_run = dry_run
 
     def post(self, request: PostRequest) -> PostOutcome:
-        with self._page() as page:
-            return GroupPoster(page, dry_run=self.dry_run).post(request)
+        outcome = None
+        try:
+            with self._page() as page:
+                outcome = GroupPoster(page, dry_run=self.dry_run).post(request)
+        except Exception:
+            # Leaving the page or the connection failed *after* the post was
+            # made. What happened in the group stands; reporting it as a
+            # failure would say "not posted" about a post that is live.
+            if outcome is None:
+                raise
+        return outcome
 
     def verify(self, group_url: str, body: str) -> bool:
         with self._page() as page:
@@ -195,7 +218,12 @@ class LivePoster:
             try:
                 yield page
             finally:
-                page.close()
+                try:
+                    page.close()
+                except Exception:
+                    # Cleanup. Raising here would replace whatever really
+                    # happened on the page with a closing error.
+                    pass
 
 
 class PostingWorker:
@@ -385,8 +413,9 @@ class PostingWorker:
                 self.tasks.mark_task(
                     fresh.id,
                     TASK_MISSED,
-                    error="The scheduled time passed while posting was paused, the "
-                    "app was closed or the computer was asleep.",
+                    error="Nothing was posted. The scheduled time passed while "
+                    "posting was paused, the app was closed or the computer was "
+                    "asleep, and a post is never sent late.",
                     finished=True,
                 )
                 self.emit(
@@ -533,9 +562,9 @@ class PostingWorker:
                 # from here, and every check is a real page load in a browser --
                 # so it is dropped from the rotation rather than chased twice a
                 # day for thirty days. The target row stays exactly as it is:
-                # awaiting_approval already counts towards recent_bodies, so the
-                # wording goes on being refused to that group whether or not
-                # anyone ever finds out what an admin did with it.
+                # awaiting_approval counts as sent, so the cooldown and the
+                # day's repeated-text rule hold whether or not anyone ever
+                # finds out what an admin did with it.
                 continue
 
             if checked:
@@ -566,6 +595,14 @@ class PostingWorker:
 
             if verdict == "pending":
                 self.tasks.clear_resolve_misses(target.id)
+            elif verdict == "approved" and self._sent_before(
+                group.id, target.body, besides=1
+            ):
+                # "Approved" means the words were found in the feed, and the
+                # same words went to this group before: what was found may be
+                # the older post. Left waiting, for another look or for the
+                # Queue's two buttons, rather than called live on that.
+                pass
             elif verdict == "approved":
                 self.tasks.resolve_pending(
                     target.id,
@@ -682,7 +719,7 @@ class PostingWorker:
             body = recurrence.pick_body(
                 schedule.bodies,
                 schedule.run_count + position,
-                self.groups.recent_bodies(group.id),
+                self.groups.sent_on_day(group.id, now),
                 allow_repeats=REPEAT_TEXT in schedule.overrides,
             )
             if body is None:
@@ -697,10 +734,10 @@ class PostingWorker:
             self.emit(
                 "skipped",
                 f"{schedule.display_name}: {', '.join(stale)} "
-                f"{'have' if many else 'has'} already been sent every wording, so "
-                f"{'they were' if many else 'it was'} left out of this run. To keep "
-                "posting there, edit this repeating post and add a new wording — "
-                "reposting the same text is what gets accounts restricted.",
+                f"{'have' if many else 'has'} already been sent every wording today, "
+                f"so {'they were' if many else 'it was'} left out of this run. To "
+                "post there more than once a day, edit this repeating post and add "
+                "another wording.",
             )
         if not targets:
             if not stale:
@@ -774,24 +811,25 @@ class PostingWorker:
             resume = clock.next_window_open(
                 now + timedelta(days=1), start_hour, end_hour
             )
-            self.tasks.set_resume_at(task.id, resume)
-            self.emit(
-                "deferred",
-                f"Daily limit of {cap} posts reached; the rest of this batch waits "
-                f"until {clock.format_local(resume)}.",
-                task.id,
+            message = self._not_covered(
+                task,
+                f"Waiting: the daily limit of {cap} posts was reached. The rest of "
+                f"this batch goes out from {clock.format_local(resume)}.",
             )
+            self.tasks.set_resume_at(task.id, resume, note=message)
+            self.emit("deferred", message, task.id)
             return True
 
         window_open = clock.next_window_open(now, start_hour, end_hour)
         if POSTING_WINDOW not in allowed and window_open > now:
-            self.tasks.set_resume_at(task.id, window_open)
-            self.emit(
-                "deferred",
-                f"Outside the posting hours ({start_hour:02d}:00-{end_hour:02d}:00); "
-                f"the batch resumes {clock.format_local(window_open)}.",
-                task.id,
+            message = self._not_covered(
+                task,
+                f"Waiting: it is outside the posting hours ({start_hour:02d}:00-"
+                f"{end_hour:02d}:00). The batch goes on at "
+                f"{clock.format_local(window_open)}.",
             )
+            self.tasks.set_resume_at(task.id, window_open, note=message)
+            self.emit("deferred", message, task.id)
             return True
 
         cooldown = None if COOLDOWN in allowed else check_cooldown(
@@ -799,14 +837,15 @@ class PostingWorker:
         )
         if cooldown is not None:
             # Skip this one group rather than stalling the whole batch behind it.
+            message = self._not_covered(task, cooldown.message)
             self.tasks.mark_target(
-                target.id, TARGET_SKIPPED, error=cooldown.message, attempted=True
+                target.id, TARGET_SKIPPED, error=message, attempted=True
             )
-            self.emit("skipped", cooldown.message, task.id, target.id)
+            self.emit("skipped", message, task.id, target.id)
             return True
 
         repeat = None if REPEAT_TEXT in allowed else check_repeat_text(
-            target.body, self.groups.recent_bodies(group.id), group.display_name
+            target.body, self.groups.sent_on_day(group.id, now), group.display_name
         )
         if repeat is not None:
             # Checked at the door as well, but that answer goes stale: queue a
@@ -818,13 +857,30 @@ class PostingWorker:
             # Skipped like a cooldown: one group, loudly, and the batch carries
             # on. Halting a whole batch over a wording that can simply be
             # reworded would cost the user posts they are entitled to make.
+            message = self._not_covered(task, repeat.message)
             self.tasks.mark_target(
-                target.id, TARGET_SKIPPED, error=repeat.message, attempted=True
+                target.id, TARGET_SKIPPED, error=message, attempted=True
             )
-            self.emit("skipped", repeat.message, task.id, target.id)
+            self.emit("skipped", message, task.id, target.id)
             return True
 
         return self._post(task, target, group)
+
+    @staticmethod
+    def _not_covered(task: Task, message: str) -> str:
+        """Say so when the user chose "Post anyway" and this rule was not in it.
+
+        Otherwise a batch marked "Post anyway" shows a group not posted, or a
+        batch waiting, and it reads as if the choice had been ignored. It was
+        honoured exactly: it covers the rules that were broken when the post
+        was set up, and this one was not among them.
+        """
+        if not task.overrides:
+            return message
+        return (
+            f"{message} “Post anyway” was chosen for the "
+            f"{rule_labels(task.overrides)} only, not for this rule."
+        )
 
     # -- the actual post ---------------------------------------------------
     def _post(self, task: Task, target: TaskTarget, group) -> bool:
@@ -858,6 +914,7 @@ class PostingWorker:
             group_url=group.url,
             body=target.body,
             media_paths=tuple(Path(p) for p in task.media_paths),
+            sent_before=self._sent_before(group.id, target.body),
         )
 
         try:
@@ -876,12 +933,10 @@ class PostingWorker:
             # that never goes out at all.
             self._defer_for_connection(task, target, exc)
             return True
-        except AutomationHalted as exc:
-            self._halt(task, target, str(exc))
-            return True
-        except PostNotVerified as exc:
-            # Deliberately not a retry: it may well have posted.
-            self._halt(task, target, str(exc))
+        except (AutomationHalted, PostNotVerified) as exc:
+            # Deliberately not a retry: after the Post click it may well have
+            # posted, and the exception says whether that point was reached.
+            self._halt(task, target, str(exc), may_have_posted=exc.may_have_posted)
             return True
         except Exception as exc:
             self._halt(task, target, _readable(exc))
@@ -891,8 +946,16 @@ class PostingWorker:
             # past the handler above and killed the worker thread outright --
             # leaving the target stuck in `running`, and the keep-awake request
             # still held so the machine could not sleep. Record and release,
-            # then let it carry on unwinding.
-            self._halt(task, target, f"Interrupted: {type(exc).__name__}.")
+            # then let it carry on unwinding. Where in the post it stopped is
+            # not known, so it is recorded as possibly posted.
+            self._halt(
+                task,
+                target,
+                "The app was stopped in the middle of posting to this group "
+                f"({type(exc).__name__}), so whether the post went out is not "
+                "known. Check the group before posting this again.",
+                may_have_posted=True,
+            )
             raise
         finally:
             self._busy = False
@@ -907,13 +970,7 @@ class PostingWorker:
             # will appear the moment an admin approves. Recording it as failed
             # would leave the guard blind and invite the same text being sent
             # again -- two live posts once both are approved.
-            self.tasks.mark_target(
-                target.id,
-                TARGET_AWAITING_APPROVAL,
-                posted=True,
-                error=outcome.detail,
-            )
-            self.groups.mark_posted(group.id)
+            self._record_sent(target, TARGET_AWAITING_APPROVAL, error=outcome.detail)
             self.emit(
                 "pending",
                 f"{group.display_name} holds posts for admin approval — "
@@ -936,10 +993,14 @@ class PostingWorker:
                 target.id,
             )
         else:
-            self.tasks.mark_target(
-                target.id, TARGET_DONE, posted=True, post_url=outcome.post_url
+            # A note only when nothing confirmed it: pictures, with no reply
+            # from Facebook to go on.
+            self._record_sent(
+                target,
+                TARGET_DONE,
+                post_url=outcome.post_url,
+                error="" if outcome.verified else outcome.detail,
             )
-            self.groups.mark_posted(group.id)
             self.emit("posted", f"Posted to {group.display_name}.", task.id, target.id)
 
         # One gap, written in two places. The global stamp spaces every post
@@ -964,6 +1025,49 @@ class PostingWorker:
             task.id,
         )
         return True
+
+    def _sent_before(self, group_id: int, body: str, *, besides: int = 0) -> bool:
+        """Have these exact words gone to this group before?
+
+        The same text may go to a group once a day, so an older post with it
+        can be in the feed, and any check that finds a post by its words can
+        be fooled by it. `besides` discounts the post being asked about when
+        it is already in the history itself -- one awaiting an admin is.
+        """
+        if not body.strip():
+            return False
+        wanted = normalise(body)
+        same = sum(
+            1 for sent in self.groups.recent_bodies(group_id) if normalise(sent) == wanted
+        )
+        return same > besides
+
+    def _record_sent(
+        self,
+        target: TaskTarget,
+        state: str,
+        *,
+        error: str = "",
+        post_url: str = "",
+        at=None,
+    ) -> None:
+        """Record a post that went out, waits for an admin, or may have gone out.
+
+        All three count as sent: the cooldown starts, and the post takes a
+        place in the daily limit and in the day's repeated-text rule. Stamped
+        with the worker's own clock, because the day it falls on decides that
+        rule; and the cooldown only ever moves forward, so a post found late
+        after a crash cannot shorten one started since.
+        """
+        at = at or self._now()
+        self.tasks.mark_target(
+            target.id, state, error=error, posted=True, post_url=post_url, posted_at=at
+        )
+        group = self.groups.get(target.group_id)
+        if group is not None and (
+            group.last_posted_at is None or group.last_posted_at < at
+        ):
+            self.groups.mark_posted(target.group_id, at)
 
     def _defer_for_connection(
         self, task: Task, target: TaskTarget, exc: ConnectionFailed
@@ -994,20 +1098,19 @@ class PostingWorker:
         # within KEEP_AWAKE_HORIZON -- and a five-minute retry is. Releasing
         # here would be undone a moment later, which is worse than not doing
         # it: it reads like a decision when nothing decides it.
-        self.tasks.set_resume_at(task.id, self._now() + CONNECTION_RETRY)
+        message = (
+            "Waiting: Chrome is not reachable, so nothing was posted. The batch "
+            f"tries again every {int(CONNECTION_RETRY.total_seconds() // 60)} "
+            "minutes."
+        )
+        self.tasks.set_resume_at(task.id, self._now() + CONNECTION_RETRY, note=message)
 
         # Announced once, not every five minutes. Repeating the same sentence a
         # hundred times through an overnight outage is how a real warning stops
         # being read.
         if task.id not in self._connection_announced:
             self._connection_announced.add(task.id)
-            self.emit(
-                "deferred",
-                "Chrome is not reachable, so nothing was posted. The batch waits "
-                f"and tries again every {int(CONNECTION_RETRY.total_seconds() // 60)} "
-                "minutes.",
-                task.id,
-            )
+            self.emit("deferred", message, task.id)
 
     def _forget_connection_trouble(self, task_id: int) -> None:
         """Both halves, always together -- a stale 'already announced' would
@@ -1015,10 +1118,29 @@ class PostingWorker:
         self._connection_trouble.pop(task_id, None)
         self._connection_announced.discard(task_id)
 
-    def _halt(self, task: Task, target: TaskTarget, message: str) -> None:
-        """Stop the whole batch. Never retry, never continue to the next group."""
+    def _halt(
+        self,
+        task: Task,
+        target: TaskTarget,
+        message: str,
+        *,
+        may_have_posted: bool = False,
+    ) -> None:
+        """Stop the whole batch. Never retry, never continue to the next group.
+
+        `may_have_posted` is for a stop after the Post click: the group is
+        recorded as unconfirmed rather than failed, so the Queue does not say
+        "not posted" about a post that may be live.
+        """
         self._forget_connection_trouble(task.id)
-        self.tasks.mark_target(target.id, TARGET_FAILED, error=message)
+        if may_have_posted:
+            # Counted as sent: the cooldown starts and it takes a place in the
+            # daily limit and the day's repeated-text rule (the user's choice,
+            # 2026-10-07). If it did go out, the group must not get another
+            # post minutes later.
+            self._record_sent(target, TARGET_UNCONFIRMED, error=message)
+        else:
+            self.tasks.mark_target(target.id, TARGET_FAILED, error=message)
         self.tasks.set_resume_at(task.id, None)
         self.tasks.mark_task(task.id, TASK_HALTED, error=message, finished=True)
         self.blocker.release()
@@ -1050,14 +1172,17 @@ class PostingWorker:
         guess that produces a duplicate, and a duplicate is the worst thing
         this app can do.
         """
-        self.tasks.mark_target(
-            target.id,
-            TARGET_FAILED,
+        self._record_sent(
+            target,
+            TARGET_UNCONFIRMED,
             error=(
-                "Interrupted mid-post and could not be checked "
-                f"({reason}). Look at the group before queueing this again — "
-                "posting it twice is worse than not posting it."
+                "The app was interrupted while posting to this group, and could "
+                f"not check afterwards whether the post went out ({reason}). Look "
+                "at the group before queueing this again — posting it twice is "
+                "worse than not posting it."
             ),
+            # Counted from when it was tried, like any stop after Post.
+            at=target.attempted_at,
         )
         self.tasks.mark_task(
             target.task_id, TASK_HALTED, error="Interrupted; needs checking.",
@@ -1065,7 +1190,8 @@ class PostingWorker:
         )
         self.emit(
             "halted",
-            "A batch was interrupted and needs checking.",
+            "A post was interrupted and may have gone out. The Queue shows which "
+            "group to check.",
             target.task_id,
             target.id,
         )
@@ -1095,6 +1221,17 @@ class PostingWorker:
                 )
                 continue
 
+            if self._sent_before(group.id, target.body):
+                # Both checks below find the post by its words, and these words
+                # went to this group before: finding them proves nothing about
+                # this post, and "not posting again" on that is a guess.
+                self._escalate_unchecked(
+                    target,
+                    "the same text was posted to this group before, so finding "
+                    "it there would not prove this one went out",
+                )
+                continue
+
             try:
                 already_posted = self.poster.verify(group.url, target.body)
             except ConnectionFailed as exc:
@@ -1121,8 +1258,7 @@ class PostingWorker:
                 continue
 
             if already_posted:
-                self.tasks.mark_target(target.id, TARGET_DONE, posted=True)
-                self.groups.mark_posted(group.id)
+                self._record_sent(target, TARGET_DONE, at=target.attempted_at)
                 self.emit(
                     "recovered",
                     f"{group.display_name} had already been posted to before the "
@@ -1167,8 +1303,9 @@ class PostingWorker:
             # It did post; the group is holding it. Treated exactly as a live
             # pending post -- the cooldown starts and the wording counts,
             # because it appears the moment an admin approves it.
-            self.tasks.mark_target(target.id, TARGET_AWAITING_APPROVAL, posted=True)
-            self.groups.mark_posted(group.id)
+            self._record_sent(
+                target, TARGET_AWAITING_APPROVAL, at=target.attempted_at
+            )
             self.emit(
                 "recovered",
                 f"{group.display_name} was interrupted, but the post reached the "
@@ -1182,8 +1319,7 @@ class PostingWorker:
             # The pending list looked, and then found it live. The earlier
             # verify() was a false negative, which is exactly the case this
             # second look exists to catch.
-            self.tasks.mark_target(target.id, TARGET_DONE, posted=True)
-            self.groups.mark_posted(group.id)
+            self._record_sent(target, TARGET_DONE, at=target.attempted_at)
             self.emit(
                 "recovered",
                 f"{group.display_name} had already been posted to before the "

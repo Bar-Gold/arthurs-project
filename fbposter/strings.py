@@ -44,6 +44,17 @@ def group_url(identifier: str) -> str:
 # 2026-08-17: /pending/ is the *admin* moderation queue and is not this.
 MY_CONTENT_PATH = "my_pending_content"
 
+# The call Facebook's page makes when Post is clicked, and whose reply carries
+# the new post's own link (data.story_create.story.url). Read off the live site
+# on 2026-10-07, posting to a group without post approval: a text post replied
+# with .../permalink/<id>/, and a picture-only post made the same call with the
+# photo attached; on 2026-10-10 both came back confirmed through the app's
+# own code, the text one repeating words already in the group. The same in every language -- it is a name in Facebook's
+# code, not on its screen. Every post gets its own id, which is what tells
+# today's post apart from yesterday's with the same words.
+GRAPHQL_PATH = "/api/graphql"
+POST_CREATED_CALL = "ComposerStoryCreateMutation"
+
 
 def my_content_url(group_url_or_identifier: str) -> str:
     """The "Your content" page for a group, whose default tab is Pending."""

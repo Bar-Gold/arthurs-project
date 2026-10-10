@@ -110,6 +110,10 @@ def schedule_violations(app, rule, group_ids, wordings, history: bool = True):
     query or two per group -- for the live summary, which runs on every
     keystroke. The button always judges with them.
     """
+    now = utcnow()
+    # The same words may go to a group once a day, so what counts is what the
+    # group has already been sent on the day the schedule first runs.
+    first_run = recurrence.next_occurrence(rule, now)
     targets = []
     for group_id in group_ids:
         group = app.group_repo.get(group_id)
@@ -120,7 +124,7 @@ def schedule_violations(app, rule, group_ids, wordings, history: bool = True):
                 name=group.display_name,
                 last_posted_at=group.last_posted_at if history else None,
                 recent_bodies=(
-                    tuple(app.group_repo.recent_bodies(group.id))
+                    tuple(app.group_repo.sent_on_day(group.id, first_run))
                     if history else ()
                 ),
             )
@@ -128,7 +132,7 @@ def schedule_violations(app, rule, group_ids, wordings, history: bool = True):
     settings = app.settings_repo
     return recurrence.check_schedule(
         rule,
-        utcnow(),
+        now,
         targets=targets,
         wordings=wordings if history else (),
         cooldown_hours=settings.get_int("default_cooldown_hours", 8),
@@ -390,12 +394,12 @@ class PublishView(QWidget):
         extras.addLayout(header)
 
         # The empty state carries the one thing about repeating posts that is
-        # not obvious: one wording works exactly once, because sending the same
-        # words to a group twice is refused.
+        # not obvious: the same words go to a group at most once a day, so one
+        # wording is one run a day.
         self.wording_hint = QLabel(
-            "No alternates yet. With only the Compose text, each group gets it "
-            "once, and every run after that would repeat it, which the rules "
-            "refuse. Add one or two more."
+            "No alternates yet. The same text goes to a group at most once a "
+            "day, so the Compose text alone is enough for one run a day. Add a "
+            "wording for each extra run."
         )
         self.wording_hint.setObjectName("Muted")
         self.wording_hint.setWordWrap(True)
@@ -902,7 +906,7 @@ class PublishView(QWidget):
             f"{len(wordings)} wordings in rotation: "
             + ("the Compose text and " if self.base_body() else "")
             + f"{extra} alternate{'s' if extra != 1 else ''}. Each run gives every "
-            "group a wording it has not had yet, as long as one is left."
+            "group a wording it has not had today, as long as one is left."
         )
 
         rule = self.rule()
@@ -964,9 +968,9 @@ class PublishView(QWidget):
             # same post to the same group; pictures alone are identical every
             # run, which is the repetition the repeat guard exists to stop.
             self.notify(
-                "A repeating post needs some text as well as pictures — each run "
-                "gives every group a wording it has not had yet. Pictures on "
-                "their own can go out with Now or Once.",
+                "A repeating post needs some text as well as pictures: pictures "
+                "on their own are the same post every run. They can go out "
+                "with Now or Once.",
                 "error",
             )
             return False

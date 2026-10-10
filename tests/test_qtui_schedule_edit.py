@@ -417,13 +417,25 @@ class TestTheRules:
         assert stored(qt_app, schedule).overrides == frozenset()
 
     def test_a_group_that_has_had_every_wording_is_caught(self, qt_app, editing, groups):
-        """Adding a group is judged against its own history, like creating."""
+        """Adding a group is judged against its own history, like creating.
+
+        The history that counts is the day of the first run: the same words
+        may go to a group once a day.
+        """
         editor, schedule = editing
+        first_run = recurrence.next_occurrence(
+            recurrence.build(schedule.times), utcnow()
+        )
         for body in WORDINGS:
             task = qt_app.task_repo.create(body, [(groups[2].id, body)])
             target = qt_app.task_repo.targets_for(task.id)[0]
             qt_app.task_repo.claim_target(target.id)
-            qt_app.task_repo.mark_target(target.id, TARGET_DONE)
+            qt_app.task_repo.mark_target(
+                target.id,
+                TARGET_DONE,
+                posted=True,
+                posted_at=first_run - timedelta(hours=1),
+            )
         editor._group_boxes[groups[2].id].setChecked(True)
         assert editor.save() is False
         assert "every one of these wordings" in editor.override_list.text()

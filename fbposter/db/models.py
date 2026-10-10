@@ -28,6 +28,10 @@ TARGET_PENDING = "pending"
 TARGET_RUNNING = "running"
 TARGET_DONE = "done"
 TARGET_FAILED = "failed"
+# Stopped after Post was clicked, so whether it went out is not known. Treated
+# exactly like failed by everything that decides a post; it exists so the Queue
+# never tells the user "not posted" about a post that may be live.
+TARGET_UNCONFIRMED = "unconfirmed"
 TARGET_SKIPPED = "skipped"
 # Submitted to a group that holds posts for admin approval. Counts as posted
 # for every safety purpose -- cooldown, daily cap, repeated text -- because the

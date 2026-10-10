@@ -320,11 +320,11 @@ class TestSummaryAndWarnings:
         assert "posting hours" in publish.summary.text()
 
     def test_the_empty_wordings_hint_shows_when_there_are_no_alternates(self, views):
-        """It carries the one non-obvious thing: one wording runs once."""
+        """It carries the one non-obvious thing: one wording is one run a day."""
         _compose, publish = views
         publish.set_mode(REPEAT)
         assert publish.wording_hint.isVisibleTo(publish)
-        assert "gets it once" in publish.wording_hint.text()
+        assert "one run a day" in publish.wording_hint.text()
 
     def test_the_hint_goes_away_once_an_alternate_exists(self, views):
         _compose, publish = views
@@ -497,6 +497,8 @@ class TestPostAnyway:
         publish.set_mode(REPEAT)
         publish._time_rows[0].setTime(publish._time_rows[0].time().fromString("10:00", "HH:mm"))
         publish.add_time("20:00")
+        # Two runs a day need two wordings: the same text goes once a day.
+        publish.add_wording("Second wording")
         assert publish.publish() is True
         (schedule,) = qt_app.schedule_repo.list()
         assert schedule.overrides == frozenset()
@@ -533,6 +535,7 @@ class TestPostAnyway:
         offering to break rules for a post that no longer exists."""
         _compose, publish = views
         publish.set_mode(REPEAT)
+        publish.add_wording("Second wording")  # two runs a day need two
         publish.add_time("12:00")
         publish.publish()
         assert not publish.override_card.isHidden()
@@ -654,3 +657,21 @@ class TestPicturesOnly:
         _compose, publish, _said = pictures
         publish.refresh_recipients()
         assert publish.preview_note.text() == "Pictures only — 1 picture, no text."
+
+
+class TestOnceADay:
+    """The same words may go to a group once a day (the user's choice,
+    2026-10-07). A repeating post needs as many wordings as it has runs a day."""
+
+    def test_two_runs_a_day_on_one_wording_is_refused(self, qt_app, views):
+        _compose, publish = views
+        publish.set_mode(REPEAT)
+        publish._time_rows[0].setTime(publish._time_rows[0].time().fromString("10:00", "HH:mm"))
+        publish.add_time("20:00")
+        assert publish.publish() is False
+        assert "only 1 different wording" in publish.override_list.text()
+
+    def test_one_run_a_day_on_one_wording_is_fine(self, qt_app, views):
+        _compose, publish = views
+        publish.set_mode(REPEAT)
+        assert publish.publish() is True

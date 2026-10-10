@@ -624,7 +624,10 @@ class ComposeView(QWidget):
                     body=self.body_for(group.id).strip(),
                     last_posted_at=group.last_posted_at,
                     cooldown_hours=group.cooldown_hours,
-                    recent_bodies=tuple(self.app.group_repo.recent_bodies(group.id)),
+                    # Only that day's: the same words may go once a day.
+                    recent_bodies=tuple(
+                        self.app.group_repo.sent_on_day(group.id, when or now)
+                    ),
                 )
             )
 

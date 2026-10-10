@@ -29,6 +29,10 @@ Three screens, one step each, and the sidebar order *is* the sequence. The split
 - **The wording tabs live on their own row in a horizontal scroll area.** Sharing a row with the Write/Preview toggle, the layout shrank them below their own text and clipped group names mid-word once the font grew. The strip uses `setAlignment(Qt.AlignLeft)` rather than a trailing stretch, because `refresh_tabs()` clears the layout by index and counts what is in it.
 - **A bare `QWidget` inside a card draws a grey band across it** — the global stylesheet gives every widget the window background. Use `widgets.row()` for any container inside a card; it is styled transparent in `theme.py`.
 
+## The Queue answers "did it post?"
+
+Every label on a Queue card comes from `task_label` / `target_label` in `views/queue.py`, never from `state.title()`. The worker's own words told the user nothing ("Halted"), and two were wrong. Groups left behind by a stopped or cancelled batch said "Pending" for ever. A batch where every group was skipped said "Done" in green. A finished batch is named by what reached the groups: Posted, Posted to N of M, Nothing posted. A group that may have posted reads "Might have posted — check the group", never "Not posted". A post of pictures that Facebook's reply did not confirm reads "Uploaded, not verified" (`unverified()`: done, no words, no `post_url`), never "Posted". A stopped batch names the group it stopped at, and does not print that group's reason a second time. `tests/test_qtui_queue.py::TestEveryLabelSaysWhetherItPosted` pins it.
+
 ## Redrawing: an unchanged screen is not rebuilt
 
 Every view used to clear its layout and rebuild every widget on every visit. Measured with 12 groups and 25 batches: **Queue 110ms, Groups 44ms, Publish 34ms** per view switch — all of it widget construction, to draw exactly what was already on screen. The Queue paid it again on *every worker event*, so during a batch, which is when someone is actually watching it, it rebuilt several times a minute.

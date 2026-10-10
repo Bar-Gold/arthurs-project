@@ -17,6 +17,17 @@ from fbposter.guards import rule_labels
 from fbposter.db.models import (
     TARGET_AWAITING_APPROVAL,
     TARGET_DECLINED,
+    TARGET_DONE,
+    TARGET_FAILED,
+    TARGET_PENDING,
+    TARGET_RUNNING,
+    TARGET_SKIPPED,
+    TARGET_UNCONFIRMED,
+    TASK_CANCELLED,
+    TASK_DONE,
+    TASK_FAILED,
+    TASK_HALTED,
+    TASK_MISSED,
     TASK_PENDING,
     TASK_RUNNING,
     utcnow,
@@ -26,20 +37,108 @@ from .. import theme
 from ..widgets import card, clear, replace_at
 from .compose import pictures_only
 
-STATE_COLOURS = {
-    "done": "SUCCESS",
-    "posted": "SUCCESS",
-    "failed": "DANGER",
-    "halted": "DANGER",
-    "cancelled": "TEXT_MUTED",
-    "missed": "WARNING",
-    "skipped": "WARNING",
-    "running": "ACCENT_TEXT",
-    TARGET_AWAITING_APPROVAL: "WARNING",
-    TARGET_DECLINED: "TEXT_MUTED",
+# Every label answers "did it post?" in plain words. The stored states are
+# the worker's vocabulary -- "halted", "skipped" -- and showing them as they
+# were told the user nothing, or worse: groups left behind by a stopped batch
+# said "Pending" for ever, and a batch where every group was skipped said
+# "Done" in green.
+TASK_LABELS = {
+    TASK_PENDING: ("Queued", "TEXT_MUTED"),
+    TASK_RUNNING: ("In progress", "ACCENT_TEXT"),
+    TASK_HALTED: ("Stopped", "DANGER"),
+    TASK_FAILED: ("Stopped", "DANGER"),
+    TASK_CANCELLED: ("Cancelled", "TEXT_MUTED"),
+    TASK_MISSED: ("Missed", "WARNING"),
+}
+
+TARGET_LABELS = {
+    TARGET_RUNNING: ("Posting now", "ACCENT_TEXT"),
+    TARGET_DONE: ("Posted", "SUCCESS"),
+    TARGET_FAILED: ("Not posted", "DANGER"),
+    # Stopped after Post was clicked: never "not posted", it may be live.
+    TARGET_UNCONFIRMED: ("Might have posted — check the group", "DANGER"),
+    TARGET_SKIPPED: ("Not posted", "WARNING"),
+    TARGET_AWAITING_APPROVAL: ("Waiting for admin approval", "WARNING"),
+    TARGET_DECLINED: ("Declined by an admin", "TEXT_MUTED"),
+}
+
+# Where the batch's own note goes, and in what colour. A note on a batch still
+# to go out says why it is waiting, which is not an error.
+TASK_NOTE_COLOURS = {
+    TASK_HALTED: "DANGER",
+    TASK_FAILED: "DANGER",
+    TASK_MISSED: "WARNING",
 }
 
 SNIPPET_CHARS = 60
+
+
+def unverified(target) -> bool:
+    """Pictures only, and nothing confirmed they posted.
+
+    Facebook's reply to the Post click confirms a post and gives it a link;
+    a post of pictures has no words to look for in the feed either. Without
+    the reply, the post window closing is all there was to go on.
+    """
+    return (
+        target.state == TARGET_DONE
+        and not target.body.strip()
+        and not target.post_url
+    )
+
+
+def task_label(task, targets) -> tuple[str, str]:
+    """The batch's status, as (words, colour token).
+
+    A finished batch is described by what reached the groups, not by the fact
+    that the worker is done with it.
+    """
+    if task.state != TASK_DONE:
+        return TASK_LABELS.get(task.state, (task.state.title(), "TEXT_MUTED"))
+    total = len(targets)
+    uploaded = sum(1 for t in targets if unverified(t))
+    posted = sum(1 for t in targets if t.state == TARGET_DONE) - uploaded
+    waiting = sum(1 for t in targets if t.state == TARGET_AWAITING_APPROVAL)
+    if total and posted == total:
+        return "Posted", "SUCCESS"
+    if total and uploaded and posted + uploaded == total:
+        return "Uploaded, not verified", "WARNING"
+    if posted + uploaded + waiting == 0:
+        return "Nothing posted", "WARNING"
+    if waiting == 0 and uploaded == 0:
+        return f"Posted to {posted} of {total} groups", "WARNING"
+    return "Finished", "WARNING"
+
+
+def target_label(task, target) -> tuple[str, str]:
+    """One group's status, as (words, colour token)."""
+    if unverified(target):
+        return "Uploaded, not verified", "WARNING"
+    if target.state == TARGET_PENDING:
+        # Pending under a batch that has stopped, been cancelled or missed is
+        # never going out. It used to say "Pending" regardless.
+        if task.state in (TASK_PENDING, TASK_RUNNING):
+            return "Waiting its turn", "TEXT_MUTED"
+        return "Not posted", "TEXT_MUTED"
+    return TARGET_LABELS.get(target.state, (target.state.title(), "TEXT_MUTED"))
+
+
+def task_note(task, targets) -> str:
+    """The line under a batch, or "" for none.
+
+    A stopped batch already has its reason under the group it stopped at, so
+    it is not repeated here -- the card used to print it twice.
+    """
+    if task.state in (TASK_HALTED, TASK_FAILED):
+        stopped = [
+            t for t in targets if t.state in (TARGET_FAILED, TARGET_UNCONFIRMED)
+        ]
+        if stopped:
+            note = f"Stopped at {stopped[-1].group_label}: see the note under it."
+            if any(t.state == TARGET_PENDING for t in targets):
+                note += " The groups after it were not posted to."
+            return note
+    return task.error
 
 
 class QueueView(QWidget):
@@ -157,7 +256,9 @@ class QueueView(QWidget):
             task.scheduled_for,
             self._schedule_name(task.schedule_id, schedule_names),
             task.overrides,
-            tuple((t.id, t.state, t.error, t.group_label) for t in targets),
+            tuple(
+                (t.id, t.state, t.error, t.group_label, t.post_url) for t in targets
+            ),
         )
 
     def refresh(self, force: bool = False) -> None:
@@ -266,10 +367,9 @@ class QueueView(QWidget):
         title.setWordWrap(True)
         header.addWidget(title, 1)
 
-        state = QLabel(task.state.title())
-        state.setStyleSheet(
-            f"color: {theme.C[STATE_COLOURS.get(task.state, 'TEXT_MUTED')]};"
-        )
+        words, colour = task_label(task, targets)
+        state = QLabel(words)
+        state.setStyleSheet(f"color: {theme.C[colour]};")
         header.addWidget(state)
 
         if task.state in (TASK_PENDING, TASK_RUNNING):
@@ -303,15 +403,9 @@ class QueueView(QWidget):
             # full-width card. Stretching the name pushed the two roughly 600px
             # apart, and they stopped reading as one fact about one group.
             row.addWidget(label)
-            label_text = (
-                "Awaiting admin approval"
-                if target.state == TARGET_AWAITING_APPROVAL
-                else target.state.title()
-            )
-            outcome = QLabel(label_text)
-            outcome.setStyleSheet(
-                f"color: {theme.C[STATE_COLOURS.get(target.state, 'TEXT_MUTED')]};"
-            )
+            words, colour = target_label(task, target)
+            outcome = QLabel(words)
+            outcome.setStyleSheet(f"color: {theme.C[colour]};")
             row.addWidget(outcome)
             row.addStretch(1)
             if target.state == TARGET_AWAITING_APPROVAL:
@@ -332,11 +426,18 @@ class QueueView(QWidget):
                 error = QLabel(target.error)
                 error.setObjectName("Muted")
                 error.setWordWrap(True)
+                # Under its own group, so it is plain which group it is about.
+                error.setContentsMargins(theme.PAD_M, 0, 0, 0)
                 layout.addWidget(error)
 
-        if task.error:
-            error = QLabel(task.error)
-            error.setStyleSheet(f"color: {theme.C['DANGER']};")
-            error.setWordWrap(True)
-            layout.addWidget(error)
+        note_text = task_note(task, targets)
+        if note_text:
+            note = QLabel(note_text)
+            colour = TASK_NOTE_COLOURS.get(task.state)
+            if colour is None:
+                note.setObjectName("Muted")
+            else:
+                note.setStyleSheet(f"color: {theme.C[colour]};")
+            note.setWordWrap(True)
+            layout.addWidget(note)
         return box

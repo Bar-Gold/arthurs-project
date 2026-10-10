@@ -55,9 +55,12 @@ class AutomationHalted(FBPosterError):
     account gets restricted rather than warned.
     """
 
-    def __init__(self, verdict, message: str) -> None:
+    def __init__(self, verdict, message: str, may_have_posted: bool = False) -> None:
         super().__init__(message)
         self.verdict = verdict
+        # True when the page turned bad after Post was clicked: the batch
+        # still stops, but the Queue must not say the post did not go out.
+        self.may_have_posted = may_have_posted
 
 
 class ComposerNotFound(FBPosterError):
@@ -72,8 +75,13 @@ class PostNotVerified(FBPosterError):
     """The post was submitted but could not be found afterwards.
 
     Not assumed to be a failure -- it may well have gone out -- so the caller
-    must not simply retry it.
+    must not simply retry it. `may_have_posted` is False only when the evidence
+    says it did not: the post window never closed and the post is not there.
     """
+
+    def __init__(self, message: str, may_have_posted: bool = True) -> None:
+        super().__init__(message)
+        self.may_have_posted = may_have_posted
 
 
 class CheckpointError(FBPosterError):

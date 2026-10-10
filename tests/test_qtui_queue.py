@@ -19,6 +19,9 @@ from fbposter.db.models import (
     TARGET_AWAITING_APPROVAL,
     TARGET_DECLINED,
     TARGET_DONE,
+    TARGET_FAILED,
+    TARGET_SKIPPED,
+    TARGET_UNCONFIRMED,
     TASK_DONE,
     TASK_HALTED,
     TASK_PENDING,
@@ -268,3 +271,157 @@ class TestAPicturesOnlyBatch:
 
         titles = [label.text() for label in view.findChildren(QLabel)]
         assert any(t.endswith("— Pictures only — 2 pictures, no text") for t in titles)
+
+
+class TestEveryLabelSaysWhetherItPosted:
+    """The worker's own words -- "halted", "skipped", "pending" -- told the user
+    nothing, and two of them were wrong: groups left behind by a stopped batch
+    said "Pending" for ever, and a batch where every group was skipped said
+    "Done" in green."""
+
+    def card_texts(self, qt_app):
+        from PySide6.QtWidgets import QLabel
+
+        view = qt_app.views["queue"]
+        qt_app.show_view("queue")
+        view.refresh(force=True)
+        return [label.text() for label in view.holder.findChildren(QLabel)]
+
+    def batch(self, qt_app, count=2, **create):
+        groups = qt_app.group_repo.list()[:count]
+        task = qt_app.task_repo.create(
+            BODY, [(g.id, f"{BODY} {i}") for i, g in enumerate(groups)], **create
+        )
+        return task, qt_app.task_repo.targets_for(task.id)
+
+    def finish(self, qt_app, task, state, error=""):
+        qt_app.task_repo.mark_task(task.id, state, error=error, finished=True)
+
+    def test_a_stopped_batch(self, qt_app, repos):
+        task, (first, _second) = self.batch(qt_app)
+        reason = "Facebook showed its login page."
+        qt_app.task_repo.mark_target(first.id, TARGET_FAILED, error=reason)
+        self.finish(qt_app, task, TASK_HALTED, error=reason)
+
+        texts = self.card_texts(qt_app)
+        assert "Stopped" in texts
+        assert texts.count("Not posted") == 2, "the group after it said Pending"
+        assert texts.count(reason) == 1, "the reason was printed twice"
+        assert any(
+            t.startswith("Stopped at Demo 0") and "after it were not posted" in t
+            for t in texts
+        )
+
+    def test_a_post_that_may_be_out_never_says_not_posted(self, qt_app, repos):
+        task, (first,) = self.batch(qt_app, count=1)
+        qt_app.task_repo.mark_target(first.id, TARGET_UNCONFIRMED, error="Check it.")
+        self.finish(qt_app, task, TASK_HALTED, error="Check it.")
+
+        texts = self.card_texts(qt_app)
+        assert "Might have posted — check the group" in texts
+        assert "Not posted" not in texts
+
+    def test_every_group_skipped_is_not_done(self, qt_app, repos):
+        task, targets = self.batch(qt_app)
+        for target in targets:
+            qt_app.task_repo.mark_target(target.id, TARGET_SKIPPED, error="Cooldown.")
+        self.finish(qt_app, task, TASK_DONE)
+
+        texts = self.card_texts(qt_app)
+        assert "Nothing posted" in texts
+        assert texts.count("Not posted") == 2
+        assert "Done" not in texts
+
+    def test_every_group_posted(self, qt_app, repos):
+        task, targets = self.batch(qt_app)
+        for target in targets:
+            qt_app.task_repo.mark_target(target.id, TARGET_DONE, posted=True)
+        self.finish(qt_app, task, TASK_DONE)
+
+        texts = self.card_texts(qt_app)
+        assert texts.count("Posted") == 3  # the batch and both groups
+
+    def test_some_posted(self, qt_app, repos):
+        task, (first, second) = self.batch(qt_app)
+        qt_app.task_repo.mark_target(first.id, TARGET_DONE, posted=True)
+        qt_app.task_repo.mark_target(second.id, TARGET_SKIPPED, error="Cooldown.")
+        self.finish(qt_app, task, TASK_DONE)
+
+        assert "Posted to 1 of 2 groups" in self.card_texts(qt_app)
+
+    def test_a_cancelled_batch_leaves_nothing_pending(self, qt_app, repos):
+        task, _targets = self.batch(qt_app)
+        qt_app.task_repo.cancel(task.id)
+
+        texts = self.card_texts(qt_app)
+        assert "Cancelled" in texts
+        assert texts.count("Not posted") == 2
+        assert "Pending" not in texts
+
+    def test_a_batch_still_to_go(self, qt_app, repos):
+        self.batch(qt_app)
+        texts = self.card_texts(qt_app)
+        assert "Queued" in texts
+        assert texts.count("Waiting its turn") == 2
+
+    def test_a_waiting_batch_says_why(self, qt_app, repos):
+        task, _targets = self.batch(qt_app)
+        note = "Waiting: it is outside the posting hours (08:00-23:00)."
+        qt_app.task_repo.set_resume_at(task.id, utcnow() + timedelta(hours=8), note=note)
+        assert note in self.card_texts(qt_app)
+
+    def test_a_post_anyway_batch_that_went_out_reads_posted(self, qt_app, repos):
+        task, (first,) = self.batch(qt_app, count=1, overrides={"cooldown"})
+        qt_app.task_repo.mark_target(first.id, TARGET_DONE, posted=True)
+        self.finish(qt_app, task, TASK_DONE)
+
+        texts = self.card_texts(qt_app)
+        assert texts.count("Posted") == 2
+        assert not any("Not posted" in t for t in texts)
+
+    def test_no_label_uses_the_worker_s_own_words(self, qt_app, repos):
+        for state in (TASK_HALTED, TASK_DONE, TASK_PENDING):
+            task, targets = self.batch(qt_app)
+            qt_app.task_repo.mark_target(targets[0].id, TARGET_SKIPPED)
+            if state != TASK_PENDING:
+                self.finish(qt_app, task, state)
+        texts = self.card_texts(qt_app)
+        for word in ("Halted", "Pending", "Done", "Failed", "Skipped", "Running"):
+            assert word not in texts
+
+
+class TestPicturesNobodyCouldCheck:
+    """A post of pictures that Facebook's reply did not confirm: the post
+    window closed, and that is all there was to go on."""
+
+    def picture_batch(self, qt_app, post_url=""):
+        group = qt_app.group_repo.list()[0]
+        task = qt_app.task_repo.create("", [(group.id, "")], media_paths=["a.jpg"])
+        target = qt_app.task_repo.targets_for(task.id)[0]
+        qt_app.task_repo.mark_target(
+            target.id,
+            TARGET_DONE,
+            posted=True,
+            post_url=post_url,
+            error="" if post_url else "Only pictures were uploaded.",
+        )
+        qt_app.task_repo.mark_task(task.id, TASK_DONE, finished=True)
+
+    def texts(self, qt_app):
+        from PySide6.QtWidgets import QLabel
+
+        view = qt_app.views["queue"]
+        qt_app.show_view("queue")
+        view.refresh(force=True)
+        return [label.text() for label in view.holder.findChildren(QLabel)]
+
+    def test_it_says_uploaded_not_verified(self, qt_app, repos):
+        self.picture_batch(qt_app)
+        texts = self.texts(qt_app)
+        assert texts.count("Uploaded, not verified") == 2  # the batch and the group
+        assert "Posted" not in texts
+
+    def test_confirmed_by_facebook_it_says_posted(self, qt_app, repos):
+        self.picture_batch(qt_app, post_url="https://www.facebook.com/groups/1/permalink/2/")
+        texts = self.texts(qt_app)
+        assert texts.count("Posted") == 2

@@ -267,3 +267,23 @@ class TestNonsenseWindowHours:
     def test_a_valid_hour_is_kept(self):
         for hour in (0, 8, 23):
             assert clock.sane_hour(hour, 99) == hour
+
+
+class TestOnceADay:
+    """The same words may go to a group once a day (the user's choice,
+    2026-10-07). The caller passes only that day's posts; the message names
+    the day."""
+
+    def test_it_names_today(self):
+        violation = guards.check_repeat_text("Selling a bike", ["Selling a bike"], "Bikes")
+        assert violation.message == "This exact text was already sent to Bikes today."
+
+    def test_a_batch_for_another_day_says_that_day(self):
+        now = clock.parse_local("2026-08-10 12:00")
+        verdict = evaluate_batch(
+            [PlannedTarget(1, "Bikes", "Same words", recent_bodies=("Same words",))],
+            now=now,
+            when=now + timedelta(days=2),
+        )
+        (repeat,) = [v for v in verdict.blocked if v.rule == guards.REPEAT_TEXT]
+        assert repeat.message.endswith("that day.")

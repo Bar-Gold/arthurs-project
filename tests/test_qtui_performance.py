@@ -374,7 +374,7 @@ class TestOnlyTheChangedBatchIsRedrawn:
 
         card = widgets_in(view.rows)[self.position_of(app, changed.id)]
         shown = [label.text() for label in card.findChildren(QLabel)]
-        assert any("Done" in text for text in shown), shown
+        assert "Posted" in shown, shown
         assert any("Many Group" in text for text in shown), "lost the group names"
 
     def test_an_untouched_card_still_shows_its_groups(self, batches):

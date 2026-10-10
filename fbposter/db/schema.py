@@ -331,6 +331,25 @@ def _migration_010(connection: sqlite3.Connection) -> None:
     )
 
 
+def _migration_011(connection: sqlite3.Connection) -> None:
+    """Mark the failed posts that may in fact have gone out.
+
+    They were stored as `failed`, which the Queue now shows as "Not posted".
+    These are the ones whose own note says otherwise: the post was clicked,
+    then could not be found, or the app was interrupted mid-post. Read off the
+    notes the worker wrote, because nothing else on the row tells them apart.
+    """
+    connection.execute(
+        "UPDATE task_targets SET state = 'unconfirmed' "
+        "WHERE state = 'failed' AND ("
+        "  error LIKE '%may well have gone out%'"
+        "  OR error LIKE '%cannot be checked%'"
+        "  OR error LIKE 'Interrupted mid-post%'"
+        "  OR error LIKE 'Interrupted: %'"
+        ")"
+    )
+
+
 # Index i applies when user_version == i, and bumps it to i + 1.
 MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _migration_001,
@@ -343,6 +362,7 @@ MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _migration_008,
     _migration_009,
     _migration_010,
+    _migration_011,
 ]
 
 LATEST_VERSION = len(MIGRATIONS)

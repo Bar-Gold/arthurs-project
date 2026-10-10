@@ -11,6 +11,7 @@ Two rules from CLAUDE.md are load-bearing here:
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Sequence
@@ -39,11 +40,39 @@ VERIFY_POLL_MS = 3_000
 VERIFY_SCROLL_PX = 700
 # How often to re-check while waiting for the single-page app to render.
 RENDER_POLL_MS = 500
+# How long to wait, once the post window has closed, for Facebook's reply to
+# the Post click. It came about five seconds after the click live.
+CREATION_WAIT_MS = 15_000
 
 # Long enough to be unique to this post, short enough to survive Facebook
 # reflowing or truncating the text in the feed.
 SNIPPET_MAX_CHARS = 60
 SNIPPET_MIN_CHARS = 12
+
+# Added to a halt that happens after Post was clicked. The page turning bad
+# afterwards does not take the post back, so "nothing was posted" is not true.
+SENT_BEFORE_STOP = (
+    "Post had already been clicked, so this post may have gone out. Check the "
+    "group before posting it again."
+)
+
+
+def _after_click(exc: Exception) -> str:
+    """Why a post stopped after Post was clicked, without claiming it failed.
+
+    Anything raised past that click used to reach the worker as a plain error,
+    which reported "Nothing was posted" -- about a post that may well be live.
+    """
+    text = str(exc)
+    if "Timeout" in text and "exceeded" in text:
+        what = "Facebook stopped responding"
+    else:
+        what = "something unexpected went wrong"
+    return (
+        f"Clicked Post, but then {what} before the post could be checked. It may "
+        "well have gone out — check the group before queueing it again, because "
+        "posting it twice is worse than not posting it."
+    )
 
 
 @dataclass(frozen=True)
@@ -51,6 +80,55 @@ class PostRequest:
     group_url: str
     body: str
     media_paths: tuple[Path, ...] = ()
+    # These exact words have been sent to this group before. The same text may
+    # go once a day, so an older post with it can sit in the feed, and finding
+    # the words there is then no proof of this post.
+    sent_before: bool = False
+
+
+def created_post_url(reply_text: str, group_url: str = "") -> str:
+    """The new post's own link, from Facebook's reply to the Post click.
+
+    "" when the reply does not describe a new post. The shape was read off the
+    live site on 2026-10-07: data.story_create.story carries `url`
+    (.../permalink/<id>/) and `legacy_story_hideable_id` (the <id>).
+    """
+    for line in reply_text.splitlines():
+        line = line.strip().removeprefix("for (;;);")
+        if not line.startswith("{"):
+            continue
+        try:
+            reply = json.loads(line)
+        except ValueError:
+            continue
+        data = reply.get("data") if isinstance(reply, dict) else None
+        created = data.get("story_create") if isinstance(data, dict) else None
+        story = created.get("story") if isinstance(created, dict) else None
+        if not isinstance(story, dict):
+            continue
+        url = story.get("url")
+        if isinstance(url, str) and url.startswith("http"):
+            return url
+        post_id = str(story.get("legacy_story_hideable_id") or "")
+        if post_id.isdigit() and group_url:
+            return group_url.rstrip("/") + f"/permalink/{post_id}/"
+    return ""
+
+
+def _call_name(request: Any) -> str:
+    """Which of Facebook's calls a request is: its "friendly name"."""
+    try:
+        from urllib.parse import parse_qs
+
+        name = parse_qs(request.post_data or "").get("fb_api_req_friendly_name")
+        if name:
+            return name[0]
+    except Exception:
+        pass
+    try:
+        return request.headers.get("x-fb-friendly-name", "")
+    except Exception:
+        return ""
 
 
 @dataclass(frozen=True)
@@ -125,6 +203,10 @@ class GroupPoster:
         self.page = page
         self.human = humanizer or Humanizer()
         self.dry_run = dry_run
+        # Set the moment Post is clicked. From then on a failure cannot be
+        # reported as "not posted", because it may have gone out.
+        self.clicked_post = False
+        self._creation_listener = None
 
     # -- guards ------------------------------------------------------------
     def _page_text(self) -> str:
@@ -239,7 +321,10 @@ class GroupPoster:
     def type_body(self, dialog: Any, body: str) -> None:
         textbox = self._find_textbox(dialog)
         if textbox is None:
-            raise ComposerNotFound("The composer opened but has no text field.")
+            raise ComposerNotFound(
+                "The post window opened, but had nowhere to type. Facebook may "
+                "have changed its page."
+            )
 
         textbox.click()
 
@@ -284,8 +369,12 @@ class GroupPoster:
         """
         button = self._find_post_button(dialog)
         if button is None:
-            raise ComposerNotFound("The composer has no Post button.")
+            raise ComposerNotFound(
+                "The post window had no Post button. Facebook may have changed "
+                "its page."
+            )
 
+        self.clicked_post = True
         self.human.hover_then_click(button)
         try:
             dialog.wait_for(state="detached", timeout=PUBLISH_TIMEOUT_MS)
@@ -367,11 +456,12 @@ class GroupPoster:
         text = self._page_text().lower()
         return any(marker in text for marker in strings.PENDING_APPROVAL_MARKERS)
 
-    def _pending_outcome(self) -> PostOutcome:
+    def _pending_outcome(self, post_url: str = "") -> PostOutcome:
         return PostOutcome(
             posted=True,
             verified=False,
             pending=True,
+            post_url=post_url,
             detail=(
                 "Submitted, and the group is holding it for an admin to "
                 "approve. It is not visible yet and may still be declined."
@@ -472,6 +562,26 @@ class GroupPoster:
 
     # -- the whole flow ----------------------------------------------------
     def post(self, request: PostRequest) -> PostOutcome:
+        """Post, and never let a failure after the Post click read as "not posted"."""
+        self.clicked_post = False
+        try:
+            return self._post(request)
+        except PostNotVerified:
+            raise
+        except AutomationHalted as exc:
+            if not self.clicked_post:
+                raise
+            # Still a halt -- a checkpoint after the click stops the batch like
+            # any other -- but one that says the post may be out there.
+            raise AutomationHalted(
+                exc.verdict, f"{exc} {SENT_BEFORE_STOP}", may_have_posted=True
+            ) from exc
+        except Exception as exc:
+            if not self.clicked_post:
+                raise
+            raise PostNotVerified(_after_click(exc)) from exc
+
+    def _post(self, request: PostRequest) -> PostOutcome:
         self.open_group(request.group_url)
         dialog = self.open_composer()
 
@@ -491,7 +601,14 @@ class GroupPoster:
                     ),
                 )
 
-            closed = self.publish(dialog)
+            replies = self._listen_for_creation()
+            try:
+                closed = self.publish(dialog)
+                # Read before anything navigates: once the page moves on,
+                # Facebook's reply can no longer be read (seen live).
+                created = self._created_post_url(replies, request.group_url)
+            finally:
+                self._stop_listening()
         except AutomationHalted:
             self.discard()
             raise
@@ -499,11 +616,25 @@ class GroupPoster:
             self.discard()
             raise
 
+        if created:
+            return self._created_outcome(request, created)
+
+        # No reply to go on -- Facebook may have renamed the call. The older
+        # checks follow, and they find a post by its words.
         if not distinctive_snippet(request.body):
             return self._pictures_only_outcome(request, closed)
 
         # Verification is the source of truth, not whether the dialog closed.
         if self.verify(request.body, request.group_url):
+            if request.sent_before:
+                # The same words were sent to this group before, so what was
+                # found may be the older post. Saying "posted" on that is the
+                # false confirmation this guards against.
+                raise PostNotVerified(
+                    "Clicked Post, and these words are in the group, but the same "
+                    "text was posted there before, so the app cannot tell whether "
+                    "this one went out. Check the group before posting it again."
+                )
             # Seeing it is not the same as it being published. Facebook shows
             # the author their own queued post in the feed, so in a moderated
             # group verify() succeeds on a post nobody else can see -- observed
@@ -532,18 +663,105 @@ class GroupPoster:
             # clear it rather than leaving a draft for the next run.
             self.discard()
             raise PostNotVerified(
-                "Clicked Post but the composer never closed and the post is not in "
-                "the group, so it almost certainly did not go out — usually a slow "
-                "or dropped connection. The draft was cleared, so it is safe to "
-                "try again."
+                "Clicked Post, but the post window never closed and the post is not "
+                "in the group, so it almost certainly did not go out — usually a "
+                "slow or dropped connection. The draft was cleared, so it is safe "
+                "to try again.",
+                may_have_posted=False,
             )
 
         raise PostNotVerified(
-            "Clicked Post, the composer closed, but the post could not be found in "
-            "the group afterwards. It may well have gone out — check the group "
+            "Clicked Post, the post window closed, but the post could not be found "
+            "in the group afterwards. It may well have gone out — check the group "
             "before queueing it again, because posting it twice is worse than not "
             "posting it at all."
         )
+
+    def _listen_for_creation(self) -> list:
+        """Start keeping Facebook's reply to the Post click.
+
+        Only listens: nothing about how the post is made changes. Returns the
+        list the replies are kept in.
+        """
+        replies: list = []
+
+        def keep(response: Any) -> None:
+            try:
+                if (
+                    strings.GRAPHQL_PATH in response.url
+                    and _call_name(response.request) == strings.POST_CREATED_CALL
+                ):
+                    replies.append(response)
+            except Exception:
+                pass  # listening must never be what breaks a post
+
+        try:
+            self.page.on("response", keep)
+            self._creation_listener = keep
+        except Exception:
+            self._creation_listener = None
+        return replies
+
+    def _stop_listening(self) -> None:
+        if self._creation_listener is None:
+            return
+        try:
+            self.page.remove_listener("response", self._creation_listener)
+        except Exception:
+            pass
+        self._creation_listener = None
+
+    def _created_post_url(self, replies: list, group_url: str) -> str:
+        """The new post's link from Facebook's reply, or "" if there is none."""
+        if self._creation_listener is None:
+            return ""
+        waited = 0
+        while not replies and waited < CREATION_WAIT_MS:
+            self.page.wait_for_timeout(RENDER_POLL_MS)
+            waited += RENDER_POLL_MS
+        for reply in list(replies):
+            try:
+                url = created_post_url(reply.text(), group_url)
+            except Exception:
+                continue
+            if url:
+                return url
+        return ""
+
+    def _created_outcome(self, request: PostRequest, url: str) -> PostOutcome:
+        """Facebook made the post. All that is left is whether a group holds it.
+
+        The reply names this post and no other, which searching the feed for
+        its words cannot do once the same words may go to a group every day --
+        and it works for a post of pictures alone. One look at the group
+        follows, as a person would take, for the "pending admin approval"
+        banner; a checkpoint or a block shown there still halts the batch.
+        """
+        confirmed = PostOutcome(
+            posted=True,
+            verified=True,
+            post_url=url,
+            detail="Posted. Facebook confirmed it and gave the post its own link.",
+        )
+        if not request.group_url:
+            return confirmed
+        try:
+            self.page.goto(
+                request.group_url, timeout=NAV_TIMEOUT_MS, wait_until="domcontentloaded"
+            )
+            self.page.wait_for_timeout(FEED_SETTLE_MS)
+        except Exception:
+            # The post is made; not being able to look again only means the
+            # banner cannot be read.
+            return confirmed
+        self.guard()
+        if self.awaiting_approval():
+            # The banner shows while any post of ours is held. A text post is
+            # looked up in the group's pending list; pictures cannot be, and a
+            # group holding posts holds every member's.
+            if not distinctive_snippet(request.body) or self._is_queued(request):
+                return self._pending_outcome(url)
+        return confirmed
 
     def _pictures_only_outcome(self, request: PostRequest, closed: bool) -> PostOutcome:
         """Judge a post that has pictures and no words.
@@ -560,7 +778,7 @@ class GroupPoster:
         if not closed:
             self.discard()
             raise PostNotVerified(
-                "Clicked Post, but the composer was still open a minute later. A "
+                "Clicked Post, but the post window was still open a minute later. A "
                 "post with only pictures has no words to look for, so whether it "
                 "went out cannot be checked — look at the group before queueing it "
                 "again, because posting it twice is worse than not posting it."
@@ -581,13 +799,16 @@ class GroupPoster:
         # holds every member's, so it is read as this one waiting.
         if self.awaiting_approval():
             return self._pending_outcome()
+        # Only reached without Facebook's reply to the Post click, which is what
+        # confirms a post of pictures. The post window closing is a good sign
+        # and no more, and the Queue says exactly that.
         return PostOutcome(
             posted=True,
             verified=False,
             detail=(
-                "Posted the pictures: Facebook accepted the post and closed the "
-                "composer. With no text to search for, it was not looked up in "
-                "the feed."
+                "Only pictures were uploaded, so the app could not check that it "
+                "posted. Facebook closed the post window, which usually means it "
+                "went out. Look at the group to be sure."
             ),
         )
 

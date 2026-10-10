@@ -178,9 +178,9 @@ def pick_body(
     Starting at `offset` and wrapping is what keeps a run from sending one
     wording to every group at once: group 0 takes variant 0, group 1 takes
     variant 1, and the whole cycle shifts by one on the next run. Anything
-    already posted to *this* group is skipped, because sending it again is
-    exactly what `guards.check_repeat_text` refuses at the manual door and what
-    gets accounts restricted.
+    already sent to *this* group today is passed over, because that is what
+    `guards.check_repeat_text` refuses at the manual door. `recent_bodies` is
+    that day's text only: the same words may go to a group once a day.
 
     `allow_repeats` is a schedule the user started with "Post anyway" over the
     repeated-text rule: a fresh wording is still preferred, and only when none
@@ -206,6 +206,7 @@ class ScheduleTarget:
 
     name: str
     last_posted_at: datetime | None = None
+    # Text already sent to the group on the day of the first run.
     recent_bodies: tuple[str, ...] = ()
 
 
@@ -331,18 +332,30 @@ def check_schedule(
                 )
             )
 
-    usable = [w for w in wordings if w.strip()]
+    usable = {normalise(w) for w in wordings if w.strip()}
     if usable:
-        for target in targets:
-            seen = {normalise(body) for body in target.recent_bodies}
-            if all(normalise(w) in seen for w in usable):
-                found.append(
-                    Violation(
-                        REPEAT_TEXT,
-                        f"{target.name} has already been sent every one of these "
-                        "wordings.",
-                    )
+        # The same words may go to a group once a day, and every run posts to
+        # every group: so a day needs as many different wordings as it has runs.
+        if len(usable) < rule.per_day:
+            found.append(
+                Violation(
+                    REPEAT_TEXT,
+                    f"{rule.per_day} runs a day and only {len(usable)} different "
+                    f"wording{'s' if len(usable) != 1 else ''}, so the same text "
+                    "goes to a group more than once in a day.",
                 )
+            )
+        else:
+            for target in targets:
+                seen = {normalise(body) for body in target.recent_bodies}
+                if usable <= seen:
+                    found.append(
+                        Violation(
+                            REPEAT_TEXT,
+                            f"{target.name} has already been sent every one of "
+                            "these wordings on the day of the first run.",
+                        )
+                    )
 
     return tuple(found)
 

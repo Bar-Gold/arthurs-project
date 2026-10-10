@@ -537,10 +537,10 @@ class ScheduleEditView(QWidget):
         count = len(wordings)
         self.rotation_note.setText(
             f"{count} wording{'s' if count != 1 else ''} in rotation. Each run "
-            "gives every group a wording it has not had yet, as long as one is left."
+            "gives every group a wording it has not had today, as long as one is left."
             if count > 1
-            else "With one wording, each group gets it once, and every run after "
-            "that would repeat it, which the rules refuse. Add one or two more."
+            else "One wording. The same text goes to a group at most once a day, so "
+            "this is enough for one run a day. Add a wording for each extra run."
         )
 
         rule = self.rule()

@@ -12,6 +12,7 @@ import sqlite3
 from datetime import datetime, timedelta
 from typing import Any, Iterable, NamedTuple, Sequence
 
+from .. import clock
 from ..errors import DuplicateGroup, InvalidGroupURL
 from ..groups import parse_group_url
 from .connection import Database
@@ -23,6 +24,7 @@ from .models import (
     TARGET_PENDING,
     TARGET_RUNNING,
     TARGET_SKIPPED,
+    TARGET_UNCONFIRMED,
     TASK_CANCELLED,
     TASK_DONE,
     TASK_PENDING,
@@ -42,11 +44,17 @@ from .models import (
 # must be the same one, or pruning quietly weakens the guard.
 RECENT_BODIES_LIMIT = 20
 
+# Every state meaning the words reached the group, or may have: posted,
+# waiting for an admin, or stopped after Post was clicked. All three count for
+# the repeated-text rule, the cooldown and the daily limit (the user's choice
+# for the last, 2026-10-07).
+SENT_STATES = (TARGET_DONE, TARGET_AWAITING_APPROVAL, TARGET_UNCONFIRMED)
+
 # "Leave this column as it is", where None already means "clear it".
 KEEP = object()
 
 # What a queued post records for a group the user removed before its turn.
-GROUP_REMOVED = "Group was removed."
+GROUP_REMOVED = "You removed this group from your list before its turn."
 
 
 class Removal(NamedTuple):
@@ -311,16 +319,36 @@ class GroupRepo:
         )
 
     def recent_bodies(self, group_id: int, limit: int = RECENT_BODIES_LIMIT) -> list[str]:
-        """Text already posted to this group, newest first.
+        """Text already sent to this group, newest first.
 
-        Feeds the repeated-text guard: posting to an active group often is fine,
-        posting the same words to it twice is the thing that gets accounts
-        restricted.
+        The group's history, not the repeated-text rule -- that reads
+        `sent_on_day`. Verification reads this: an older post with the same
+        words may still be in the group's feed, so finding the words there is
+        no proof of a new post.
         """
         rows = self.db.query(
-            "SELECT body FROM task_targets WHERE group_id = ? AND state IN (?, ?) "
-            "ORDER BY posted_at DESC LIMIT ?",
-            (group_id, TARGET_DONE, TARGET_AWAITING_APPROVAL, limit),
+            "SELECT body FROM task_targets WHERE group_id = ? AND state IN (?, ?, ?) "
+            "ORDER BY COALESCE(posted_at, attempted_at) DESC LIMIT ?",
+            (group_id, *SENT_STATES, limit),
+        )
+        return [row["body"] for row in rows]
+
+    def sent_on_day(self, group_id: int, moment: datetime) -> list[str]:
+        """Text sent to this group on the Israel day `moment` falls on.
+
+        Feeds the repeated-text guard. The same words may go to a group once a
+        day -- the user's choice, 2026-10-07, replacing "never again" -- so
+        only that day's posts count. One that may have gone out counts too:
+        if it did, a second copy the same day is the duplicate this guards.
+        """
+        start = clock.start_of_local_day(moment)
+        # Past the next midnight whatever daylight saving does, then back to it.
+        end = clock.start_of_local_day(start + timedelta(hours=26))
+        rows = self.db.query(
+            "SELECT body FROM task_targets WHERE group_id = ? AND state IN (?, ?, ?) "
+            "  AND COALESCE(posted_at, attempted_at) >= ? "
+            "  AND COALESCE(posted_at, attempted_at) < ?",
+            (group_id, *SENT_STATES, to_iso(start), to_iso(end)),
         )
         return [row["body"] for row in rows]
 
@@ -506,8 +534,10 @@ class TaskRepo:
         return grouped
 
     def cancel(self, task_id: int) -> None:
+        # The note goes too: a "waiting for the posting hours" line under a
+        # cancelled batch would say it is still going to post.
         self.db.write(
-            "UPDATE tasks SET state = ?, finished_at = ? WHERE id = ?",
+            "UPDATE tasks SET state = ?, error = '', finished_at = ? WHERE id = ?",
             (TASK_CANCELLED, to_iso(utcnow()), task_id),
         )
 
@@ -677,10 +707,24 @@ class TaskRepo:
         )
         return [TaskTarget.from_row(row) for row in rows]
 
-    def set_resume_at(self, task_id: int, when: datetime | None) -> None:
-        self.db.write(
-            "UPDATE tasks SET resume_at = ? WHERE id = ?", (to_iso(when), task_id)
-        )
+    def set_resume_at(
+        self, task_id: int, when: datetime | None, note: str | None = None
+    ) -> None:
+        """When the worker may next act on this batch, and optionally why.
+
+        `note` says why a batch is waiting -- the posting hours, the daily
+        limit, Chrome -- so the Queue can say it after the toast has gone.
+        Posting the next group clears it.
+        """
+        if note is None:
+            self.db.write(
+                "UPDATE tasks SET resume_at = ? WHERE id = ?", (to_iso(when), task_id)
+            )
+        else:
+            self.db.write(
+                "UPDATE tasks SET resume_at = ?, error = ? WHERE id = ?",
+                (to_iso(when), note, task_id),
+            )
 
     def mark_task(
         self,
@@ -711,11 +755,13 @@ class TaskRepo:
         attempted: bool = False,
         posted: bool = False,
         post_url: str = "",
+        posted_at: datetime | None = None,
     ) -> None:
         """Record one group's outcome.
 
         Committed the moment it happens: that is what lets a crash resume a
-        batch rather than start it again.
+        batch rather than start it again. `posted_at` overrides "now" for a
+        post that happened earlier, such as one found after a crash.
         """
         sets = ["state = ?", "error = ?"]
         params: list[Any] = [state, error]
@@ -724,7 +770,7 @@ class TaskRepo:
             params.append(to_iso(utcnow()))
         if posted:
             sets.append("posted_at = ?")
-            params.append(to_iso(utcnow()))
+            params.append(to_iso(posted_at or utcnow()))
         if post_url:
             sets.append("post_url = ?")
             params.append(post_url)
@@ -744,8 +790,8 @@ class TaskRepo:
         """Group-posts completed since a moment. Feeds the daily cap."""
         row = self.db.query_one(
             "SELECT COUNT(*) AS n FROM task_targets "
-            "WHERE state IN (?, ?) AND posted_at >= ?",
-            (TARGET_DONE, TARGET_AWAITING_APPROVAL, to_iso(since)),
+            "WHERE state IN (?, ?, ?) AND posted_at >= ?",
+            (*SENT_STATES, to_iso(since)),
         )
         return int(row["n"]) if row else 0
 

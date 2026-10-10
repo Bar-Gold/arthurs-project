@@ -959,3 +959,57 @@ class TestGroupsRemovedEarlierLeaveTheirRepeatingPosts:
             assert raw.execute("SELECT COUNT(*) FROM groups").fetchone()[0] == 2
         finally:
             raw.close()
+
+
+class TestOldPostsThatMayHaveGoneOutAreRelabelled:
+    """Migration 011. These were stored as plain "failed", which the Queue now
+    shows as "Not posted" -- untrue for a post whose own note says it may well
+    have gone out."""
+
+    NOTES = {
+        "clicked": "Clicked Post, the composer closed, but the post could not be "
+        "found in the group afterwards. It may well have gone out — check.",
+        "pictures": "A post with only pictures has no words to look for, so "
+        "whether it went out cannot be checked — look at the group.",
+        "crash": "Interrupted mid-post and could not be checked (no Chrome).",
+        "interrupt": "Interrupted: KeyboardInterrupt.",
+        "login": "Facebook showed its login page: the session has expired.",
+        "window": "Clicked Post but the composer never closed and the post is "
+        "not in the group, so it almost certainly did not go out.",
+    }
+
+    def test_only_the_ones_that_may_be_out_change(self):
+        from fbposter.db import schema
+
+        raw = sqlite3.connect(":memory:", isolation_level=None)
+        try:
+            for index in range(10):
+                schema.MIGRATIONS[index](raw)
+            raw.execute(
+                "INSERT INTO groups (identifier, url, name, created_at) "
+                "VALUES ('g', 'u', '', '2026-09-01')"
+            )
+            for position, (key, note) in enumerate(self.NOTES.items()):
+                raw.execute(
+                    "INSERT INTO tasks (body, state, created_at) "
+                    "VALUES (?, 'halted', '2026-09-01')",
+                    (key,),
+                )
+                raw.execute(
+                    "INSERT INTO task_targets (task_id, group_id, position, body, "
+                    "state, error) VALUES (last_insert_rowid(), 1, ?, ?, 'failed', ?)",
+                    (position, key, note),
+                )
+            schema._migration_011(raw)
+            states = dict(raw.execute("SELECT body, state FROM task_targets"))
+        finally:
+            raw.close()
+
+        assert states == {
+            "clicked": "unconfirmed",
+            "pictures": "unconfirmed",
+            "crash": "unconfirmed",
+            "interrupt": "unconfirmed",
+            "login": "failed",
+            "window": "failed",
+        }

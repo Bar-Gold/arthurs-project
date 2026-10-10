@@ -25,6 +25,7 @@ from fbposter.db.models import (
     TARGET_PENDING,
     TARGET_RUNNING,
     TARGET_SKIPPED,
+    TARGET_UNCONFIRMED,
     TASK_CANCELLED,
     TASK_DONE,
     TASK_HALTED,
@@ -588,7 +589,7 @@ class TestCrashRecovery:
         worker.recover()
 
         target = tasks.targets_for(task.id)[0]
-        assert target.state == TARGET_FAILED
+        assert target.state == TARGET_UNCONFIRMED
         assert "twice" in target.error
         assert tasks.get(task.id).state == TASK_HALTED
 
@@ -930,7 +931,7 @@ class TestRecoveryWaitsForChrome:
         ticker.advance(seconds=CONNECTION_GIVE_UP.total_seconds() + 60)
         worker.run_once()
 
-        assert tasks.targets_for(task.id)[0].state == TARGET_FAILED
+        assert tasks.targets_for(task.id)[0].state == TARGET_UNCONFIRMED
         assert tasks.get(task.id).state == TASK_HALTED
 
     def test_an_ordinary_failure_still_escalates(self, db, repos):
@@ -945,7 +946,7 @@ class TestRecoveryWaitsForChrome:
         worker = make_worker(db, poster)
         worker.recover()
 
-        assert tasks.targets_for(task.id)[0].state == TARGET_FAILED
+        assert tasks.targets_for(task.id)[0].state == TARGET_UNCONFIRMED
         assert tasks.get(task.id).state == TASK_HALTED
 
 
@@ -1045,7 +1046,7 @@ class TestInterruptsDoNotStrandABatch:
         with pytest.raises(interrupt):
             worker.run_once()
 
-        assert tasks.targets_for(task.id)[0].state == TARGET_FAILED
+        assert tasks.targets_for(task.id)[0].state == TARGET_UNCONFIRMED
         assert tasks.get(task.id).state == TASK_HALTED
 
     def test_the_machine_is_allowed_to_sleep_again(self, db, repos):
@@ -1779,21 +1780,26 @@ class TestTheWordingIsCheckedAgainAtPostingTime:
     and repetitive content, not post count, is what gets accounts restricted.
     """
 
-    def _already_sent(self, repos):
-        """A group that has had BODY before, with its cooldown behind it.
+    def _already_sent(self, repos, hours_ago=9):
+        """A group that had BODY earlier today, with its cooldown behind it.
 
-        The history is seeded rather than posted through the worker, because
-        `mark_posted` defaults to the real clock while the fake one sits a
-        month earlier -- so a second post would be refused for the cooldown
-        before the wording was ever looked at, and the wording is the whole
-        subject here. The timestamp is set explicitly for the same reason.
+        The history is seeded rather than posted through the worker, so the
+        cooldown is behind it and the wording is the only rule in play. Nine
+        hours before noon is 03:00 the same Israel day: the same words may go
+        to a group once a day.
         """
         groups, tasks, _ = repos
         one, two = add_groups(groups)
+        sent_at = NOON - timedelta(hours=hours_ago)
         history = tasks.create(BODY, [(one.id, BODY)])
-        tasks.mark_target(tasks.targets_for(history.id)[0].id, TARGET_DONE, posted=True)
+        tasks.mark_target(
+            tasks.targets_for(history.id)[0].id,
+            TARGET_DONE,
+            posted=True,
+            posted_at=sent_at,
+        )
         tasks.mark_task(history.id, TASK_DONE, finished=True)
-        groups.mark_posted(one.id, when=NOON - timedelta(hours=9))
+        groups.mark_posted(one.id, when=sent_at)
         return one, two
 
     def test_the_same_words_do_not_reach_the_same_group_twice(self, db, repos):
@@ -1806,8 +1812,35 @@ class TestTheWordingIsCheckedAgainAtPostingTime:
 
         target = tasks.targets_for(again.id)[0]
         assert target.state == TARGET_SKIPPED
-        assert "already been posted" in target.error
+        assert "already sent" in target.error and "today" in target.error
         assert poster.requests == [], "the same text went out to the group twice"
+
+    def test_the_same_words_go_again_the_next_day(self, db, repos):
+        """Once a day, not never again: the user's choice, 2026-10-07."""
+        _, tasks, _ = repos
+        one, _ = self._already_sent(repos, hours_ago=20)  # 16:00 yesterday
+        again = tasks.create(BODY, [(one.id, BODY)])
+
+        poster = FakePoster()
+        make_worker(db, poster, Clock()).run_once()
+
+        assert tasks.targets_for(again.id)[0].state == TARGET_DONE
+        assert len(poster.requests) == 1
+
+    def test_a_post_that_may_have_gone_out_counts_for_the_day(self, db, repos):
+        """If it did go out, a second copy the same day is a duplicate."""
+        groups, tasks, _ = repos
+        one, _ = add_groups(groups)
+        first = tasks.create(BODY, [(one.id, BODY)])
+        poster = FakePoster(raises={one.url: PostNotVerified("could not confirm")})
+        ticker = Clock()
+        make_worker(db, poster, ticker).run_once()
+        assert tasks.targets_for(first.id)[0].state == TARGET_UNCONFIRMED
+
+        ticker.advance(hours=9)  # past the cooldown, still the same day
+        again = tasks.create(BODY, [(one.id, BODY)])
+        make_worker(db, FakePoster(), ticker).run_once()
+        assert tasks.targets_for(again.id)[0].state == TARGET_SKIPPED
 
     def test_a_reworded_post_goes_out_normally(self, db, repos):
         """The guard must not creep. Posting to a group often is fine; it is
@@ -1936,7 +1969,7 @@ class TestRecoveryLooksTwiceBeforeSendingAgain:
         worker.recover()
 
         target = tasks.targets_for(task.id)[0]
-        assert target.state == TARGET_FAILED
+        assert target.state == TARGET_UNCONFIRMED
         assert "twice" in target.error
         assert tasks.get(task.id).state == TASK_HALTED
 
@@ -1979,7 +2012,7 @@ class TestPicturesOnly:
         worker.recover()
 
         stored = tasks.targets_for(task.id)[0]
-        assert stored.state == TARGET_FAILED
+        assert stored.state == TARGET_UNCONFIRMED
         assert "only pictures" in stored.error
         assert "twice" in stored.error
         assert tasks.get(task.id).state == TASK_HALTED
@@ -2005,3 +2038,293 @@ class TestPicturesOnly:
 
         assert poster.verdict_calls == []
         assert tasks.targets_for(task.id)[0].state == TARGET_AWAITING_APPROVAL
+
+
+class TestAStoppedPostSaysWhetherItWentOut:
+    """The Queue answers "did it post?" from the target's state, so a stop
+    after the Post click must never be stored as plain "failed"."""
+
+    def stop(self, db, repos, problem):
+        groups, tasks, _ = repos
+        one, _ = add_groups(groups)
+        task = tasks.create(BODY, [(one.id, BODY)])
+        make_worker(db, FakePoster(raises={one.url: problem})).run_once()
+        return tasks.targets_for(task.id)[0]
+
+    def test_a_post_that_could_not_be_found_might_be_out(self, db, repos):
+        target = self.stop(db, repos, PostNotVerified("could not confirm"))
+        assert target.state == TARGET_UNCONFIRMED
+
+    def test_one_that_never_left_the_post_window_did_not_go_out(self, db, repos):
+        target = self.stop(
+            db, repos, PostNotVerified("never closed", may_have_posted=False)
+        )
+        assert target.state == TARGET_FAILED
+
+    def test_a_block_before_the_click_did_not_go_out(self, db, repos):
+        target = self.stop(db, repos, AutomationHalted("rate_limit", "blocked"))
+        assert target.state == TARGET_FAILED
+
+    def test_a_block_after_the_click_might_be_out(self, db, repos):
+        target = self.stop(
+            db, repos, AutomationHalted("rate_limit", "blocked", may_have_posted=True)
+        )
+        assert target.state == TARGET_UNCONFIRMED
+
+    def test_a_timeout_before_the_click_says_nothing_was_posted(self, db, repos):
+        target = self.stop(db, repos, RuntimeError("Timeout 30000ms exceeded."))
+        assert target.state == TARGET_FAILED
+        assert "Nothing was posted" in target.error
+
+    def test_a_message_written_for_the_user_is_passed_on_as_it_is(self, db, repos):
+        from fbposter.errors import ComposerNotFound
+
+        target = self.stop(db, repos, ComposerNotFound("Could not find the box."))
+        assert target.error == "Could not find the box."
+
+
+class TestAWaitingBatchSaysWhy:
+    """A deferral used to be a toast and nothing else: the Queue showed a
+    batch sitting there with no reason once the toast had gone."""
+
+    def test_outside_posting_hours(self, db, repos):
+        groups, tasks, _ = repos
+        (one,) = add_groups(groups, 1)
+        task = tasks.create(BODY, [(one.id, BODY)])
+        ticker = Clock(clock.parse_local("2026-08-10 23:30"))
+        make_worker(db, FakePoster(), ticker).run_once()
+
+        note = tasks.get(task.id).error
+        assert note.startswith("Waiting:") and "posting hours" in note
+
+    def test_the_note_goes_once_it_posts(self, db, repos):
+        groups, tasks, _ = repos
+        (one,) = add_groups(groups, 1)
+        task = tasks.create(BODY, [(one.id, BODY)])
+        ticker = Clock(clock.parse_local("2026-08-10 23:30"))
+        worker = make_worker(db, FakePoster(), ticker)
+        worker.run_once()
+
+        ticker.advance(hours=9)
+        drain(worker)
+        assert tasks.get(task.id).error == ""
+        assert tasks.targets_for(task.id)[0].state == TARGET_DONE
+
+    def test_while_chrome_is_away(self, db, repos):
+        groups, tasks, _ = repos
+        (one,) = add_groups(groups, 1)
+        task = tasks.create(BODY, [(one.id, BODY)])
+        poster = FakePoster(raises={one.url: ConnectionFailed("no Chrome")})
+        make_worker(db, poster).run_once()
+        assert "Chrome is not reachable" in tasks.get(task.id).error
+
+    def test_cancelling_clears_it(self, db, repos):
+        groups, tasks, _ = repos
+        (one,) = add_groups(groups, 1)
+        task = tasks.create(BODY, [(one.id, BODY)])
+        make_worker(db, FakePoster(), Clock(clock.parse_local("2026-08-10 23:30"))).run_once()
+        tasks.cancel(task.id)
+        assert tasks.get(task.id).error == ""
+
+
+class TestLivePosterKeepsWhatHappened:
+    """Closing the page after a post must not turn the post into a failure."""
+
+    def test_a_failure_closing_up_does_not_undo_a_post(self, monkeypatch):
+        from contextlib import contextmanager
+
+        from fbposter import worker as worker_module
+
+        posted = PostOutcome(posted=True, verified=True, detail="ok")
+
+        class Poster:
+            def __init__(self, page, dry_run=False):
+                pass
+
+            def post(self, request):
+                return posted
+
+        class Leaky(worker_module.LivePoster):
+            @contextmanager
+            def _page(self):
+                yield object()
+                raise RuntimeError("Target page, context or browser has been closed")
+
+        monkeypatch.setattr(worker_module, "GroupPoster", Poster)
+        assert Leaky().post(PostRequest(group_url="u", body="b")) is posted
+
+    def test_a_failure_before_any_post_still_raises(self, monkeypatch):
+        from contextlib import contextmanager
+
+        from fbposter import worker as worker_module
+
+        class Broken(worker_module.LivePoster):
+            @contextmanager
+            def _page(self):
+                raise RuntimeError("no page")
+                yield  # pragma: no cover
+
+        with pytest.raises(RuntimeError):
+            Broken().post(PostRequest(group_url="u", body="b"))
+
+
+class TestTheWorkerKnowsWhenTheTextWentBefore:
+    """The same words may go to a group once a day, so an older post with them
+    can be in the feed. Every check that finds a post by its words must know,
+    or it confirms yesterday's post as today's."""
+
+    def sent(self, tasks, group, body, at, state=TARGET_DONE):
+        task = tasks.create(body, [(group.id, body)])
+        target = tasks.targets_for(task.id)[0]
+        tasks.mark_target(target.id, state, posted=True, posted_at=at)
+        tasks.mark_task(task.id, TASK_DONE, finished=True)
+        return target
+
+    def test_the_poster_is_told(self, db, repos):
+        groups, tasks, _ = repos
+        one, _ = add_groups(groups)
+        self.sent(tasks, one, BODY, NOON - timedelta(days=1))
+        tasks.create(BODY, [(one.id, BODY)])
+
+        poster = FakePoster()
+        make_worker(db, poster, Clock()).run_once()
+        assert poster.requests[0].sent_before is True
+
+    def test_new_words_are_not_flagged(self, db, repos):
+        groups, tasks, _ = repos
+        one, _ = add_groups(groups)
+        self.sent(tasks, one, "Something else entirely", NOON - timedelta(days=1))
+        tasks.create(BODY, [(one.id, BODY)])
+
+        poster = FakePoster()
+        make_worker(db, poster, Clock()).run_once()
+        assert poster.requests[0].sent_before is False
+
+    def test_recovery_does_not_trust_the_words(self, db, repos):
+        """Finding yesterday's post must not mark today's crashed one done."""
+        groups, tasks, _ = repos
+        one, _ = add_groups(groups)
+        self.sent(tasks, one, BODY, NOON - timedelta(days=1))
+        task = tasks.create(BODY, [(one.id, BODY)])
+        target = tasks.targets_for(task.id)[0]
+        tasks.claim_target(target.id)
+
+        poster = FakePoster(verify_result=True)
+        make_worker(db, poster, Clock()).recover()
+
+        stored = tasks.targets_for(task.id)[0]
+        assert stored.state == TARGET_UNCONFIRMED
+        assert "posted to this group before" in stored.error
+        assert poster.verify_calls == [], "looked for words that prove nothing"
+
+    def test_a_follow_up_does_not_call_it_live_on_the_words(self, db, repos):
+        groups, tasks, settings = repos
+        one, _ = add_groups(groups)
+        self.sent(tasks, one, BODY, NOON - timedelta(days=1))
+        waiting = self.sent(
+            tasks, one, BODY, NOON - timedelta(hours=2), state=TARGET_AWAITING_APPROVAL
+        )
+
+        poster = FakePoster()
+        poster.verdict = "approved"
+        make_worker(db, poster, Clock())._sweep_pending(NOON)
+
+        assert poster.verdict_calls, "it did not look"
+        stored = [t for t in tasks.targets_for(waiting.task_id)][0]
+        assert stored.state == TARGET_AWAITING_APPROVAL
+
+    def test_a_follow_up_still_calls_new_words_live(self, db, repos):
+        groups, tasks, _ = repos
+        one, _ = add_groups(groups)
+        waiting = self.sent(
+            tasks, one, BODY, NOON - timedelta(hours=2), state=TARGET_AWAITING_APPROVAL
+        )
+
+        poster = FakePoster()
+        poster.verdict = "approved"
+        make_worker(db, poster, Clock())._sweep_pending(NOON)
+        assert tasks.targets_for(waiting.task_id)[0].state == TARGET_DONE
+
+
+class TestAMightHavePostedCountsAsSent:
+    """The user's choice, 2026-10-07: if it did go out, the group must not get
+    another post minutes later, and it takes a place in the daily limit."""
+
+    def stop(self, db, repos):
+        groups, tasks, _ = repos
+        one, two = add_groups(groups)
+        task = tasks.create(BODY, [(one.id, BODY)])
+        ticker = Clock()
+        poster = FakePoster(raises={one.url: PostNotVerified("could not confirm")})
+        make_worker(db, poster, ticker).run_once()
+        return one, ticker
+
+    def test_it_starts_the_cooldown(self, db, repos):
+        groups, tasks, _ = repos
+        one, ticker = self.stop(db, repos)
+        assert groups.get(one.id).last_posted_at == ticker.now
+
+        ticker.advance(hours=1)
+        later = tasks.create("Different words", [(one.id, "Different words")])
+        make_worker(db, FakePoster(), ticker).run_once()
+        stored = tasks.targets_for(later.id)[0]
+        assert stored.state == TARGET_SKIPPED
+        assert "cooldown" in stored.error
+
+    def test_it_counts_in_the_daily_limit(self, db, repos):
+        _groups, tasks, _ = repos
+        _one, ticker = self.stop(db, repos)
+        assert tasks.posted_count_since(clock.start_of_local_day(ticker.now)) == 1
+
+
+class TestPicturesNobodyConfirmed:
+    def test_the_queue_is_told_it_was_not_checked(self, db, repos, tmp_path):
+        groups, tasks, _ = repos
+        one, _ = add_groups(groups)
+        picture = tmp_path / "p.png"
+        picture.write_bytes(b"x")
+        task = tasks.create("", [(one.id, "")], media_paths=[str(picture)])
+
+        class Unconfirmed(FakePoster):
+            def post(self, request):
+                self.requests.append(request)
+                return PostOutcome(
+                    posted=True, verified=False, detail="Could not check it."
+                )
+
+        make_worker(db, Unconfirmed(), Clock()).run_once()
+        stored = tasks.targets_for(task.id)[0]
+        assert (stored.state, stored.error, stored.post_url) == (
+            TARGET_DONE, "Could not check it.", ""
+        )
+
+    def test_a_confirmed_post_keeps_its_link_and_no_note(self, db, repos):
+        groups, tasks, _ = repos
+        one, _ = add_groups(groups)
+        task = tasks.create(BODY, [(one.id, BODY)])
+
+        class Confirmed(FakePoster):
+            def post(self, request):
+                self.requests.append(request)
+                return PostOutcome(
+                    posted=True, verified=True, detail="ok", post_url="https://x/1/"
+                )
+
+        make_worker(db, Confirmed(), Clock()).run_once()
+        stored = tasks.targets_for(task.id)[0]
+        assert (stored.state, stored.error, stored.post_url) == (
+            TARGET_DONE, "", "https://x/1/"
+        )
+
+
+class TestTheDayIsAnIsraeliDay:
+    def test_sent_on_day_stops_at_local_midnight(self, db, repos):
+        groups, tasks, _ = repos
+        one, _ = add_groups(groups)
+        late = clock.parse_local("2026-08-10 23:30")
+        task = tasks.create(BODY, [(one.id, BODY)])
+        tasks.mark_target(
+            tasks.targets_for(task.id)[0].id, TARGET_DONE, posted=True, posted_at=late
+        )
+        assert groups.sent_on_day(one.id, clock.parse_local("2026-08-10 08:00")) == [BODY]
+        assert groups.sent_on_day(one.id, clock.parse_local("2026-08-11 00:30")) == []
