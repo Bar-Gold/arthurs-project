@@ -36,16 +36,22 @@ from fbposter import login, onboarding
 from fbposter.onboarding import RowState, SetupStep
 from fbposter.connection import ConnectionResult, ConnectionState
 
-from .. import theme
+from .. import icons, theme
 from ..widgets import card, clear, row
 
-# Drawn rather than spelled out: a tick, the arrow for what you are being asked
-# to do now, and a dot for what comes after.
+# Drawn, not typed: a filled tick for done, a ringed dot for the step you are
+# on, an empty ring for one still to come (icons.py). They were the characters
+# "✓", "▶" and "○", which Segoe UI draws at three different sizes
+# and heights, so the list looked hand-assembled.
 MARKS = {
-    RowState.DONE: ("✓", "SUCCESS"),
-    RowState.CURRENT: ("▶", "ACCENT_TEXT"),
-    RowState.TODO: ("○", "TEXT_MUTED"),
+    RowState.DONE: ("done", "SUCCESS"),
+    RowState.CURRENT: ("current", "ACCENT_TEXT"),
+    RowState.TODO: ("todo", "BORDER_STRONG"),
 }
+# The words of a step still to come. Its ring is fainter than the words, which
+# still have to be read.
+MARK_TEXT = {RowState.TODO: "TEXT_MUTED"}
+MARK_SIZE = 20
 
 
 class WelcomeView(QWidget):
@@ -83,7 +89,7 @@ class WelcomeView(QWidget):
         sub.setObjectName("Subtitle")
         sub.setWordWrap(True)
         outer.addWidget(sub)
-        outer.addSpacing(theme.PAD_M)
+        outer.addSpacing(theme.HEADER_GAP)
 
         self.checklist_card = card()
         self.checklist_box = QVBoxLayout(self.checklist_card)
@@ -175,12 +181,20 @@ class WelcomeView(QWidget):
         clear(self.checklist_box)
         for label, state in onboarding.checklist(self.step):
             mark, colour = MARKS[state]
-            line = QLabel(f"{mark}   {label}")
+            holder = row()
+            line = QHBoxLayout(holder)
+            line.setContentsMargins(0, 0, 0, 0)
+            line.setSpacing(theme.PAD_M)
+            icon = QLabel()
+            icon.setPixmap(icons.pixmap(mark, theme.C[colour], MARK_SIZE))
+            line.addWidget(icon)
+            words = QLabel(label)
             # Colour only. The "Muted" object name would have done the greying
             # for free, but it also drops the font to SIZE_SMALL, which would
             # have made the three rows of one list different sizes.
-            line.setStyleSheet(f"color: {theme.C[colour]};")
-            self.checklist_box.addWidget(line)
+            words.setStyleSheet(f"color: {theme.C[MARK_TEXT.get(state, colour)]};")
+            line.addWidget(words, 1)
+            self.checklist_box.addWidget(holder)
 
         guide = onboarding.guidance(self.step)
         self.step_headline.setText(guide.headline)
@@ -265,7 +279,7 @@ class WelcomeView(QWidget):
             self._opened_login = True
         if self.step is SetupStep.LOGGED_OUT:
             self.app.toast(
-                "Chrome is open — log into Facebook there, then press Check again.",
+                "Chrome is open. Log into Facebook there, then press Check again.",
                 "info",
             )
         self.recheck()

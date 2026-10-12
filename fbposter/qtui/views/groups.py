@@ -1,6 +1,6 @@
 """Groups screen: who the post is going to, and the list it is chosen from.
 
-The middle step of the flow — Compose says what, this says where, Publish says
+The middle step of the flow: Compose says what, this says where, Publish says
 when. Picking recipients and managing the list are the same screen on purpose:
 the moment you notice a group is missing is the moment you are choosing groups,
 so the "add a group" box is right here rather than somewhere else.
@@ -38,7 +38,7 @@ class GroupsView(QWidget):
     title = "Groups"
     subtitle = (
         "Tick the groups this post goes to. Leave out groups you are an admin "
-        "of — Facebook can schedule posts there by itself."
+        "of, since Facebook can schedule posts there by itself."
     )
 
     def __init__(self, app) -> None:
@@ -69,7 +69,7 @@ class GroupsView(QWidget):
         sub.setObjectName("Subtitle")
         sub.setWordWrap(True)
         outer.addWidget(sub)
-        outer.addSpacing(theme.PAD_S)
+        outer.addSpacing(theme.HEADER_GAP)
 
         # A visible label, not just a placeholder: placeholder text vanishes the
         # moment you type, taking the only explanation of the field with it.
@@ -197,9 +197,14 @@ class GroupsView(QWidget):
         return True
 
     def remove_group(self, group_id: int) -> None:
+        was_selected = group_id in self.app.selected_groups
         removal = self.app.group_repo.remove(group_id)
         self.app.set_group_selected(group_id, False)
         self.refresh()
+        # "Remove" is on every row, one click from the tick beside it. Undo
+        # puts the group back into exactly what it was taken out of; pasting
+        # the link again still does not.
+        undo = lambda: self._restore_group(group_id, removal, was_selected)  # noqa: E731
         taken_from = []
         if removal.schedules:
             taken_from.append(
@@ -211,13 +216,26 @@ class GroupsView(QWidget):
             )
         if taken_from:
             # Said here because adding the group back does not undo it.
-            self.notify(
+            self.app.toast(
                 f"Group removed, and taken out of {' and '.join(taken_from)}. Paste "
                 "its link again to bring it back to the list.",
                 "info",
+                undo=undo,
             )
         else:
-            self.notify("Group removed. Paste its link again to bring it back.", "info")
+            self.app.toast(
+                "Group removed. Paste its link again to bring it back.", "info", undo=undo
+            )
+
+    def _restore_group(self, group_id: int, removal, was_selected: bool) -> str | None:
+        if not self.app.group_repo.restore(group_id, removal):
+            return None
+        if was_selected:
+            self.app.set_group_selected(group_id, True)
+        self.refresh()
+        group = self.app.group_repo.get(group_id)
+        name = group.display_name if group is not None else "The group"
+        return f"{name} is back, in everything it was taken out of."
 
     # -- names -------------------------------------------------------------
     def look_up_missing_names(self) -> None:

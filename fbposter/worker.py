@@ -390,7 +390,7 @@ class PostingWorker:
         self._battery_warned = True
         self.emit(
             "power",
-            "Posting on battery — Windows can still suspend the machine and cut "
+            "Posting on battery. Windows can still suspend the machine and cut "
             "the batch short. Plug in to be sure it finishes.",
         )
 
@@ -611,7 +611,7 @@ class PostingWorker:
                 )
                 self.emit(
                     "posted",
-                    f"An admin of {group.display_name} approved the post — it is "
+                    f"An admin of {group.display_name} approved the post. It is "
                     "live now.",
                     target.task_id,
                     target.id,
@@ -749,7 +749,7 @@ class PostingWorker:
                 self.schedules.set_state(schedule.id, SCHEDULE_PAUSED)
                 self.emit(
                     "schedule_error",
-                    f"{schedule.display_name} has no groups left — every group it "
+                    f"{schedule.display_name} has no groups left: every group it "
                     "posted to has been removed. It has been paused.",
                 )
             return
@@ -905,8 +905,8 @@ class PostingWorker:
             self._halt(
                 task,
                 target,
-                f"Attachment no longer on disk: {names}. Nothing was posted — "
-                "re-attach the file, or remove it from the post, and queue again.",
+                f"Attachment no longer on disk: {names}. Nothing was posted. "
+                "Re-attach the file, or remove it from the post, and queue again.",
             )
             return True
 
@@ -973,8 +973,8 @@ class PostingWorker:
             self._record_sent(target, TARGET_AWAITING_APPROVAL, error=outcome.detail)
             self.emit(
                 "pending",
-                f"{group.display_name} holds posts for admin approval — "
-                "submitted, not visible yet.",
+                f"{group.display_name} holds posts for admin approval. The post is "
+                "submitted but not visible yet.",
                 task.id,
                 target.id,
             )
@@ -1178,7 +1178,7 @@ class PostingWorker:
             error=(
                 "The app was interrupted while posting to this group, and could "
                 f"not check afterwards whether the post went out ({reason}). Look "
-                "at the group before queueing this again — posting it twice is "
+                "at the group before queueing this again, because posting it twice is "
                 "worse than not posting it."
             ),
             # Counted from when it was tried, like any stop after Post.

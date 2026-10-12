@@ -44,6 +44,11 @@ PAD_M = 12
 PAD_L = 16
 PAD_XL = 24
 
+# Between a screen's subtitle and the first thing on it. It was 12px, the
+# same as the gap between two controls, so the header read as one more row of
+# the form rather than as the name of the page.
+HEADER_GAP = PAD_L
+
 # Hit targets. A 30px button is fine to click and mean to aim at; the primary
 # action on each screen gets the full 44.
 CONTROL_HEIGHT = 36
@@ -104,6 +109,14 @@ LIGHT = {
     "DANGER_SOFT": "#FDECEE",
     "DANGER_PRESSED_BG": "#FADCE0",
     "NEUTRAL": "#6A6D71",
+    # The tints behind a status badge, each pale enough to keep its own colour
+    # of text above 4.5:1. The accent's tint is NAV_ACTIVE_BG.
+    "SUCCESS_SOFT": "#EDF7F0",
+    "WARNING_SOFT": "#FCF0DC",
+    "NEUTRAL_SOFT": "#EBEDF0",
+    # A joined toggle: the track, and the raised segment that is chosen.
+    "SEGMENT_TRACK": "#E4E6EB",
+    "SEGMENT_ON": "#FFFFFF",
 }
 
 DARK = {
@@ -133,6 +146,22 @@ DARK = {
     "DANGER_SOFT": "#3B2227",
     "DANGER_PRESSED_BG": "#46252C",
     "NEUTRAL": "#8A8C8F",
+    "SUCCESS_SOFT": "#1E3325",
+    "WARNING_SOFT": "#3A3122",
+    "NEUTRAL_SOFT": "#3A3B3C",
+    "SEGMENT_TRACK": "#303132",
+    "SEGMENT_ON": "#4A4B4D",
+}
+
+# A status badge's text colour, by the colour token a status is given, and the
+# tint behind it. Statuses keep naming their colour as before; the badge looks
+# the tint up here.
+BADGE_TINTS = {
+    "SUCCESS": "SUCCESS_SOFT",
+    "WARNING": "WARNING_SOFT",
+    "DANGER": "DANGER_SOFT",
+    "ACCENT_TEXT": "NAV_ACTIVE_BG",
+    "TEXT_MUTED": "NEUTRAL_SOFT",
 }
 
 # Filled in by activate(); the module is imported for its names, so this has to
@@ -184,6 +213,10 @@ def stylesheet() -> str:
     codebase, which is the thing the Tk theme rules were written to prevent.
     """
     c = C
+    badge_tones = "\n    ".join(
+        f'QLabel#Badge[tone="{tone}"] {{ color: {c[tone]}; background: {c[tint]}; }}'
+        for tone, tint in BADGE_TINTS.items()
+    )
     return f"""
     QWidget {{
         background: {c["WINDOW_BG"]};
@@ -209,8 +242,28 @@ def stylesheet() -> str:
     QLabel, QCheckBox, QWidget#Row, QStackedWidget {{ background: transparent; }}
     QLabel#Title {{ font-size: {SIZE_TITLE}px; font-weight: 600; }}
     QLabel#Subtitle, QLabel#Muted {{ color: {c["TEXT_MUTED"]}; font-size: {SIZE_SMALL}px; }}
-    QLabel#SectionHeading {{ font-size: {SIZE_SMALL}px; font-weight: 600; }}
+    /* A heading is never smaller than what it heads. At SIZE_SMALL it was,
+       and "Going out" sat above a list of names two pixels larger than itself,
+       the same size as the grey hints around it. */
+    QLabel#SectionHeading {{ font-size: {SIZE_BODY}px; font-weight: 600; }}
+    /* The name of a card that holds settings of its own (Settings), one step
+       up from the setting names inside it, which are body text. */
+    QLabel#CardTitle {{ font-size: {SIZE_HEADING}px; font-weight: 600; }}
     QLabel#Brand {{ font-size: {SIZE_HEADING}px; font-weight: 600; }}
+
+    /* A status: what happened to a post, or whether a repeating post is on.
+       It used to be coloured words, the same size and weight as the grey
+       "Cancel" and "Delete" beside it, so a status and a button looked alike.
+       A tinted capsule is plainly a label, and nothing to click. */
+    QLabel#Badge {{
+        font-size: {SIZE_SMALL}px;
+        font-weight: 600;
+        padding: 2px 8px;
+        border-radius: 10px;
+        color: {c["TEXT_MUTED"]};
+        background: {c["NEUTRAL_SOFT"]};
+    }}
+    {badge_tones}
 
     /* Buttons. Every kind states each moment it can be in -- rest, hover,
        pressed, disabled -- because a button that does not change as it is
@@ -270,16 +323,44 @@ def stylesheet() -> str:
         font-weight: 600;
     }}
     QPushButton#PausedNotice:hover {{ background: {c["HOVER_BG"]}; }}
+    /* The wording tabs on Compose, one per group. The chosen one is tinted
+       and outlined in the accent rather than filled with it: a filled one
+       stood beside the screen's filled "Next" button as a second call to
+       action, and only "Next" is one. */
     QPushButton#Tab {{ padding: 6px 12px; }}
     QPushButton#Tab:checked {{
-        background: {c["ACCENT"]};
+        background: {c["NAV_ACTIVE_BG"]};
         border-color: {c["ACCENT"]};
-        color: {c["TEXT_ON_ACCENT"]};
+        color: {c["ACCENT_TEXT"]};
+        font-weight: 600;
     }}
-    QPushButton#Tab:checked:hover {{
-        background: {c["ACCENT_HOVER"]};
-        border-color: {c["ACCENT_HOVER"]};
+    QPushButton#Tab:checked:hover {{ border-color: {c["ACCENT_HOVER"]}; }}
+
+    /* A joined toggle (widgets.segmented): one choice out of two or three,
+       drawn as one control the way phones and Windows draw it. The chosen
+       segment is raised out of a sunken track. The weight does not change
+       with the choice, because bold text is wider and the segments would
+       shift sideways under the pointer. */
+    QFrame#Segmented {{
+        background: {c["SEGMENT_TRACK"]};
+        border: none;
+        border-radius: {RADIUS}px;
     }}
+    QPushButton#Segment {{
+        background: transparent;
+        border: 1px solid transparent;
+        border-radius: {RADIUS_S}px;
+        padding: 5px 14px;
+        min-height: {CONTROL_HEIGHT - 6 - 12}px;
+        color: {c["TEXT_MUTED"]};
+    }}
+    QPushButton#Segment:hover {{ color: {c["TEXT"]}; }}
+    QPushButton#Segment:checked {{
+        background: {c["SEGMENT_ON"]};
+        border-color: {c["BORDER"]};
+        color: {c["TEXT"]};
+    }}
+    QPushButton#Segment:focus {{ border: 2px solid {c["ACCENT"]}; padding: 4px 13px; }}
     /* Quiet until you reach for it. These are the destructive actions, and
        there is one on every row -- painted red by default, the most dangerous
        thing on the screen was also the first thing the eye landed on, four
@@ -336,11 +417,48 @@ def stylesheet() -> str:
        moment of the press the text goes plain. */
     QPushButton#PausedNotice:pressed {{ background: {c["PRESSED_BG"]}; color: {c["TEXT"]}; }}
     QPushButton#Tab:checked:pressed {{
-        background: {c["ACCENT_PRESSED"]};
+        background: {c["PRESSED_BG"]};
         border-color: {c["ACCENT_PRESSED"]};
     }}
+    QPushButton#Segment:pressed {{ background: {c["PRESSED_BG"]}; color: {c["TEXT"]}; }}
     QPushButton#Link:pressed {{ background: {c["DANGER_PRESSED_BG"]}; color: {c["DANGER"]}; }}
     QPushButton#Danger:pressed {{ background: {c["DANGER_PRESSED_BG"]}; }}
+
+    /* The status banner under the screen. The bar at its edge says what kind
+       of message it is; the words stay in the body colour, because a warning
+       written in orange or an error in red is harder to read, not easier.
+       The level is a dynamic property, re-polished whenever it changes. */
+    QFrame#Toast {{
+        background: {c["SURFACE"]};
+        border: 1px solid {c["BORDER"]};
+        border-radius: {RADIUS}px;
+    }}
+    QFrame#ToastBar {{ background: {c["ACCENT"]}; border: none; border-radius: 2px; }}
+    QFrame#ToastBar[level="success"] {{ background: {c["SUCCESS"]}; }}
+    QFrame#ToastBar[level="warning"] {{ background: {c["WARNING"]}; }}
+    QFrame#ToastBar[level="error"] {{ background: {c["DANGER"]}; }}
+    QLabel#ToastText {{ color: {c["TEXT"]}; }}
+    QPushButton#ToastAction {{
+        background: transparent;
+        border: none;
+        color: {c["ACCENT_TEXT"]};
+        font-weight: 600;
+        padding: 7px 12px;
+    }}
+    QPushButton#ToastAction:hover {{ background: {c["HOVER_BG"]}; }}
+    QPushButton#ToastAction:focus {{ border: 2px solid {c["ACCENT"]}; padding: 5px 10px; }}
+    QPushButton#ToastAction:pressed {{ background: {c["PRESSED_BG"]}; }}
+    QPushButton#ToastClose {{
+        background: transparent;
+        border: none;
+        color: {c["TEXT_MUTED"]};
+        font-size: {SIZE_HEADING}px;
+        padding: 4px 10px;
+        min-height: 0px;
+    }}
+    QPushButton#ToastClose:hover {{ background: {c["HOVER_BG"]}; color: {c["TEXT"]}; }}
+    QPushButton#ToastClose:focus {{ border: 2px solid {c["ACCENT"]}; padding: 2px 8px; }}
+    QPushButton#ToastClose:pressed {{ background: {c["PRESSED_BG"]}; color: {c["TEXT"]}; }}
 
     QTextEdit, QLineEdit, QDateTimeEdit, QComboBox, QSpinBox {{
         background: {c["SURFACE"]};

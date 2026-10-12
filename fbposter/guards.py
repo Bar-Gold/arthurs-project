@@ -231,7 +231,7 @@ def variation_warning(bodies: Sequence[str]) -> str | None:
     if worst > IDENTICAL_TEXT_WARN_THRESHOLD:
         return (
             f"The same text is going to {worst} groups. Repetitive content is the "
-            "main thing that gets accounts restricted — vary the wording."
+            "main thing that gets accounts restricted. Vary the wording."
         )
     return None
 

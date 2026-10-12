@@ -53,7 +53,7 @@ HALT_MESSAGES = {
     PageVerdict.CHECKPOINT: (
         "Facebook is showing a security check, so the batch has stopped. Press "
         "Check connection, then Show me the window, and finish the check "
-        "yourself — the app will never click through one."
+        "yourself. The app will never click through one."
     ),
     PageVerdict.LOGIN: (
         "Facebook showed its login page: the session has expired, so the batch "
@@ -65,7 +65,7 @@ HALT_MESSAGES = {
         "batch immediately. Do not post again today, and leave it a while."
     ),
     PageVerdict.UNAVAILABLE: (
-        "The group page did not load as expected — it may be unavailable, or "
+        "The group page did not load as expected. It may be unavailable, or "
         "membership may have changed. Stopping rather than guessing."
     ),
 }

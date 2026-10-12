@@ -11,9 +11,9 @@ deserve a screen you go to on purpose.
 
 from __future__ import annotations
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QCheckBox,
-    QGridLayout,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -28,7 +28,7 @@ from fbposter.db.schema import DEFAULT_SETTINGS
 from fbposter.connection import ConnectionState
 
 from .. import theme
-from ..widgets import card, row
+from ..widgets import Switch, badge, card, row, set_badge
 
 START_KEY = "posting_window_start_hour"
 END_KEY = "posting_window_end_hour"
@@ -46,9 +46,9 @@ COOLDOWN_MAX = 168
 CAP_MIN = 1
 CAP_MAX = 100
 # Wide enough for "100 posts" and the steppers; the stock width stretched
-# each field across half the card.
+# each field across half the card. An hour needs a little less room.
 FIELD_WIDTH = 170
-HOUR_WIDTH = FIELD_WIDTH
+HOUR_WIDTH = 150
 # Hours that count as the middle of the night, for the warning under the
 # posting hours. Posting at 4am is the loudest automation signal there is.
 NIGHT_HOURS = range(0, 6)
@@ -199,14 +199,14 @@ class SettingsView(QWidget):
         sub.setObjectName("Subtitle")
         sub.setWordWrap(True)
         outer.addWidget(sub)
-        outer.addSpacing(theme.PAD_S)
+        outer.addSpacing(theme.HEADER_GAP)
 
         self.area = QScrollArea()
         self.area.setWidgetResizable(True)
         holder = QWidget()
         column = QVBoxLayout(holder)
         column.setContentsMargins(0, 0, 0, 0)
-        column.setSpacing(theme.PAD_S)
+        column.setSpacing(theme.PAD_M)
         column.addWidget(self._build_scheduler())
         column.addWidget(self._build_rules())
         column.addWidget(self._build_account())
@@ -216,15 +216,32 @@ class SettingsView(QWidget):
         outer.addWidget(self.area, 1)
 
     # -- layout ------------------------------------------------------------
+    # Laid out the way system settings are: each setting is one row, its name
+    # and what it means on the left, its control on the right, with a hairline
+    # between rows. The controls used to sit in a column of their own in the
+    # middle of the card, with each hint under the control rather than under
+    # the name it explained, so the card read as a form to fill in.
     @staticmethod
-    def _card(heading: str) -> tuple[QWidget, QVBoxLayout]:
+    def _card(
+        heading: str, aside: QWidget | None = None, action: QWidget | None = None
+    ) -> tuple[QWidget, QVBoxLayout]:
+        """A card with its heading: `aside` (a status badge) beside it, and
+        `action` (a button) at the far end of the same line."""
         box = card()
         inner = QVBoxLayout(box)
-        inner.setContentsMargins(theme.PAD_M, theme.PAD_M, theme.PAD_M, theme.PAD_M)
+        inner.setContentsMargins(theme.PAD_L, theme.PAD_L, theme.PAD_L, theme.PAD_L)
         inner.setSpacing(theme.PAD_XS)
         label = QLabel(heading)
-        label.setObjectName("SectionHeading")
-        inner.addWidget(label)
+        label.setObjectName("CardTitle")
+        top = QHBoxLayout()
+        top.setSpacing(theme.PAD_S)
+        top.addWidget(label)
+        if aside is not None:
+            top.addWidget(aside)
+        top.addStretch(1)
+        if action is not None:
+            top.addWidget(action)
+        inner.addLayout(top)
         return box, inner
 
     @staticmethod
@@ -234,24 +251,47 @@ class SettingsView(QWidget):
         label.setWordWrap(True)
         return label
 
-    def _build_scheduler(self) -> QWidget:
-        box, inner = self._card("Scheduler")
+    @staticmethod
+    def _divider(inner: QVBoxLayout) -> None:
+        inner.addSpacing(theme.PAD_S)
+        line = QFrame()
+        line.setObjectName("Divider")
+        line.setFixedHeight(1)
+        inner.addWidget(line)
+        inner.addSpacing(theme.PAD_S)
 
-        self.status_label = QLabel("")
+    @staticmethod
+    def _setting(name: str, control, *hints: QLabel) -> QWidget:
+        """One setting: its name with the hints under it, the control at the
+        right, centred on the whole row."""
+        holder = row()
+        line = QHBoxLayout(holder)
+        line.setContentsMargins(0, 0, 0, 0)
+        line.setSpacing(theme.PAD_XL)
+        words = QVBoxLayout()
+        words.setSpacing(2)
+        words.addWidget(QLabel(name))
+        for hint in hints:
+            words.addWidget(hint)
+        line.addLayout(words, 1)
+        if isinstance(control, QWidget):
+            line.addWidget(control, 0, Qt.AlignRight | Qt.AlignVCenter)
+        else:
+            line.addLayout(control)
+        return holder
+
+    def _build_scheduler(self) -> QWidget:
+        # Whether it is running, as a badge beside the heading, the way every
+        # other status in the window is shown.
+        self.status_label = badge("", "TEXT_MUTED")
         self.status_label.setAccessibleName("Scheduler status")
-        inner.addWidget(self.status_label)
+        self.pause_button = QPushButton("Pause posting")
+        self.pause_button.clicked.connect(self.toggle)
+        box, inner = self._card("Scheduler", self.status_label, self.pause_button)
         self.status_detail = self._muted()
         inner.addWidget(self.status_detail)
         self.waiting_label = self._muted()
         inner.addWidget(self.waiting_label)
-
-        inner.addSpacing(theme.PAD_XS)
-        line = QHBoxLayout()
-        self.pause_button = QPushButton("Pause posting")
-        self.pause_button.clicked.connect(self.toggle)
-        line.addWidget(self.pause_button)
-        line.addStretch(1)
-        inner.addLayout(line)
         return box
 
     def _build_rules(self) -> QWidget:
@@ -261,121 +301,112 @@ class SettingsView(QWidget):
             "ones already queued. \"Post anyway\" on the Publish screen can "
             "break them for one post."
         ))
-        inner.addSpacing(theme.PAD_XS)
-
-        grid_holder = row()
-        grid = QGridLayout(grid_holder)
-        grid.setContentsMargins(0, 0, 0, 0)
-        grid.setHorizontalSpacing(theme.PAD_M)
-        grid.setVerticalSpacing(theme.PAD_S)
 
         # Posting hours.
-        grid.addWidget(QLabel("Posting hours"), 0, 0)
-        hours = QHBoxLayout()
-        hours.setSpacing(theme.PAD_S)
         self.start_entry = HourEntry("Posting hours start")
         self.end_entry = HourEntry("Posting hours end")
+        hours = QHBoxLayout()
+        hours.setSpacing(theme.PAD_S)
         for entry in (self.start_entry, self.end_entry):
             entry.setFixedWidth(HOUR_WIDTH)
-        hours.addWidget(QLabel("From"))
         hours.addWidget(self.start_entry)
         hours.addWidget(QLabel("to"))
         hours.addWidget(self.end_entry)
-        hours.addStretch(1)
-        grid.addLayout(hours, 0, 1)
         self.hours_note = self._muted()
-        grid.addWidget(self.hours_note, 1, 1)
-        self.night_note = QLabel(
+        self.night_note = self._muted(
             "These hours include the middle of the night. Posts at night are "
             "the clearest sign of automation there is."
         )
-        self.night_note.setWordWrap(True)
         self.night_note.setStyleSheet(f"color: {theme.C['WARNING']};")
-        grid.addWidget(self.night_note, 2, 1)
+        self._divider(inner)
+        inner.addWidget(self._setting("Posting hours", hours, self.hours_note, self.night_note))
 
         # Daily limit.
-        grid.addWidget(QLabel("Daily limit"), 3, 0)
         self.cap_entry = CapEntry()
         self.cap_entry.setFixedWidth(FIELD_WIDTH)
-        cap_line = QHBoxLayout()
-        cap_line.addWidget(self.cap_entry)
-        cap_line.addStretch(1)
-        grid.addLayout(cap_line, 3, 1)
-        grid.addWidget(self._muted(
-            "Across all groups together, per day in Israel time."
-        ), 4, 1)
+        self._divider(inner)
+        inner.addWidget(self._setting(
+            "Daily limit", self.cap_entry,
+            self._muted("Across all groups together, per day in Israel time."),
+        ))
 
         # Cooldown.
-        grid.addWidget(QLabel("Cooldown per group"), 5, 0)
         self.cooldown_entry = CooldownEntry()
         self.cooldown_entry.setFixedWidth(FIELD_WIDTH)
-        cooldown_line = QHBoxLayout()
-        cooldown_line.addWidget(self.cooldown_entry)
-        cooldown_line.addStretch(1)
-        grid.addLayout(cooldown_line, 5, 1)
-        grid.addWidget(self._muted(
-            "After posting to a group, the app waits at least this long before "
-            "posting to that group again."
-        ), 6, 1)
-        grid.setColumnStretch(1, 1)
-        inner.addWidget(grid_holder)
+        self._divider(inner)
+        inner.addWidget(self._setting(
+            "Cooldown per group", self.cooldown_entry,
+            self._muted(
+                "After posting to a group, the app waits at least this long "
+                "before posting to that group again."
+            ),
+        ))
 
         for entry in (self.start_entry, self.end_entry, self.cap_entry, self.cooldown_entry):
             entry.valueChanged.connect(self._rules_edited)
 
-        inner.addSpacing(theme.PAD_XS)
+        # Save at the end of the card, the way a form's action sits under it;
+        # going back to the defaults is the lesser choice, so it is on the left.
+        self._divider(inner)
         line = QHBoxLayout()
-        self.save_button = QPushButton("Save")
-        self.save_button.clicked.connect(self.save_rules)
-        line.addWidget(self.save_button)
         self.defaults_button = QPushButton(
-            f"Use the defaults ({DEFAULTS[START_KEY]:02d}:00–{DEFAULTS[END_KEY]:02d}:00, "
+            f"Use the defaults ({DEFAULTS[START_KEY]:02d}:00-{DEFAULTS[END_KEY]:02d}:00, "
             f"{DEFAULTS[CAP_KEY]} a day, {DEFAULT_COOLDOWN} h)"
         )
         self.defaults_button.clicked.connect(self.use_defaults)
         line.addWidget(self.defaults_button)
         line.addStretch(1)
+        self.save_button = QPushButton("Save")
+        self.save_button.clicked.connect(self.save_rules)
+        line.addWidget(self.save_button)
         inner.addLayout(line)
         return box
 
     def _build_account(self) -> QWidget:
-        box, inner = self._card("Facebook account")
+        self.switch_button = QPushButton(onboarding.SWITCH_ACTION)
+        self.switch_button.clicked.connect(self.begin_switch)
+        box, inner = self._card("Facebook account", action=self.switch_button)
         self.account_heading = QLabel("")
         self.account_heading.setStyleSheet("font-weight: 600;")
         self.account_heading.setWordWrap(True)
         inner.addWidget(self.account_heading)
         self.account_detail = self._muted()
         inner.addWidget(self.account_detail)
+        self.account_note = self._muted()
+        inner.addWidget(self.account_note)
 
-        inner.addSpacing(theme.PAD_XS)
-        line = QHBoxLayout()
-        self.switch_button = QPushButton(onboarding.SWITCH_ACTION)
-        self.switch_button.clicked.connect(self.begin_switch)
-        line.addWidget(self.switch_button)
-        self.confirm_button = QPushButton(onboarding.SWITCH_CONFIRM)
-        self.confirm_button.clicked.connect(self.confirm_switch)
-        line.addWidget(self.confirm_button)
+        # The question, when it is asked, takes the place of the card's text,
+        # and its answers sit under it. No dialog.
+        self.confirm_row = row()
+        line = QHBoxLayout(self.confirm_row)
+        line.setContentsMargins(0, theme.PAD_S, 0, 0)
+        line.addStretch(1)
         self.cancel_button = QPushButton(onboarding.SWITCH_CANCEL)
         self.cancel_button.clicked.connect(self.cancel_switch)
         line.addWidget(self.cancel_button)
-        line.addStretch(1)
-        inner.addLayout(line)
-        self.account_note = self._muted()
-        inner.addWidget(self.account_note)
+        self.confirm_button = QPushButton(onboarding.SWITCH_CONFIRM)
+        self.confirm_button.clicked.connect(self.confirm_switch)
+        line.addWidget(self.confirm_button)
+        inner.addWidget(self.confirm_row)
         return box
 
     def _build_pc(self) -> QWidget:
         box, inner = self._card("This PC")
-        self.autostart_box = QCheckBox(AUTOSTART_LABEL)
+        # Switches, not checkboxes: each one changes Windows the moment it is
+        # flipped, with nothing to save.
+        self.autostart_box = Switch(AUTOSTART_LABEL)
         self.autostart_box.clicked.connect(self.set_autostart)
-        inner.addWidget(self.autostart_box)
-        inner.addWidget(self._muted(AUTOSTART_HELP))
-        inner.addSpacing(theme.PAD_XS)
-        self.awake_box = QCheckBox(AWAKE_LABEL)
+        self._divider(inner)
+        inner.addWidget(self._setting(
+            AUTOSTART_LABEL, self.autostart_box, self._muted(AUTOSTART_HELP)
+        ))
+        self.awake_box = Switch(AWAKE_LABEL)
         self.awake_box.clicked.connect(self.set_keep_awake)
-        inner.addWidget(self.awake_box)
-        inner.addWidget(self._muted(AWAKE_HELP))
+        self._divider(inner)
+        inner.addWidget(self._setting(AWAKE_LABEL, self.awake_box, self._muted(AWAKE_HELP)))
         self.pc_note = self._muted()
+        self.pc_note.setContentsMargins(0, theme.PAD_S, 0, 0)
+        self.pc_note.setVisible(False)
         inner.addWidget(self.pc_note)
         return box
 
@@ -401,8 +432,7 @@ class SettingsView(QWidget):
             return
         self._status_shown = snapshot
 
-        self.status_label.setText(headline)
-        self.status_label.setStyleSheet(f"color: {theme.C[colour]}; font-weight: 600;")
+        set_badge(self.status_label, headline, colour)
         self.status_detail.setText(detail)
         self.waiting_label.setText(
             f"Waiting: {waiting}." if waiting else "Nothing is waiting to go out."
@@ -504,6 +534,7 @@ class SettingsView(QWidget):
         self.switch_button.setEnabled(self._connected())
         self.confirm_button.setVisible(confirming)
         self.cancel_button.setVisible(confirming)
+        self.confirm_row.setVisible(confirming)
         self.account_note.setText(
             "" if self._connected() else "Available once the app is connected to Facebook."
         )
@@ -582,7 +613,7 @@ class SettingsView(QWidget):
         self.autostart_box.setChecked(bool(status.autostart))
         self.awake_box.setChecked(status.keep_awake)
         if status.autostart is None:
-            self.pc_note.setText("Windows did not say whether the app starts when you sign in.")
+            self._set_pc_note("Windows did not say whether the app starts when you sign in.")
 
     def _on_pc_failed(self, exc: Exception) -> None:
         self._set_pc_busy(False, "")
@@ -594,4 +625,9 @@ class SettingsView(QWidget):
         self._pc_busy = busy
         self.autostart_box.setEnabled(not busy)
         self.awake_box.setEnabled(not busy)
+        self._set_pc_note(note)
+
+    def _set_pc_note(self, note: str) -> None:
+        # Hidden when there is nothing to say, so it leaves no gap behind.
         self.pc_note.setText(note)
+        self.pc_note.setVisible(bool(note))

@@ -116,7 +116,7 @@ def cmd_start(args: argparse.Namespace) -> int:
     except FBPosterError as exc:
         print(f"\nCould not start Chrome:\n{exc}\n", file=sys.stderr)
         print(
-            "Opening the app anyway — you can still edit groups and templates, but "
+            "Opening the app anyway. You can still edit groups and templates, but "
             "nothing will post until Chrome is up. Try 'main.py setup' if you have "
             "never logged in.\n",
             file=sys.stderr,
@@ -146,7 +146,7 @@ def _new_page(context):
 def cmd_probe(args: argparse.Namespace) -> int:
     """Read-only: confirm the composer selectors resolve. Types nothing."""
     _require_chrome()
-    print(f"Probing {args.group_url}\nRead-only — nothing will be typed or posted.\n")
+    print(f"Probing {args.group_url}\nRead-only: nothing will be typed or posted.\n")
 
     with session.attach() as context:
         page = _new_page(context)

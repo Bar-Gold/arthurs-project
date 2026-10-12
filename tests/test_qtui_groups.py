@@ -1,7 +1,7 @@
 """Tests for the Groups screen and the one-off date picker.
 
-Groups is the middle step of the flow — Compose says what, this says where,
-Publish says when — so its job is two things at once: choosing recipients and
+Groups is the middle step of the flow. Compose says what, this says where,
+Publish says when, so its job is two things at once: choosing recipients and
 managing the list they are chosen from.
 
 The date-picker tests exist because of a real report: "Once" appeared to

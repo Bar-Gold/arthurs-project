@@ -1,4 +1,4 @@
-# Facebook Auto-Poster — getting started
+# Facebook Auto-Poster: getting started
 
 You only have to do this once. It takes about two minutes.
 
@@ -39,9 +39,9 @@ When all three lines have a green tick, press **Start using the app**.
 
 The sidebar is the order you work in:
 
-1. **Compose** — write the post, attach pictures
-2. **Groups** — tick which groups it goes to
-3. **Publish** — post now, once at a set time, or on repeat
+1. **Compose**: write the post, attach pictures
+2. **Groups**: tick which groups it goes to
+3. **Publish**: post now, once at a set time, or on repeat
 
 **Queue** below the line is where you check what happened.
 
@@ -51,7 +51,7 @@ The sidebar is the order you work in:
 window, it will warn you when something is still waiting. If you asked for it
 to start when you sign in, it will come back on its own after a restart.
 
-**Posts go out slowly on purpose** — 10 to 25 minutes between groups. A batch
+**Posts go out slowly on purpose**: 10 to 25 minutes between groups. A batch
 of six groups takes a couple of hours. That is deliberate: posting to many
 groups quickly is what gets Facebook accounts restricted.
 
@@ -67,7 +67,7 @@ so on the Queue screen, and checks back later on its own.
 ## Posting as a different Facebook account
 
 Press **Switch account**, under the connection light on the left. It will ask
-you to confirm, then open a Chrome window with the Facebook login in it — sign
+you to confirm, then open a Chrome window with the Facebook login in it. Sign
 in as the other account there and press **Check again**.
 
 Your groups, templates, repeating posts and everything the app has already
@@ -100,7 +100,7 @@ There is a **Check connection** button under the dot you can press any time.
 In the Start Menu, under **Facebook Auto-Poster**, there is **Check my setup**.
 
 Open it. It looks at this PC and shows a short list of what it can and cannot
-find. Take a photo or a screenshot of that list and send it on — it says
+find. Take a photo or a screenshot of that list and send it on. It says
 exactly what is wrong, which saves a lot of guessing.
 
 ## Removing it

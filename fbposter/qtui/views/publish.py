@@ -3,9 +3,9 @@
 The last step of three: Compose says what, Groups says where, this says when.
 It owns nothing but the moment, in three modes:
 
-* **Post now** — straight onto the queue.
-* **Schedule** — once, at a chosen moment.
-* **Repeat** — daily, or on chosen days, at up to three times of day.
+* **Post now**: straight onto the queue.
+* **Schedule**: once, at a chosen moment.
+* **Repeat**: daily, or on chosen days, at up to three times of day.
 
 Repeat is the mode with a wrinkle worth reading. Sending the same words to the
 same group twice is refused outright by `guards.check_repeat_text`, because
@@ -50,7 +50,7 @@ from fbposter.text import strip_invisible
 from fbposter.db.models import SCHEDULE_ACTIVE, SCHEDULE_PAUSED, utcnow
 
 from .. import theme
-from ..widgets import card, clear, row
+from ..widgets import badge, card, clear, row, segmented, set_note_lines
 from .compose import pictures_only
 
 RIGHT_COLUMN_WIDTH = 340
@@ -80,7 +80,7 @@ ANYWAY_EFFECT = {
     REPEAT: "Post anyway and every run goes out despite these.",
 }
 ANYWAY_STILL = (
-    " Every other rule still applies, including the 10–25 minute gap "
+    " Every other rule still applies, including the 10-25 minute gap "
     "between groups."
 )
 
@@ -313,7 +313,7 @@ class PublishView(QWidget):
         sub.setObjectName("Subtitle")
         sub.setWordWrap(True)
         outer.addWidget(sub)
-        outer.addSpacing(theme.PAD_S)
+        outer.addSpacing(theme.HEADER_GAP)
 
         body = QHBoxLayout()
         body.setSpacing(theme.PAD_M)
@@ -468,7 +468,7 @@ class PublishView(QWidget):
         elif self.compose.attachments:
             note = f"{pictures_only(len(self.compose.attachments))}."
         else:
-            note = "Nothing written yet — start on Compose."
+            note = "Nothing written yet. Start on Compose."
         self.preview_note.setText(note)
 
         # None never equals a list, so the first call always draws -- including
@@ -480,7 +480,7 @@ class PublishView(QWidget):
 
         clear(self.recipient_box)
         if not selected:
-            note = QLabel("No groups picked — choose them on the Groups screen.")
+            note = QLabel("No groups picked. Choose them on the Groups screen.")
             note.setObjectName("Muted")
             note.setWordWrap(True)
             self.recipient_box.addWidget(note)
@@ -520,21 +520,15 @@ class PublishView(QWidget):
         label.setObjectName("SectionHeading")
         picker_layout.addWidget(label)
 
-        modes = QHBoxLayout()
-        modes.setSpacing(theme.PAD_XS)
+        choices = ((NOW, "Now"), (ONCE, "Once"), (REPEAT, "Repeat"))
+        toggle, buttons = segmented([text for _key, text in choices], expand=True)
         self.mode_buttons: dict[str, QPushButton] = {}
         group = QButtonGroup(self)
-        for index, (key, text) in enumerate(
-            ((NOW, "Now"), (ONCE, "Once"), (REPEAT, "Repeat"))
-        ):
-            button = QPushButton(text)
-            button.setObjectName("Tab")
-            button.setCheckable(True)
+        for index, ((key, _text), button) in enumerate(zip(choices, buttons)):
             group.addButton(button, index)
             button.clicked.connect(lambda _c, k=key: self.set_mode(k))
-            modes.addWidget(button, 1)
             self.mode_buttons[key] = button
-        picker_layout.addLayout(modes)
+        picker_layout.addWidget(toggle)
 
         # One slot, three sets of controls -- the same trick Compose uses for
         # Write/Preview, so the column does not jump around as modes change.
@@ -646,7 +640,7 @@ class PublishView(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         note = QLabel(
             "Goes onto the queue straight away. If a batch is already running "
-            "this one waits behind it — never alongside."
+            "this one waits behind it, never alongside."
         )
         note.setObjectName("Muted")
         note.setWordWrap(True)
@@ -794,7 +788,7 @@ class PublishView(QWidget):
     def add_time(self, text: str = "") -> bool:
         if len(self._time_rows) >= recurrence.MAX_TIMES_PER_DAY:
             self.notify(
-                f"{recurrence.MAX_TIMES_PER_DAY} times a day is the ceiling — more "
+                f"{recurrence.MAX_TIMES_PER_DAY} times a day is the ceiling. More "
                 "than that stops looking like a person posting.",
                 "warning",
             )
@@ -889,11 +883,13 @@ class PublishView(QWidget):
         count = f"{len(groups)} group{'s' if len(groups) != 1 else ''}"
 
         if self.mode == NOW:
-            self.summary.setText(f"{count}, starting as soon as nothing else is posting.")
+            set_note_lines(
+                self.summary, [f"{count}, starting as soon as nothing else is posting."]
+            )
             return
         if self.mode == ONCE:
             when = self.schedule_entry.dateTime().toString("yyyy-MM-dd HH:mm")
-            self.summary.setText(f"{count}, once at {when}.")
+            set_note_lines(self.summary, [f"{count}, once at {when}."])
             return
 
         wordings = self.wordings()
@@ -911,21 +907,21 @@ class PublishView(QWidget):
 
         rule = self.rule()
         if rule is None:
-            self.summary.setText("Pick at least one day and one time.")
+            set_note_lines(self.summary, [], ["Pick at least one day and one time."])
             return
         report = self._preview(rule, len(groups), len(wordings), ahead=1)
         lines = [f"{report.summary} · {count}"]
         if report.next_runs:
             lines.append(f"First run {clock.format_local(report.next_runs[0])}")
         # Said before the button is pressed, from the same checks it applies.
-        lines.extend(
+        warnings = [
             v.message
             for v in self._schedule_violations(rule, groups, wordings, history=False)
-        )
+        ]
         note = recurrence.variation_note(len(groups), len(wordings))
         if note is not None:
-            lines.append(note)
-        self.summary.setText("\n".join(lines))
+            warnings.append(note)
+        set_note_lines(self.summary, lines, warnings)
 
     def _schedule_violations(self, rule, group_ids, wordings, history: bool = True):
         return schedule_violations(self.app, rule, group_ids, wordings, history)
@@ -1004,7 +1000,7 @@ class PublishView(QWidget):
 
         if any(self.compose.has_rewrite(group_id) for group_id in groups):
             self.notify(
-                "Per-group rewrites are not carried into a repeating post — it "
+                "Per-group rewrites are not carried into a repeating post. It "
                 "rotates the Compose text and the alternate wordings instead.",
                 "warning",
             )
@@ -1074,9 +1070,21 @@ class PublishView(QWidget):
     def delete_schedule(self, schedule_id: int) -> None:
         schedule = self.app.schedule_repo.get(schedule_id)
         self.app.schedule_repo.delete(schedule_id)
-        if schedule is not None:
-            self.notify(f"{schedule.display_name} deleted.", "info")
         self.refresh_schedules()
+        if schedule is not None:
+            # "Delete" sits beside "Edit" on every card. A slip takes the
+            # wordings with it, so it is one click to take back.
+            self.app.toast(
+                f"{schedule.display_name} deleted.",
+                "info",
+                undo=lambda: self._restore_schedule(schedule),
+            )
+
+    def _restore_schedule(self, schedule) -> str | None:
+        if not self.app.schedule_repo.restore(schedule):
+            return None
+        self.refresh_schedules()
+        return f"{schedule.display_name} is back."
 
     def refresh_schedules(self) -> None:
         clear(self.schedule_box)
@@ -1098,16 +1106,21 @@ class PublishView(QWidget):
         layout.setContentsMargins(theme.PAD_M, theme.PAD_S, theme.PAD_M, theme.PAD_S)
         layout.setSpacing(theme.PAD_XS)
 
+        # The name and whether it is on, then what can be done to it. The
+        # state used to sit among the buttons, in coloured words the same size
+        # as "Delete" beside it.
         header = QHBoxLayout()
+        header.setSpacing(theme.PAD_S)
         title = QLabel(schedule.display_name)
         title.setStyleSheet("font-weight: 600;")
-        header.addWidget(title, 1)
-
-        state = QLabel("Active" if schedule.active else "Paused")
-        state.setStyleSheet(
-            f"color: {theme.C['SUCCESS' if schedule.active else 'TEXT_MUTED']};"
+        header.addWidget(title)
+        header.addWidget(
+            badge(
+                "Active" if schedule.active else "Paused",
+                "SUCCESS" if schedule.active else "TEXT_MUTED",
+            )
         )
-        header.addWidget(state)
+        header.addStretch(1)
 
         toggle = QPushButton("Pause" if schedule.active else "Resume")
         toggle.clicked.connect(lambda _c, s=schedule.id: self.toggle_schedule(s))

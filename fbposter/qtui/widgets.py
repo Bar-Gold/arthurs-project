@@ -6,15 +6,78 @@ that imports the views.
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from html import escape
+from typing import Callable, Sequence
+
+from PySide6.QtCore import QRectF, QSize, Qt, QTimer
+from PySide6.QtGui import QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import (
     QAbstractButton,
+    QCheckBox,
     QComboBox,
     QFrame,
+    QHBoxLayout,
+    QLabel,
     QLayout,
     QProxyStyle,
+    QPushButton,
+    QSizePolicy,
     QWidget,
 )
+
+from . import theme
+
+# How long a message stays. Reading takes time in proportion to length, and
+# many of these are two or three sentences that a fixed 4.5 seconds cut off
+# half-read.
+MESSAGE_MIN_MS = 4_500
+MESSAGE_MS_PER_CHAR = 60  # about 16 characters a second, unhurried
+MESSAGE_MAX_MS = 15_000
+# A message offering Undo stays at least this long, so there is time to reach
+# the button.
+UNDO_MIN_MS = 10_000
+
+
+# Letter spacing for large type, in px, by object name. Large text reads too
+# loose at the spacing that suits body text, so headings are drawn a touch
+# tighter -- about -0.02em, the way system fonts track their display sizes.
+# A stylesheet cannot say this (Qt has no letter-spacing property), so
+# AppStyle sets it as each label is polished.
+TRACKING = {"Title": -0.5, "Brand": -0.3, "CardTitle": -0.2}
+
+
+def set_note_lines(
+    label: QLabel, facts: Sequence[str], warnings: Sequence[str] = ()
+) -> None:
+    """Facts in the label's own colour, warnings in the warning colour.
+
+    A warning set in the same grey as the facts around it read as one more
+    fact -- "the same text reaches 3 groups" looked exactly like "First run
+    09:00". One block per line, so each keeps its own text direction, as the
+    lines of plain text did.
+    """
+    label.setTextFormat(Qt.RichText)
+    colour = theme.C["WARNING"]
+    blocks = [f"<div>{escape(line, quote=False)}</div>" for line in facts]
+    blocks += [
+        f'<div style="color: {colour};">{escape(line, quote=False)}</div>'
+        for line in warnings
+    ]
+    label.setText("".join(blocks))
+
+
+def message_duration(text: str, level: str, can_undo: bool = False) -> int | None:
+    """How long a message stays, in ms. None: until it is closed or replaced.
+
+    An error stays: it is the one a person must not miss, and the batch that
+    stopped at 3am is not waiting for anyone to be looking.
+    """
+    if level == "error":
+        return None
+    ms = min(MESSAGE_MAX_MS, max(MESSAGE_MIN_MS, len(text) * MESSAGE_MS_PER_CHAR))
+    if can_undo:
+        ms = max(ms, UNDO_MIN_MS)
+    return ms
 
 
 class AppStyle(QProxyStyle):
@@ -40,6 +103,10 @@ class AppStyle(QProxyStyle):
             target.setCursor(Qt.PointingHandCursor)
         if isinstance(target, QAbstractButton):
             target.setFocusPolicy(Qt.TabFocus)
+        if isinstance(target, QLabel) and target.objectName() in TRACKING:
+            font = target.font()
+            font.setLetterSpacing(QFont.AbsoluteSpacing, TRACKING[target.objectName()])
+            target.setFont(font)
         return super().polish(target)
 
 
@@ -79,6 +146,214 @@ def card(parent: QWidget | None = None) -> QFrame:
     frame = QFrame(parent)
     frame.setObjectName("Card")
     return frame
+
+
+def badge(text: str, tone: str) -> QLabel:
+    """A status in a tinted capsule. `tone` is a colour token: SUCCESS,
+    WARNING, DANGER, ACCENT_TEXT or TEXT_MUTED (theme.BADGE_TINTS).
+
+    Its own size, never stretched: in a row it would otherwise grow to the
+    row's height, and a capsule as tall as the buttons beside it reads as one
+    of them.
+    """
+    label = QLabel(text)
+    label.setObjectName("Badge")
+    label.setProperty("tone", tone if tone in theme.BADGE_TINTS else "TEXT_MUTED")
+    label.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
+    return label
+
+
+class Switch(QCheckBox):
+    """An on/off switch, drawn the way Windows 11 draws one.
+
+    For a setting that takes effect the moment it is flipped, which is what a
+    switch promises and a checkbox does not. Off is an outlined track with a
+    small grey knob, on is the accent with a white knob, so the two states
+    differ in shape as well as colour. It is a QCheckBox underneath, so
+    `setChecked`, `isChecked`, `clicked` and the space bar all behave as one.
+    It has no text of its own: the setting's name is the label beside it, and
+    `name` is what a screen reader says.
+    """
+
+    WIDTH = 44
+    HEIGHT = 24
+    # Room around the track for the focus ring.
+    RING = 2
+
+    def __init__(self, name: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setAccessibleName(name)
+        self.setFixedSize(self.sizeHint())
+
+    def sizeHint(self) -> QSize:  # noqa: N802 - Qt's name
+        return QSize(self.WIDTH + 2 * self.RING, self.HEIGHT + 2 * self.RING)
+
+    def hitButton(self, pos) -> bool:  # noqa: N802 - Qt's name
+        return self.rect().contains(pos)
+
+    def paintEvent(self, _event) -> None:  # noqa: N802 - Qt's name
+        c = theme.C
+        on = self.isChecked()
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        if not self.isEnabled():
+            painter.setOpacity(0.45)
+        track = QRectF(self.RING, self.RING, self.WIDTH, self.HEIGHT)
+        radius = self.HEIGHT / 2
+        if on:
+            fill = c["ACCENT_PRESSED" if self.isDown() else "ACCENT"]
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor(fill))
+            painter.drawRoundedRect(track, radius, radius)
+            knob, colour = 16, c["TEXT_ON_ACCENT"]
+            x = track.right() - 4 - knob
+        else:
+            painter.setPen(QPen(QColor(c["TEXT_MUTED"]), 1))
+            painter.setBrush(QColor(c["PRESSED_BG" if self.isDown() else "SURFACE"]))
+            painter.drawRoundedRect(track.adjusted(0.5, 0.5, -0.5, -0.5), radius, radius)
+            knob, colour = 12, c["TEXT_MUTED"]
+            x = track.left() + 6
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(colour))
+        painter.drawEllipse(QRectF(x, track.center().y() - knob / 2, knob, knob))
+        if self.hasFocus():
+            # Outside the track, so it shows on the accent fill as well.
+            painter.setOpacity(1)
+            painter.setPen(QPen(QColor(c["ACCENT"]), 2))
+            painter.setBrush(Qt.NoBrush)
+            ring = QRectF(self.rect()).adjusted(1, 1, -1, -1)
+            painter.drawRoundedRect(ring, ring.height() / 2, ring.height() / 2)
+        painter.end()
+
+
+def set_badge(label: QLabel, text: str, tone: str) -> None:
+    """Change a badge already on screen."""
+    label.setText(text)
+    tone = tone if tone in theme.BADGE_TINTS else "TEXT_MUTED"
+    if label.property("tone") != tone:
+        label.setProperty("tone", tone)
+        # A dynamic property is only read when the widget is polished.
+        label.style().unpolish(label)
+        label.style().polish(label)
+
+
+def segmented(
+    labels: Sequence[str], expand: bool = False
+) -> tuple[QFrame, list[QPushButton]]:
+    """A joined toggle: two or three choices drawn as one control.
+
+    Returns the control and its buttons, checkable and in order. The caller
+    puts them in its own exclusive QButtonGroup and wires them, as it did when
+    they were separate buttons. `expand` shares the width out equally, for a
+    toggle that fills its card.
+    """
+    frame = QFrame()
+    frame.setObjectName("Segmented")
+    layout = QHBoxLayout(frame)
+    layout.setContentsMargins(3, 3, 3, 3)
+    layout.setSpacing(2)
+    buttons = []
+    for text in labels:
+        button = QPushButton(text)
+        button.setObjectName("Segment")
+        button.setCheckable(True)
+        layout.addWidget(button, 1 if expand else 0)
+        buttons.append(button)
+    if not expand:
+        frame.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
+    return frame, buttons
+
+
+class StatusBanner(QFrame):
+    """Where the app says what just happened, under the screen. Never a dialog.
+
+    It used to be one line of small grey text that went after 4.5 seconds,
+    errors included, so a batch stopping or a post refused was easy to miss
+    entirely. Now the kind of message is a coloured bar at its edge -- the
+    words stay in the body colour, readable whatever the kind -- it stays for
+    as long as it takes to read, an error stays until it is closed, and it can
+    carry an Undo for a slip the user can take back.
+    """
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("Toast")
+        self.setProperty("level", "info")
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(theme.PAD_S, theme.PAD_S, theme.PAD_XS, theme.PAD_S)
+        layout.setSpacing(theme.PAD_S)
+
+        # The kind of message, as a bar of its own: drawn as the frame's left
+        # border it bent round the rounded corner and read as a bracket.
+        self.bar = QFrame()
+        self.bar.setObjectName("ToastBar")
+        self.bar.setProperty("level", "info")
+        self.bar.setFixedWidth(4)
+        layout.addWidget(self.bar)
+
+        self.text = QLabel("")
+        self.text.setObjectName("ToastText")
+        self.text.setWordWrap(True)
+        # So an error can be copied into a message to whoever looks after the
+        # app, word for word.
+        self.text.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        layout.addWidget(self.text, 1)
+
+        self.undo_button = QPushButton("Undo")
+        self.undo_button.setObjectName("ToastAction")
+        self.undo_button.hide()
+        self.undo_button.clicked.connect(self._run_undo)
+        layout.addWidget(self.undo_button)
+
+        self.close_button = QPushButton("\u00d7")
+        self.close_button.setObjectName("ToastClose")
+        self.close_button.setToolTip("Close")
+        self.close_button.setAccessibleName("Close this message")
+        self.close_button.clicked.connect(self.dismiss)
+        layout.addWidget(self.close_button)
+
+        self._undo: Callable[[], None] | None = None
+        self.timer = QTimer(self)
+        self.timer.setSingleShot(True)
+        self.timer.timeout.connect(self.dismiss)
+        self.hide()
+
+    @property
+    def level(self) -> str:
+        return str(self.property("level"))
+
+    def show_message(
+        self, text: str, level: str = "info", undo: Callable[[], None] | None = None
+    ) -> None:
+        """Replace whatever is showing. An Undo goes with the message it came with."""
+        self.text.setText(text)
+        if self.property("level") != level:
+            # A dynamic property is only read when the widget is polished.
+            for widget in (self, self.bar):
+                widget.setProperty("level", level)
+                widget.style().unpolish(widget)
+                widget.style().polish(widget)
+        self._undo = undo
+        self.undo_button.setVisible(undo is not None)
+        self.show()
+        duration = message_duration(text, level, undo is not None)
+        if duration is None:
+            self.timer.stop()
+        else:
+            self.timer.start(duration)
+
+    def dismiss(self) -> None:
+        self.timer.stop()
+        self._undo = None
+        self.undo_button.hide()
+        self.text.setText("")
+        self.hide()
+
+    def _run_undo(self) -> None:
+        undo, self._undo = self._undo, None
+        self.dismiss()
+        if undo is not None:
+            undo()
 
 
 def row(parent: QWidget | None = None) -> QWidget:

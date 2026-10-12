@@ -516,7 +516,7 @@ class TestPostAnyway:
         effect = publish.override_effect.text()
         assert "goes out despite these" in effect
         # The one thing people expect "anyway" to skip, and it does not.
-        assert "10–25 minute gap" in effect
+        assert "10-25 minute gap" in effect
 
     def test_for_a_repeat_it_says_every_run_goes_out(self, qt_app, views):
         """The screenshot: the list said the 11:00 run "would be skipped",
@@ -656,7 +656,7 @@ class TestPicturesOnly:
     def test_the_summary_says_pictures_only(self, pictures):
         _compose, publish, _said = pictures
         publish.refresh_recipients()
-        assert publish.preview_note.text() == "Pictures only — 1 picture, no text."
+        assert publish.preview_note.text() == "Pictures only (1 picture, no text)."
 
 
 class TestOnceADay:

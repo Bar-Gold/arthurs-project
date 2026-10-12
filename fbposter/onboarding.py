@@ -75,8 +75,8 @@ GUIDANCE: dict[SetupStep, Guidance] = {
         headline="You are not logged into Facebook",
         detail=(
             "A Chrome window will open. Log into Facebook in it exactly as you "
-            "normally would, then come back here. You only have to do this once "
-            "— the app never asks for your password and never logs in for you."
+            "normally would, then come back here. You only have to do this once. "
+            "The app never asks for your password and never logs in for you."
         ),
         action="Log in to Facebook",
         done=False,
@@ -124,7 +124,7 @@ SWITCH_DETAIL = (
 )
 SWITCH_WARNING = (
     "You will need the other account's password to hand. Nothing is deleted, "
-    "and the Chrome you browse in yourself is not touched — only the separate "
+    "and the Chrome you browse in yourself is not touched, only the separate "
     "window this app posts through."
 )
 SWITCH_CONFIRM = "Yes, sign out and switch"

@@ -58,10 +58,20 @@ GROUP_REMOVED = "You removed this group from your list before its turn."
 
 
 class Removal(NamedTuple):
-    """What removing a group took it out of, for the Groups screen to say."""
+    """What removing a group took it out of, for the Groups screen to say.
+
+    The rest is exactly what changed, so `GroupRepo.restore` can put it back
+    for an Undo -- and only what is still as the removal left it.
+    """
 
     schedules: int
     batches: int
+    # (schedule_id, position) of every repeating post it was taken out of.
+    schedule_rows: tuple = ()
+    # Turns in queued posts marked skipped with GROUP_REMOVED.
+    skipped_targets: tuple = ()
+    # (task_id, state before, state after) of batches left with nothing to do.
+    finished: tuple = ()
 
 
 class SettingsRepo:
@@ -247,6 +257,13 @@ class GroupRepo:
         unfinished = (TASK_PENDING, TASK_RUNNING)
         with self.db.transaction() as connection:
             connection.execute("UPDATE groups SET archived = 1 WHERE id = ?", (group_id,))
+            schedule_rows = tuple(
+                (row["schedule_id"], row["position"])
+                for row in connection.execute(
+                    "SELECT schedule_id, position FROM schedule_targets WHERE group_id = ?",
+                    (group_id,),
+                )
+            )
             schedules = connection.execute(
                 "DELETE FROM schedule_targets WHERE group_id = ?", (group_id,)
             ).rowcount
@@ -260,12 +277,21 @@ class GroupRepo:
                     (group_id, TARGET_PENDING, *unfinished),
                 )
             ]
+            skipped_targets = tuple(
+                row["id"]
+                for row in connection.execute(
+                    "SELECT id FROM task_targets "
+                    f"WHERE group_id = ? AND state = ? AND {in_unfinished}",
+                    (group_id, TARGET_PENDING, *unfinished),
+                )
+            )
             connection.execute(
                 "UPDATE task_targets SET state = ?, error = ? "
                 f"WHERE group_id = ? AND state = ? AND {in_unfinished}",
                 (TARGET_SKIPPED, GROUP_REMOVED, group_id, TARGET_PENDING, *unfinished),
             )
 
+            finished = []
             for task_id in batches:
                 left = connection.execute(
                     "SELECT COUNT(*) FROM task_targets WHERE task_id = ? AND state IN (?, ?)",
@@ -274,7 +300,7 @@ class GroupRepo:
                 if left:
                     continue
                 task = connection.execute(
-                    "SELECT started_at FROM tasks WHERE id = ?", (task_id,)
+                    "SELECT state, started_at FROM tasks WHERE id = ?", (task_id,)
                 ).fetchone()
                 state, error = (
                     (TASK_DONE, "") if task["started_at"]
@@ -285,7 +311,50 @@ class GroupRepo:
                     "resume_at = NULL WHERE id = ?",
                     (state, error, to_iso(utcnow()), task_id),
                 )
-        return Removal(schedules=schedules, batches=len(batches))
+                finished.append((task_id, task["state"], state))
+        return Removal(
+            schedules=schedules,
+            batches=len(batches),
+            schedule_rows=schedule_rows,
+            skipped_targets=skipped_targets,
+            finished=tuple(finished),
+        )
+
+    def restore(self, group_id: int, removal: Removal) -> bool:
+        """Undo a removal, straight after it. False if it can no longer be.
+
+        Puts back exactly what `remove` changed, and only what is still as it
+        left it: a repeating post deleted since stays deleted, and a queued
+        post's turn is handed back only while it still reads "removed". Undo
+        is not re-adding -- pasting the link again still brings the group back
+        into neither -- it is taking back a click a moment ago.
+        """
+        with self.db.transaction() as connection:
+            row = connection.execute(
+                "SELECT archived FROM groups WHERE id = ?", (group_id,)
+            ).fetchone()
+            if row is None or not row["archived"]:
+                return False  # gone, or already added back
+            connection.execute("UPDATE groups SET archived = 0 WHERE id = ?", (group_id,))
+            for schedule_id, position in removal.schedule_rows:
+                connection.execute(
+                    "INSERT OR IGNORE INTO schedule_targets (schedule_id, group_id, position) "
+                    "SELECT ?, ?, ? WHERE EXISTS (SELECT 1 FROM schedules WHERE id = ?)",
+                    (schedule_id, group_id, position, schedule_id),
+                )
+            for target_id in removal.skipped_targets:
+                connection.execute(
+                    "UPDATE task_targets SET state = ?, error = '' "
+                    "WHERE id = ? AND state = ? AND error = ?",
+                    (TARGET_PENDING, target_id, TARGET_SKIPPED, GROUP_REMOVED),
+                )
+            for task_id, before, after in removal.finished:
+                connection.execute(
+                    "UPDATE tasks SET state = ?, error = '', finished_at = NULL "
+                    "WHERE id = ? AND state = ?",
+                    (before, task_id, after),
+                )
+        return True
 
     def active(self, group_id: int) -> "Group | None":
         """The group, but only if it is still in the user's list.
@@ -532,6 +601,22 @@ class TaskRepo:
         for row in rows:
             grouped[row["task_id"]].append(TaskTarget.from_row(row))
         return grouped
+
+    def uncancel(self, task_id: int, state: str) -> bool:
+        """Undo a cancel, straight after it. False if it can no longer be.
+
+        Only a batch still cancelled goes back, to the state it was in. One
+        that finished in the meantime -- cancelled mid-post, and that post was
+        its last -- is left as it is.
+        """
+        if state not in (TASK_PENDING, TASK_RUNNING):
+            return False
+        with self.db.transaction() as connection:
+            cursor = connection.execute(
+                "UPDATE tasks SET state = ?, finished_at = NULL WHERE id = ? AND state = ?",
+                (state, task_id, TASK_CANCELLED),
+            )
+            return cursor.rowcount == 1
 
     def cancel(self, task_id: int) -> None:
         # The note goes too: a "waiting for the posting hours" line under a
@@ -1110,6 +1195,49 @@ class ScheduleRepo:
 
     def delete(self, schedule_id: int) -> None:
         self.db.write("DELETE FROM schedules WHERE id = ?", (schedule_id,))
+
+    def restore(self, schedule: Schedule) -> bool:
+        """Undo a delete, straight after it. False if it can no longer be.
+
+        Written back under its own id, so the batches it fired -- which keep
+        that id in `tasks.schedule_id` -- are its own again on the Queue, and
+        with everything the worker keeps for itself: the state, `run_count`
+        (which rotates the wordings) and the next slot. A group removed in
+        the meantime is not put back into it, as removing one would have
+        taken it out.
+        """
+        with self.db.transaction() as connection:
+            if connection.execute(
+                "SELECT 1 FROM schedules WHERE id = ?", (schedule.id,)
+            ).fetchone():
+                return False
+            connection.execute(
+                "INSERT INTO schedules (id, name, bodies, media_paths, times, days, "
+                "state, run_count, next_run_at, last_run_at, created_at, overrides) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    schedule.id,
+                    schedule.name,
+                    json.dumps(list(schedule.bodies)),
+                    json.dumps(list(schedule.media_paths)),
+                    json.dumps(list(schedule.times)),
+                    json.dumps([int(d) for d in schedule.days]),
+                    schedule.state,
+                    schedule.run_count,
+                    to_iso(schedule.next_run_at),
+                    to_iso(schedule.last_run_at),
+                    to_iso(schedule.created_at or utcnow()),
+                    json.dumps(sorted(schedule.overrides)),
+                ),
+            )
+            for position, group_id in enumerate(schedule.group_ids):
+                connection.execute(
+                    "INSERT INTO schedule_targets (schedule_id, group_id, position) "
+                    "SELECT ?, ?, ? WHERE EXISTS "
+                    "(SELECT 1 FROM groups WHERE id = ? AND archived = 0)",
+                    (schedule.id, group_id, position, group_id),
+                )
+        return True
 
     def due(self, now: datetime) -> list[Schedule]:
         """Active schedules whose moment has arrived, oldest slot first."""

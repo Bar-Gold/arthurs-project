@@ -4,7 +4,7 @@ These are not screenshot tests. Each one pins a rule that was broken at some
 point and is invisible until someone hits it: focus that cannot be seen,
 body text below the readable floor, a colour that only exists in one mode.
 
-The contrast check is the one worth keeping honest — it computes real WCAG
+The contrast check is the one worth keeping honest: it computes real WCAG
 ratios rather than trusting that the palette "looks fine", and it runs against
 both light and dark.
 """
@@ -77,6 +77,21 @@ class TestContrast:
             # reach for them. The first tint chosen failed at 4.32:1.
             ("DANGER", "DANGER_SOFT"),
             ("DANGER", "DANGER_PRESSED_BG"),
+            # Status badges: each colour on its own tint (theme.BADGE_TINTS).
+            # The first green tint tried read 4.41:1.
+            ("SUCCESS", "SUCCESS_SOFT"),
+            ("WARNING", "WARNING_SOFT"),
+            ("ACCENT_TEXT", "NAV_ACTIVE_BG"),
+            ("TEXT_MUTED", "NEUTRAL_SOFT"),
+            # A joined toggle: the choices not taken, on the track, and the
+            # one taken, on its raised segment.
+            ("TEXT_MUTED", "SEGMENT_TRACK"),
+            ("TEXT", "SEGMENT_TRACK"),
+            ("TEXT", "SEGMENT_ON"),
+            # The connection's words now sit on the sidebar itself, no longer
+            # on a card inside it.
+            ("SUCCESS", "SIDEBAR_BG"),
+            ("DANGER", "SIDEBAR_BG"),
         ],
     )
     def test_text_is_readable(self, palette_name, fg, bg):
@@ -182,7 +197,7 @@ class TestFocusAndHitTargets:
 
 
 class TestNavigationReadsAsAFlow:
-    def test_the_first_three_are_the_numbered_steps(self):
+    def test_the_first_three_are_the_steps(self):
         assert FLOW_STEPS == ("compose", "groups", "publish")
 
     def test_queue_is_not_a_step(self):
@@ -198,17 +213,28 @@ class TestNavigationReadsAsAFlow:
 
 
 class TestTheRenderedSidebar:
-    def test_the_steps_are_numbered_in_order(self, qt_app):
-        assert qt_app.nav_buttons["compose"].text().startswith("1.")
-        assert qt_app.nav_buttons["groups"].text().startswith("2.")
-        assert qt_app.nav_buttons["publish"].text().startswith("3.")
+    def test_the_steps_come_first_in_order(self, qt_app):
+        """The icons replaced "1." to "3." (the user's choice, 2026-10-12), so
+        the order on screen is what says they are walked in turn."""
+        keys = list(qt_app.nav_buttons)
+        assert keys[: len(FLOW_STEPS)] == list(FLOW_STEPS)
 
-    def test_queue_is_not_numbered(self, qt_app):
-        assert qt_app.nav_buttons["queue"].text() == "Queue"
-
-    def test_the_labels_still_name_their_screen(self, qt_app):
+    def test_every_item_is_its_bare_name_with_an_icon(self, qt_app):
         for key, label, _view in NAV_ITEMS:
-            assert label in qt_app.nav_buttons[key].text()
+            button = qt_app.nav_buttons[key]
+            assert button.text() == label
+            assert not button.icon().isNull(), f"{key} has no icon"
+
+    def test_the_icon_changes_colour_with_the_screen(self, qt_app):
+        """A checked button draws its icon's On state, so the icon is lit
+        with the label. Both states have to exist for that."""
+        from PySide6.QtGui import QIcon
+
+        icon = qt_app.nav_buttons["compose"].icon()
+        size = qt_app.nav_buttons["compose"].iconSize()
+        on = icon.pixmap(size, QIcon.Normal, QIcon.On).toImage()
+        off = icon.pixmap(size, QIcon.Normal, QIcon.Off).toImage()
+        assert on != off
 
     def test_every_nav_button_is_reachable_without_a_mouse(self, qt_app):
         for button in qt_app.nav_buttons.values():

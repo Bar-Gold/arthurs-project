@@ -968,9 +968,9 @@ class TestOldPostsThatMayHaveGoneOutAreRelabelled:
 
     NOTES = {
         "clicked": "Clicked Post, the composer closed, but the post could not be "
-        "found in the group afterwards. It may well have gone out — check.",
+        "found in the group afterwards. It may well have gone out, so check.",
         "pictures": "A post with only pictures has no words to look for, so "
-        "whether it went out cannot be checked — look at the group.",
+        "whether it went out cannot be checked. Look at the group.",
         "crash": "Interrupted mid-post and could not be checked (no Chrome).",
         "interrupt": "Interrupted: KeyboardInterrupt.",
         "login": "Facebook showed its login page: the session has expired.",

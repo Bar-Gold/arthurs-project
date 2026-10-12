@@ -1,7 +1,7 @@
 """Tests for the Compose preview.
 
-The preview answers one question — "will this read well when it lands in the
-group?" — so its job is to be shaped like the destination. These tests pin the
+The preview answers one question ("will this read well when it lands in the
+group?"), so its job is to be shaped like the destination. These tests pin the
 parts of that shape that carry meaning: how many pictures are shown, at what
 sizes, what happens to the ones that will not open, and that the logical text
 is still recoverable however it is laid out.

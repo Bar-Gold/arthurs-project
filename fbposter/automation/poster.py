@@ -70,7 +70,7 @@ def _after_click(exc: Exception) -> str:
         what = "something unexpected went wrong"
     return (
         f"Clicked Post, but then {what} before the post could be checked. It may "
-        "well have gone out — check the group before queueing it again, because "
+        "well have gone out. Check the group before queueing it again, because "
         "posting it twice is worse than not posting it."
     )
 
@@ -664,7 +664,7 @@ class GroupPoster:
             self.discard()
             raise PostNotVerified(
                 "Clicked Post, but the post window never closed and the post is not "
-                "in the group, so it almost certainly did not go out — usually a "
+                "in the group, so it almost certainly did not go out. Usually that is a "
                 "slow or dropped connection. The draft was cleared, so it is safe "
                 "to try again.",
                 may_have_posted=False,
@@ -672,7 +672,7 @@ class GroupPoster:
 
         raise PostNotVerified(
             "Clicked Post, the post window closed, but the post could not be found "
-            "in the group afterwards. It may well have gone out — check the group "
+            "in the group afterwards. It may well have gone out, so check the group "
             "before queueing it again, because posting it twice is worse than not "
             "posting it at all."
         )
@@ -780,7 +780,7 @@ class GroupPoster:
             raise PostNotVerified(
                 "Clicked Post, but the post window was still open a minute later. A "
                 "post with only pictures has no words to look for, so whether it "
-                "went out cannot be checked — look at the group before queueing it "
+                "went out cannot be checked. Look at the group before queueing it "
                 "again, because posting it twice is worse than not posting it."
             )
 

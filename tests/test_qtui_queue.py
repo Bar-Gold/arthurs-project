@@ -6,7 +6,7 @@ history, with an "All" toggle for the rest.
 The thing these tests are really guarding is that retention is a *view* filter.
 `task_targets` rows are what `GroupRepo.recent_bodies` reads to refuse sending
 the same words to a group twice, and what `posted_count_since` counts for the
-daily cap — deleting history to tidy the screen would quietly switch off both.
+daily cap. Deleting history to tidy the screen would quietly switch off both.
 """
 
 from __future__ import annotations
@@ -75,7 +75,7 @@ class TestTheRetentionQuery:
         assert qt_app.task_repo.list_for_queue(utcnow(), 24) == []
 
     def test_an_old_failed_batch_is_not_either(self, qt_app, repos):
-        """Failures age out the same way successes do — they asked for both."""
+        """Failures age out the same way successes do: they asked for both."""
         make_task(qt_app, TASK_HALTED, finished_ago_hours=48)
         assert qt_app.task_repo.list_for_queue(utcnow(), 24) == []
 
@@ -270,7 +270,7 @@ class TestAPicturesOnlyBatch:
         qt_app.show_view("queue")
 
         titles = [label.text() for label in view.findChildren(QLabel)]
-        assert any(t.endswith("— Pictures only — 2 pictures, no text") for t in titles)
+        assert "Pictures only (2 pictures, no text)" in titles
 
 
 class TestEveryLabelSaysWhetherItPosted:
@@ -318,7 +318,7 @@ class TestEveryLabelSaysWhetherItPosted:
         self.finish(qt_app, task, TASK_HALTED, error="Check it.")
 
         texts = self.card_texts(qt_app)
-        assert "Might have posted — check the group" in texts
+        assert "Might have posted" in texts
         assert "Not posted" not in texts
 
     def test_every_group_skipped_is_not_done(self, qt_app, repos):

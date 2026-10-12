@@ -33,7 +33,7 @@ from ..db.models import SCHEDULE_ACTIVE
 from ..db.repo import GroupRepo, ScheduleRepo, SettingsRepo, TaskRepo, TemplateRepo
 from ..connection import ConnectionResult, ConnectionState, check_connection
 from ..worker import PostingWorker
-from . import theme
+from . import icons, theme
 from .views.compose import ComposeView
 from .views.groups import GroupsView
 from .views.publish import PublishView
@@ -41,7 +41,7 @@ from .views.queue import QueueView
 from .views.schedule_edit import ScheduleEditView
 from .views.settings import SettingsView
 from .views.welcome import WelcomeView
-from .widgets import AppStyle, card
+from .widgets import AppStyle, StatusBanner, row
 
 APP_TITLE = "Facebook Local Auto-Poster"
 
@@ -64,13 +64,13 @@ STARTUP_RECHECK_MS = 15_000
 # How often the window looks for the background Chrome; see keepalive.py.
 CHROME_WATCH_MS = keepalive.WATCH_EVERY_S * 1000
 CHECK_DEADLINE_MS = keepalive.CHECK_DEADLINE_S * 1000
-TOAST_MS = 4500
 
 # The order is the flow: what to say, who to say it to, when to say it, and
-# what happened. The sidebar is the sequence, so it reads top to bottom, and
-# the first three are numbered -- four equal-looking items gave no clue that
-# they are meant to be walked in order. Settings is not part of the flow at
-# all, so it sits at the foot of the sidebar, away from the steps.
+# what happened. The sidebar is the sequence, so it reads top to bottom. Each
+# item has an icon (icons.py); the first three used to be numbered "1." to
+# "3.", which the user replaced with the icons on 2026-10-12. Settings is not
+# part of the flow at all, so it sits at the foot of the sidebar, away from
+# the steps.
 NAV_ITEMS = (
     ("compose", "Compose", ComposeView),
     ("groups", "Groups", GroupsView),
@@ -80,8 +80,15 @@ NAV_ITEMS = (
 )
 
 # Keys that form the three-step path, in order. Queue is where you look
-# afterwards, not a step, so it sits below a divider and is not numbered.
+# afterwards, not a step, so it sits below a divider.
 FLOW_STEPS = ("compose", "groups", "publish")
+
+# Screens that are not in the sidebar, and the item that stays lit while one
+# is open. Editing a repeating post is reached from Publish, so Publish is
+# where you are. The setup wizard belongs to no step, so nothing is lit: it
+# used to leave whichever item was clicked last lit, often Settings, which
+# answered "where am I?" wrongly.
+NAV_PARENT = {"schedule_edit": "publish"}
 
 NAV_HINTS = {
     "compose": "Write the post",
@@ -101,12 +108,9 @@ PILL_STATES: dict[ConnectionState, tuple[str, str, str]] = {
     ConnectionState.ERROR: ("DANGER", "Error", "error"),
 }
 
-TOAST_COLOURS = {
-    "info": "TEXT_MUTED",
-    "success": "SUCCESS",
-    "warning": "WARNING",
-    "error": "DANGER",
-}
+# Said when Undo is pressed but what it would put back has changed since: a
+# batch cancelled and then finished, a group already added back.
+TOO_LATE_TO_UNDO = "Too late to undo: it changed in the meantime."
 
 
 class App(QMainWindow):
@@ -203,10 +207,6 @@ class App(QMainWindow):
         self._background_done.connect(self._on_background_done)
         self._worker_event.connect(self._handle_worker_event)
 
-        self._toast_timer = QTimer(self)
-        self._toast_timer.setSingleShot(True)
-        self._toast_timer.timeout.connect(lambda: self.toast_label.setText(""))
-
         self._pump = QTimer(self)
         self._pump.timeout.connect(self._drain_worker_events)
         self._pump.start(WORKER_POLL_MS)
@@ -239,12 +239,21 @@ class App(QMainWindow):
         column.setContentsMargins(theme.PAD_M, theme.PAD_L, theme.PAD_M, theme.PAD_M)
         column.setSpacing(theme.PAD_XS)
 
+        # The app's own icon beside its name, the one on the taskbar.
+        brand_row = QHBoxLayout()
+        brand_row.setContentsMargins(theme.PAD_XS, 0, 0, 0)
+        brand_row.setSpacing(theme.PAD_S)
+        mark = QLabel()
+        mark.setPixmap(icons.brand(24))
+        brand_row.addWidget(mark)
         brand = QLabel("Auto-Poster")
         brand.setObjectName("Brand")
-        column.addWidget(brand)
-        column.addSpacing(theme.PAD_M)
+        brand_row.addWidget(brand, 1)
+        column.addLayout(brand_row)
+        column.addSpacing(theme.PAD_L)
 
         group = QButtonGroup(self)
+        self._nav_group = group
         for key, label, _view in NAV_ITEMS:
             if key == "settings":
                 # Down at the foot, with the connection: somewhere you go on
@@ -260,15 +269,16 @@ class App(QMainWindow):
                 column.addWidget(divider)
                 column.addSpacing(theme.PAD_S)
 
-            step = FLOW_STEPS.index(key) + 1 if key in FLOW_STEPS else None
-            button = QPushButton(f"{step}.  {label}" if step else label)
+            button = QPushButton(label)
             button.setObjectName("Nav")
             button.setCheckable(True)
             button.setCursor(Qt.PointingHandCursor)
+            button.setIcon(icons.nav_icon(key))
+            button.setIconSize(icons.NAV_ICON_BOX)
             # Spoken by screen readers and shown on hover; the visible label
             # stays short so the sidebar does not turn into prose.
             button.setToolTip(NAV_HINTS.get(key, label))
-            button.setAccessibleName(f"{label} — {NAV_HINTS.get(key, '')}".strip(" —"))
+            button.setAccessibleName(f"{label}: {NAV_HINTS[key]}" if key in NAV_HINTS else label)
             button.clicked.connect(lambda _checked, k=key: self.show_view(k))
             group.addButton(button)
             column.addWidget(button)
@@ -289,17 +299,36 @@ class App(QMainWindow):
         self.paused_notice = QPushButton("Posting is paused")
         self.paused_notice.setObjectName("PausedNotice")
         self.paused_notice.setToolTip("Open Settings to resume")
-        self.paused_notice.setAccessibleName("Posting is paused — open Settings to resume")
+        self.paused_notice.setAccessibleName("Posting is paused. Open Settings to resume")
         self.paused_notice.setVisible(False)
         self.paused_notice.clicked.connect(lambda: self.show_view("settings"))
         column.addWidget(self.paused_notice)
 
     def _build_pill(self, column: QVBoxLayout) -> None:
-        box = card()
+        # The foot of the sidebar, under a rule rather than in a box of its
+        # own: a card inside the sidebar was a third kind of surface on screen,
+        # and the boxed "Not checked" read like a form field.
+        divider = QFrame()
+        divider.setObjectName("Divider")
+        divider.setFixedHeight(1)
+        column.addWidget(divider)
+        column.addSpacing(theme.PAD_S)
+
+        box = row()
         inner = QVBoxLayout(box)
-        inner.setContentsMargins(theme.PAD_S, theme.PAD_S, theme.PAD_S, theme.PAD_S)
+        inner.setContentsMargins(0, 0, 0, 0)
+        inner.setSpacing(theme.PAD_S)
+        # A drawn dot in the state's colour, then the words. The dot was a
+        # "●" in the text, which sat on the baseline, a size smaller than
+        # the words and a little low.
+        status = QHBoxLayout()
+        status.setContentsMargins(theme.PAD_S, 0, 0, 0)
+        status.setSpacing(theme.PAD_S)
+        self.pill_dot = QLabel()
+        status.addWidget(self.pill_dot)
         self.pill_label = QLabel()
-        inner.addWidget(self.pill_label)
+        status.addWidget(self.pill_label, 1)
+        inner.addLayout(status)
         # Deliberately not #Primary. Exactly one accent-filled button belongs on
         # screen at a time -- the next step in the flow -- and this is a utility
         # that sits on every screen. Filled, it outranked the step it was
@@ -345,10 +374,10 @@ class App(QMainWindow):
         column.addWidget(self.stack, 1)
 
         # Status lives here, never in a dialog.
-        self.toast_label = QLabel("")
-        self.toast_label.setObjectName("Muted")
-        self.toast_label.setWordWrap(True)
-        column.addWidget(self.toast_label)
+        self.banner = StatusBanner()
+        # The words, by the name every test and caller already reads them by.
+        self.toast_label = self.banner.text
+        column.addWidget(self.banner)
         layout.addWidget(holder, 1)
 
     # -- the shared group selection ----------------------------------------
@@ -372,18 +401,40 @@ class App(QMainWindow):
         view = self.views[key]
         self.stack.setCurrentWidget(view)
         self.current_view = key
+        lit = NAV_PARENT.get(key, key)
+        # An exclusive group refuses to leave nothing checked, which is what
+        # kept the last item lit on a screen that is in no step at all.
+        self._nav_group.setExclusive(False)
         for name, button in self.nav_buttons.items():
-            button.setChecked(name == key)
+            button.setChecked(name == lit)
+        self._nav_group.setExclusive(True)
         on_show = getattr(view, "on_show", None)
         if on_show is not None:
             on_show()
 
     # -- toast -------------------------------------------------------------
-    def toast(self, message: str, level: str = "info") -> None:
-        colour = theme.C[TOAST_COLOURS.get(level, "TEXT_MUTED")]
-        self.toast_label.setStyleSheet(f"color: {colour};")
-        self.toast_label.setText(message)
-        self._toast_timer.start(TOAST_MS)
+    def toast(self, message: str, level: str = "info", undo=None) -> None:
+        """Say what just happened, in the banner under the screen.
+
+        `undo` offers an Undo button for as long as the message stays: a
+        callable that puts things back and returns what to say about it, or
+        None when it no longer can. Forgiveness instead of "are you sure?" --
+        a slip is one click to take back, and a deliberate action costs
+        nothing extra.
+        """
+        action = None
+        if undo is not None:
+            def action() -> None:
+                try:
+                    said = undo()
+                except Exception as exc:  # reported, never swallowed
+                    self.toast(f"Could not undo: {exc}", "error")
+                    return
+                if said:
+                    self.toast(said, "success")
+                else:
+                    self.toast(TOO_LATE_TO_UNDO, "warning")
+        self.banner.show_message(message, level, action)
 
     # -- background work ---------------------------------------------------
     def run_in_background(self, fn, on_success=None, on_error=None) -> None:
@@ -555,7 +606,8 @@ class App(QMainWindow):
         self.connection_state = state
         key, label, level = PILL_STATES[state]
         colour = theme.C[key]
-        self.pill_label.setText(f"● {label}")
+        self.pill_dot.setPixmap(icons.pixmap("dot", colour, 12))
+        self.pill_label.setText(label)
         self.pill_label.setStyleSheet(f"color: {colour};")
         self._refresh_fix_button()
         # Settings offers the account switch only while there is a session to
@@ -876,7 +928,7 @@ def ask_before_closing(parent, waiting: str) -> bool:
     box.setText("Nothing is posted while the app is shut.")
     box.setInformativeText(
         f"You have {waiting}. None of it will go out until you open the app "
-        "again — the scheduler runs in this window, not in the background."
+        "again, because the scheduler runs in this window, not in the background."
     )
     stay = box.addButton("Leave it open", QMessageBox.RejectRole)
     go = box.addButton("Close anyway", QMessageBox.AcceptRole)

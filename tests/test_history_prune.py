@@ -5,7 +5,8 @@ Two things are in tension here and the tests exist to hold both:
 * the database must not grow for ever, and
 * `GroupRepo.recent_bodies` must keep seeing what a group has already been
   sent, because that is what `guards.check_repeat_text` reads to refuse
-  reposting the same wording — the app's main protection against a restriction.
+  reposting the same wording, which is the app's main protection against a
+  restriction.
 
 So the prune deletes old batches but keeps the newest `RECENT_BODIES_LIMIT`
 posted bodies per group for ever. The test that matters most is

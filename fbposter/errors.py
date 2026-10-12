@@ -95,7 +95,7 @@ class CheckpointError(FBPosterError):
     def __init__(self, url: str) -> None:
         super().__init__(
             "Facebook is asking you to confirm it is you. Press Show me the "
-            "window and finish the check yourself — the app will never click "
+            "window and finish the check yourself. The app will never click "
             "through one of these."
         )
         self.url = url

@@ -2,15 +2,15 @@
 
 Text pasted from Word, WhatsApp or a browser carries characters that print
 nothing. The user cannot see them and did not type them, but they end up in the
-string — and two of the app's load-bearing comparisons are string equality
+string, and two of the app's load-bearing comparisons are string equality
 against the user's own words.
 
 The two that matter are:
 
-* TestTheRepeatGuardIsNotFooled — an invisible character made an identical post
+* TestTheRepeatGuardIsNotFooled: an invisible character made an identical post
   compare as different, so the guard waved through the exact repeat it exists
   to stop. That is the app's main protection against a restriction.
-* TestVerificationIsNotFooled — Facebook strips these when it renders, so a
+* TestVerificationIsNotFooled: Facebook strips these when it renders, so a
   snippet still containing one is searched for and never found, reporting a
   post that went out fine as failed and halting the batch.
 """

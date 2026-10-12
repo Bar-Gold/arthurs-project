@@ -41,7 +41,7 @@ from fbposter.db.models import utcnow
 from fbposter.guards import OVERRIDABLE, PlannedTarget, evaluate_batch, rule_labels
 
 from .. import theme
-from ..widgets import card, clear, row
+from ..widgets import card, clear, row, segmented
 
 IMAGE_FILTER = "Images (*.jpg *.jpeg *.png *.gif *.webp);;All files (*.*)"
 RIGHT_COLUMN_WIDTH = 330
@@ -66,12 +66,12 @@ QUAD_HEIGHT = 200
 MIN_SINGLE_HEIGHT = 180
 MAX_SINGLE_HEIGHT = 560
 
-NO_TEXT = "(no text — the post would be images only)"
+NO_TEXT = "(No text. The post would be pictures only.)"
 
 
 def pictures_only(count: int) -> str:
     """How a post with pictures and no words is named on Publish and Queue."""
-    return f"Pictures only — {count} picture{'s' if count != 1 else ''}, no text"
+    return f"Pictures only ({count} picture{'s' if count != 1 else ''}, no text)"
 
 # Below this, a picture-less post is set large, the way a feed does it.
 BIG_TEXT_CHARS = 85
@@ -107,7 +107,7 @@ class ComposeView(QWidget):
         sub = QLabel(self.subtitle)
         sub.setObjectName("Subtitle")
         outer.addWidget(sub)
-        outer.addSpacing(theme.PAD_S)
+        outer.addSpacing(theme.HEADER_GAP)
 
         body = QHBoxLayout()
         body.setSpacing(theme.PAD_M)
@@ -151,14 +151,11 @@ class ComposeView(QWidget):
         self.tab_bar.setAlignment(Qt.AlignLeft)
         self.tab_scroll.setWidget(tab_holder)
 
-        self.write_button = QPushButton("Write")
-        self.preview_button = QPushButton("Preview")
+        toggle, (self.write_button, self.preview_button) = segmented(("Write", "Preview"))
         modes = QButtonGroup(self)
         for index, button in enumerate((self.write_button, self.preview_button)):
-            button.setObjectName("Tab")
-            button.setCheckable(True)
             modes.addButton(button, index)
-            top.addWidget(button)
+        top.addWidget(toggle)
         self.write_button.setChecked(True)
         self.write_button.clicked.connect(lambda: self.set_mode("write"))
         self.preview_button.clicked.connect(lambda: self.set_mode("preview"))
@@ -486,7 +483,7 @@ class ComposeView(QWidget):
             self.recipient_summary.setText(
                 "No groups picked yet."
                 if total
-                else "No groups yet — add one on the Groups screen."
+                else "No groups yet. Add one on the Groups screen."
             )
         else:
             names = []
@@ -517,7 +514,7 @@ class ComposeView(QWidget):
         self.capture()
         body = self._base_body.strip()
         if not body:
-            self.notify("Nothing to save — the post is empty.", "error")
+            self.notify("The post is empty, so there is nothing to save.", "error")
             return False
         self.app.template_repo.save(name, body, [str(p) for p in self.attachments])
         self.template_name.clear()
@@ -946,7 +943,7 @@ class PostPreview(QWidget):
 
         self.message_label = None
         if not text.strip() and not media:
-            note = QLabel("Nothing to preview yet — write something on the Write tab.")
+            note = QLabel("Nothing to preview yet. Write something on the Write tab.")
             note.setObjectName("Muted")
             note.setWordWrap(True)
             self.body.addWidget(note)

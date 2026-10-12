@@ -34,7 +34,7 @@ from fbposter.db.models import (
 )
 
 from .. import theme
-from ..widgets import card, clear, replace_at
+from ..widgets import badge, card, clear, replace_at, segmented
 from .compose import pictures_only
 
 # Every label answers "did it post?" in plain words. The stored states are
@@ -55,8 +55,9 @@ TARGET_LABELS = {
     TARGET_RUNNING: ("Posting now", "ACCENT_TEXT"),
     TARGET_DONE: ("Posted", "SUCCESS"),
     TARGET_FAILED: ("Not posted", "DANGER"),
-    # Stopped after Post was clicked: never "not posted", it may be live.
-    TARGET_UNCONFIRMED: ("Might have posted — check the group", "DANGER"),
+    # Stopped after Post was clicked: never "not posted", it may be live. The
+    # note under it says to look at the group.
+    TARGET_UNCONFIRMED: ("Might have posted", "DANGER"),
     TARGET_SKIPPED: ("Not posted", "WARNING"),
     TARGET_AWAITING_APPROVAL: ("Waiting for admin approval", "WARNING"),
     TARGET_DECLINED: ("Declined by an admin", "TEXT_MUTED"),
@@ -143,7 +144,7 @@ def task_note(task, targets) -> str:
 
 class QueueView(QWidget):
     title = "Queue"
-    subtitle = "One group at a time, with a randomised 10–25 minute gap between them."
+    subtitle = "One group at a time, with a randomised 10-25 minute gap between them."
 
     def __init__(self, app) -> None:
         super().__init__()
@@ -166,21 +167,18 @@ class QueueView(QWidget):
         sub = QLabel(self.subtitle)
         sub.setObjectName("Subtitle")
         outer.addWidget(sub)
-        outer.addSpacing(theme.PAD_S)
+        outer.addSpacing(theme.HEADER_GAP)
 
         tools = QHBoxLayout()
         self.hidden_label = QLabel("")
         self.hidden_label.setObjectName("Muted")
         tools.addWidget(self.hidden_label)
         tools.addStretch(1)
-        self.recent_button = QPushButton("Recent")
-        self.all_button = QPushButton("All")
+        toggle, (self.recent_button, self.all_button) = segmented(("Recent", "All"))
         modes = QButtonGroup(self)
         for index, button in enumerate((self.recent_button, self.all_button)):
-            button.setObjectName("Tab")
-            button.setCheckable(True)
             modes.addButton(button, index)
-            tools.addWidget(button)
+        tools.addWidget(toggle)
         self.recent_button.setChecked(True)
         self.recent_button.clicked.connect(lambda: self.set_scope(False))
         self.all_button.clicked.connect(lambda: self.set_scope(True))
@@ -199,9 +197,21 @@ class QueueView(QWidget):
         self.refresh()
 
     def cancel(self, task_id: int) -> None:
+        before = self.app.task_repo.get(task_id)
         self.app.task_repo.cancel(task_id)
         self.refresh()
-        self.app.toast("Batch cancelled.", "info")
+        undo = None
+        if before is not None:
+            # One click on a link beside every batch, so a slip is one click
+            # to take back rather than an "are you sure?" on every cancel.
+            undo = lambda: self._uncancel(task_id, before.state)  # noqa: E731
+        self.app.toast("Batch cancelled.", "info", undo=undo)
+
+    def _uncancel(self, task_id: int, state: str) -> str | None:
+        if not self.app.task_repo.uncancel(task_id, state):
+            return None
+        self.refresh()
+        return "Batch back in the queue."
 
     def resolve_pending(self, target_id: int, approved: bool) -> None:
         """Record what the admin did with a post that was awaiting approval.
@@ -217,7 +227,7 @@ class QueueView(QWidget):
             self.app.toast("Marked as live.", "success")
         else:
             self.app.toast(
-                "Marked as declined — that wording is free to send again.", "info"
+                "Marked as declined. That wording is free to send again.", "info"
             )
         self.refresh()
 
@@ -310,7 +320,7 @@ class QueueView(QWidget):
             note = QLabel(
                 "Nothing recent. Older batches are under “All”."
                 if hidden
-                else "Nothing queued yet — write a post on the Compose screen."
+                else "Nothing queued yet. Write a post on the Compose screen."
             )
             note.setObjectName("Muted")
             self.rows.addWidget(note)
@@ -350,27 +360,22 @@ class QueueView(QWidget):
         layout.setContentsMargins(theme.PAD_M, theme.PAD_S, theme.PAD_M, theme.PAD_S)
         layout.setSpacing(theme.PAD_XS)
 
+        # The post's own words name the batch, and when it goes out is the
+        # line under them. The two used to share one bold line, joined by a
+        # dash, which put the time ahead of the thing it was the time of.
         header = QHBoxLayout()
-        when = (
-            f"Scheduled {clock.format_local(task.scheduled_for)}"
-            if task.scheduled_for
-            else "Right away"
-        )
-        if task.schedule_id is not None:
-            when = f"{when} · {self._schedule_name(task.schedule_id, schedule_names)}"
+        header.setSpacing(theme.PAD_S)
         flat = " ".join(task.body.split())
         snippet = flat[:SNIPPET_CHARS] + ("…" if len(flat) > SNIPPET_CHARS else "")
         if not snippet and task.media_paths:
             snippet = pictures_only(len(task.media_paths))
-        title = QLabel(f"{when} — {snippet}")
+        title = QLabel(snippet)
         title.setStyleSheet("font-weight: 600;")
         title.setWordWrap(True)
         header.addWidget(title, 1)
 
         words, colour = task_label(task, targets)
-        state = QLabel(words)
-        state.setStyleSheet(f"color: {theme.C[colour]};")
-        header.addWidget(state)
+        header.addWidget(badge(words, colour))
 
         if task.state in (TASK_PENDING, TASK_RUNNING):
             cancel = QPushButton("Cancel")
@@ -378,6 +383,18 @@ class QueueView(QWidget):
             cancel.clicked.connect(lambda _c, tid=task.id: self.cancel(tid))
             header.addWidget(cancel)
         layout.addLayout(header)
+
+        when = (
+            f"Scheduled {clock.format_local(task.scheduled_for)}"
+            if task.scheduled_for
+            else "Right away"
+        )
+        if task.schedule_id is not None:
+            when = f"{when} · {self._schedule_name(task.schedule_id, schedule_names)}"
+        meta = QLabel(when)
+        meta.setObjectName("Muted")
+        layout.addWidget(meta)
+        layout.addSpacing(theme.PAD_XS)
 
         if task.overrides:
             # So a post at 23:40, or a second one to a group the same morning,
@@ -404,9 +421,7 @@ class QueueView(QWidget):
             # apart, and they stopped reading as one fact about one group.
             row.addWidget(label)
             words, colour = target_label(task, target)
-            outcome = QLabel(words)
-            outcome.setStyleSheet(f"color: {theme.C[colour]};")
-            row.addWidget(outcome)
+            row.addWidget(badge(words, colour))
             row.addStretch(1)
             if target.state == TARGET_AWAITING_APPROVAL:
                 # An override, not a chore: the worker follows these up on its

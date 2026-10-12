@@ -48,7 +48,7 @@ from fbposter.guards import rule_labels
 from fbposter.text import strip_invisible
 
 from .. import theme
-from ..widgets import card, clear, row
+from ..widgets import card, clear, row, set_note_lines
 from .compose import IMAGE_FILTER
 from .publish import (
     ANYWAY_EFFECT,
@@ -99,7 +99,7 @@ class ScheduleEditView(QWidget):
         sub.setObjectName("Subtitle")
         sub.setWordWrap(True)
         outer.addWidget(sub)
-        outer.addSpacing(theme.PAD_S)
+        outer.addSpacing(theme.HEADER_GAP)
 
         body = QHBoxLayout()
         body.setSpacing(theme.PAD_M)
@@ -328,7 +328,7 @@ class ScheduleEditView(QWidget):
                 self.group_box.addWidget(box)
                 self._group_boxes[group.id] = box
             if not active:
-                note = QLabel("No groups yet — add them on the Groups screen.")
+                note = QLabel("No groups yet. Add them on the Groups screen.")
                 note.setObjectName("Muted")
                 self.group_box.addWidget(note)
 
@@ -458,7 +458,7 @@ class ScheduleEditView(QWidget):
     def add_time(self, text: str = "") -> bool:
         if len(self._time_rows) >= recurrence.MAX_TIMES_PER_DAY:
             self.notify(
-                f"{recurrence.MAX_TIMES_PER_DAY} times a day is the ceiling — more "
+                f"{recurrence.MAX_TIMES_PER_DAY} times a day is the ceiling. More "
                 "than that stops looking like a person posting.",
                 "warning",
             )
@@ -545,7 +545,7 @@ class ScheduleEditView(QWidget):
 
         rule = self.rule()
         if rule is None:
-            self.summary.setText("Pick at least one day and one time.")
+            set_note_lines(self.summary, [], ["Pick at least one day and one time."])
             return
         groups = self.ticked_group_ids()
         lines = [
@@ -561,14 +561,14 @@ class ScheduleEditView(QWidget):
         elif self._loaded.next_run_at is not None:
             lines.append(f"Next run {clock.format_local(self._loaded.next_run_at)}")
         found = schedule_violations(self.app, rule, groups, wordings, history=False)
-        lines.extend(v.message for v in found)
+        warnings = [v.message for v in found]
         still = frozenset(v.rule for v in found) & self._loaded.overrides
         if still:
-            lines.append(f"Post anyway: allowed to break the {rule_labels(still)}.")
+            warnings.append(f"Post anyway: allowed to break the {rule_labels(still)}.")
         note = recurrence.variation_note(len(groups), count)
         if note is not None:
-            lines.append(note)
-        self.summary.setText("\n".join(lines))
+            warnings.append(note)
+        set_note_lines(self.summary, lines, warnings)
 
     # -- doing it ----------------------------------------------------------
     def save(self, allow: frozenset[str] = frozenset()) -> bool:
@@ -586,7 +586,7 @@ class ScheduleEditView(QWidget):
         wordings = self.wordings()
         if not wordings and self._pictures:
             self.notify(
-                "A repeating post needs some text as well as pictures — each run "
+                "A repeating post needs some text as well as pictures, because each run "
                 "gives every group a wording it has not had yet.",
                 "error",
             )
