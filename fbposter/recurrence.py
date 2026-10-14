@@ -49,8 +49,12 @@ MAX_TIMES_PER_DAY = 3
 # can be expressed with room to spare.
 SEARCH_DAYS = 8
 
-# 0 == Monday, matching datetime.weekday().
+# 0 == Monday, matching datetime.weekday(). That is how a schedule stores its
+# days, and it must not change: stored rules already use it.
 DAY_NAMES = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+# The order days are shown in: Sunday to Saturday, as the week runs in Israel
+# (the user's choice, 2026-10-14).
+WEEK_ORDER = (6, 0, 1, 2, 3, 4, 5)
 EVERY_DAY: tuple[int, ...] = ()
 
 
@@ -404,7 +408,8 @@ def describe(rule: Recurrence) -> str:
     elif len(rule.days) == 1:
         days = f"Every {DAY_NAMES[rule.days[0]]}"
     else:
-        days = ", ".join(DAY_NAMES[d] for d in rule.days)
+        ordered = sorted(rule.days, key=WEEK_ORDER.index)
+        days = ", ".join(DAY_NAMES[d] for d in ordered)
     return f"{days} at {when}"
 
 

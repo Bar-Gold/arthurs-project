@@ -279,6 +279,24 @@ class TestRepeat:
         publish.publish()
         assert qt_app.schedule_repo.list()[0].days == [0, 3]
 
+    def test_the_days_on_screen_run_sunday_to_saturday(self, views):
+        """The order shown is Israel's week; the stored numbers are not."""
+        from PySide6.QtWidgets import QGridLayout
+
+        _compose, publish = views
+        grid = next(
+            g for g in publish.findChildren(QGridLayout)
+            if g.indexOf(publish._day_boxes[0]) >= 0
+        )
+        shown = sorted(
+            publish._day_boxes,
+            key=lambda box: grid.getItemPosition(grid.indexOf(box))[:2],
+        )
+        assert [box.text() for box in shown] == [
+            "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat",
+        ]
+        assert publish._day_boxes[6].text() == "Sun"
+
 
 class TestSummaryAndWarnings:
     def test_now_mode_names_the_group_count(self, views):
@@ -408,7 +426,7 @@ class TestTheWindowItself:
         # sidebar -- setup is something you finish, not a step you return to.
         # So is "schedule_edit", reached from a repeating post's card.
         assert set(qt_app.views) == {
-            "compose", "publish", "groups", "queue", "settings", "welcome",
+            "compose", "publish", "groups", "dashboard", "settings", "welcome",
             "schedule_edit",
         }
 

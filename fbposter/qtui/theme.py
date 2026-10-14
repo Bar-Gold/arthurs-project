@@ -37,6 +37,7 @@ SIZE_TITLE = 24
 SIZE_HEADING = 17
 SIZE_BODY = 15
 SIZE_SMALL = 13
+SIZE_STAT = 28
 
 PAD_XS = 4
 PAD_S = 8
@@ -250,6 +251,9 @@ def stylesheet() -> str:
        up from the setting names inside it, which are body text. */
     QLabel#CardTitle {{ font-size: {SIZE_HEADING}px; font-weight: 600; }}
     QLabel#Brand {{ font-size: {SIZE_HEADING}px; font-weight: 600; }}
+    /* A Dashboard number, and a Dashboard tile that holds words instead. */
+    QLabel#StatValue {{ font-size: {SIZE_STAT}px; font-weight: 600; }}
+    QLabel#StatText {{ font-size: {SIZE_HEADING}px; font-weight: 600; }}
 
     /* A status: what happened to a post, or whether a repeating post is on.
        It used to be coloured words, the same size and weight as the grey
@@ -551,6 +555,9 @@ def stylesheet() -> str:
         background: {c["NAV_ACTIVE_BG"]};
         color: {c["TEXT"]};
     }}
+    /* A time already gone, in the one-off picker's hour and minute lists:
+       greyed like a past day in the calendar, and not choosable. */
+    QComboBox QAbstractItemView::item:disabled {{ color: {c["BORDER_STRONG"]}; }}
 
     /* The date picker's calendar. Unstyled it was the platform's own: red
        weekends (Saturday and Sunday, which is not even Israel's weekend), a
@@ -620,7 +627,7 @@ def stylesheet() -> str:
     /* Not about a disabled calendar: Qt draws the neighbouring months' days
        in the palette's *disabled* text colour, and this is what sets it.
        Without it they came out as dark as the month being shown. Past days
-       get the same colour from ScheduleEntry._dim_past_days. */
+       get the same colour from DateEntry.dim_past_days. */
     QCalendarWidget QAbstractItemView:disabled {{ color: {c["BORDER_STRONG"]}; }}
 
     QScrollArea, QScrollArea > QWidget > QWidget {{ background: transparent; border: none; }}

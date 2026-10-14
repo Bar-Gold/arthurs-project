@@ -1190,8 +1190,8 @@ class PostingWorker:
         )
         self.emit(
             "halted",
-            "A post was interrupted and may have gone out. The Queue shows which "
-            "group to check.",
+            "A post was interrupted and may have gone out. The Dashboard shows "
+            "which group to check.",
             target.task_id,
             target.id,
         )

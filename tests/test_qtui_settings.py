@@ -127,11 +127,11 @@ class TestItIsNotOnTheMainPath:
         assert "settings" not in FLOW_STEPS
         assert qt_app.nav_buttons["settings"].text() == "Settings"
 
-    def test_it_sits_below_the_queue(self, qt_app):
-        column = qt_app.nav_buttons["queue"].parent().layout()
-        queue = column.indexOf(qt_app.nav_buttons["queue"])
+    def test_it_sits_below_the_dashboard(self, qt_app):
+        column = qt_app.nav_buttons["dashboard"].parent().layout()
+        dashboard = column.indexOf(qt_app.nav_buttons["dashboard"])
         settings = column.indexOf(qt_app.nav_buttons["settings"])
-        assert settings > queue
+        assert settings > dashboard
 
     def test_it_has_no_filled_button(self, qt_app):
         """The one accent fill on a screen is the next step in the flow, and

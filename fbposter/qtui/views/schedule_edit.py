@@ -57,7 +57,8 @@ from .publish import (
     REPEAT,
     RIGHT_COLUMN_SCROLLBAR,
     RIGHT_COLUMN_WIDTH,
-    TimeEntry,
+    TimePicker,
+    day_boxes,
     schedule_violations,
 )
 
@@ -84,7 +85,7 @@ class ScheduleEditView(QWidget):
         self._wordings: list[QTextEdit] = []
         self._pictures: list[str] = []
         self._group_boxes: dict[int, QCheckBox] = {}
-        self._time_rows: list[TimeEntry] = []
+        self._time_rows: list[TimePicker] = []
         self._day_boxes: list[QCheckBox] = []
         self._offered: frozenset[str] = frozenset()
 
@@ -215,14 +216,10 @@ class ScheduleEditView(QWidget):
         days_label = QLabel("Days")
         days_label.setObjectName("SectionHeading")
         layout.addWidget(days_label)
-        # Four and three, as on Publish: seven across clips the labels.
+        # Sunday first, four and three, as on Publish.
         days_grid = QGridLayout()
         days_grid.setSpacing(theme.PAD_XS)
-        for index, name in enumerate(recurrence.DAY_NAMES):
-            box = QCheckBox(name)
-            box.stateChanged.connect(lambda _s: self.refresh_summary())
-            self._day_boxes.append(box)
-            days_grid.addWidget(box, index // 4, index % 4)
+        self._day_boxes = day_boxes(days_grid, self.refresh_summary)
         layout.addLayout(days_grid)
         column.addWidget(picker)
 
@@ -471,9 +468,10 @@ class ScheduleEditView(QWidget):
         line = row()
         layout = QHBoxLayout(line)
         layout.setContentsMargins(0, 0, 0, 0)
-        entry = TimeEntry(hour, minute)
+        entry = TimePicker(hour, minute)
         entry.timeChanged.connect(lambda _t: self.refresh_summary())
-        layout.addWidget(entry, 1)
+        layout.addWidget(entry)
+        layout.addStretch(1)
         remove = QPushButton("Remove")
         remove.setObjectName("Link")
         remove.clicked.connect(lambda _c, w=line, e=entry: self._remove_time(w, e))
@@ -484,7 +482,7 @@ class ScheduleEditView(QWidget):
         self.refresh_summary()
         return True
 
-    def _remove_time(self, line: QWidget, entry: TimeEntry) -> None:
+    def _remove_time(self, line: QWidget, entry: TimePicker) -> None:
         if len(self._time_rows) == 1:
             self.notify("A repeating post needs at least one time of day.", "warning")
             return
@@ -495,11 +493,6 @@ class ScheduleEditView(QWidget):
 
     def times(self) -> list[str]:
         return [e.time().toString("HH:mm") for e in self._time_rows]
-
-    def commit_typed_times(self) -> None:
-        """See PublishView.commit_typed_times: a click no longer commits."""
-        for entry in self._time_rows:
-            entry.interpretText()
 
     def days(self) -> list[int]:
         return [i for i, box in enumerate(self._day_boxes) if box.isChecked()]
@@ -573,7 +566,6 @@ class ScheduleEditView(QWidget):
     # -- doing it ----------------------------------------------------------
     def save(self, allow: frozenset[str] = frozenset()) -> bool:
         """`allow` is set only by post_anyway(): the rules the user accepted."""
-        self.commit_typed_times()
         schedule = (
             self.app.schedule_repo.get(self.schedule_id)
             if self.schedule_id is not None else None

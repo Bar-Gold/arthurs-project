@@ -30,10 +30,12 @@ from .models import (
     TASK_PENDING,
     TASK_RUNNING,
     Group,
+    PostRecord,
     Schedule,
     Task,
     TaskTarget,
     Template,
+    from_iso,
     to_iso,
     utcnow,
 )
@@ -59,6 +61,10 @@ GROUP_REMOVED = "You removed this group from your list before its turn."
 # A member count that could not be read is tried again after this long, not
 # on every visit to the Groups screen (`GroupRepo.missing_details`).
 MEMBERS_RETRY = timedelta(days=1)
+
+# Batch ids per statement when the prune counts what it is about to delete,
+# well inside SQLite's limit on bound parameters.
+PRUNE_CHUNK = 500
 
 
 class Removal(NamedTuple):
@@ -609,43 +615,60 @@ class TaskRepo:
             )
         ]
 
-    def list_for_queue(
-        self, now: datetime, retention_hours: int = 24, limit: int = 50
-    ) -> list[Task]:
-        """What the queue screen shows: everything live, plus recent history.
-
-        A batch that has not finished is always listed however old it is --
-        hiding something still due to go out would be a good deal worse than a
-        cluttered screen. Only finished batches age out.
-
-        This filters the *view*. Nothing is deleted: `task_targets` rows are
-        what `GroupRepo.recent_bodies` reads to refuse reposting the same words
-        to a group, and what `posted_count_since` counts for the daily cap.
-        Deleting history would quietly switch off both.
-        """
-        if retention_hours <= 0:
-            return self.list_recent(limit)
-
-        cutoff = to_iso(now - timedelta(hours=retention_hours))
+    def unfinished(self) -> list[Task]:
+        """Batches still due to go out, the soonest first: the Dashboard's
+        "Going out", where each can be cancelled."""
         rows = self.db.query(
-            "SELECT * FROM tasks "
-            "WHERE state IN (?, ?) OR COALESCE(finished_at, created_at) >= ? "
-            "ORDER BY id DESC LIMIT ?",
-            (TASK_PENDING, TASK_RUNNING, cutoff, limit),
+            "SELECT * FROM tasks WHERE state IN (?, ?) "
+            "ORDER BY state = ? DESC, COALESCE(scheduled_for, created_at), id",
+            (TASK_PENDING, TASK_RUNNING, TASK_RUNNING),
         )
         return [Task.from_row(row) for row in rows]
 
-    def count_older_than(self, now: datetime, retention_hours: int = 24) -> int:
-        """Finished batches the queue screen is currently hiding."""
-        if retention_hours <= 0:
-            return 0
-        cutoff = to_iso(now - timedelta(hours=retention_hours))
-        row = self.db.query_one(
-            "SELECT COUNT(*) AS n FROM tasks "
-            "WHERE state NOT IN (?, ?) AND COALESCE(finished_at, created_at) < ?",
-            (TASK_PENDING, TASK_RUNNING, cutoff),
+    def recent_targets(self, limit: int = 15) -> list[TaskTarget]:
+        """The last groups the worker reached, newest first, with their names.
+
+        A turn that never came (still pending, or left behind by a stopped or
+        cancelled batch) has no time on it and is not activity.
+        """
+        rows = self.db.query(
+            "SELECT t.*, g.identifier AS group_identifier, g.name AS group_name "
+            "FROM task_targets t JOIN groups g ON g.id = t.group_id "
+            "WHERE t.state != ? AND COALESCE(t.posted_at, t.attempted_at) IS NOT NULL "
+            "ORDER BY COALESCE(t.posted_at, t.attempted_at) DESC, t.id DESC LIMIT ?",
+            (TARGET_PENDING, limit),
         )
-        return int(row["n"]) if row else 0
+        return [TaskTarget.from_row(row) for row in rows]
+
+    def history_records(self) -> list[PostRecord]:
+        """Every group's turn still on record, reduced to what is counted.
+
+        One query for the whole Dashboard. Together with `archived_totals`
+        it is everything ever sent: the prune moves counts there before it
+        deletes rows here, so nothing is counted twice or lost.
+        """
+        rows = self.db.query(
+            "SELECT group_id, state, body, COALESCE(posted_at, attempted_at) AS at "
+            "FROM task_targets"
+        )
+        return [
+            PostRecord(
+                group_id=row["group_id"],
+                state=row["state"],
+                at=from_iso(row["at"]),
+                body=row["body"] or "",
+            )
+            for row in rows
+        ]
+
+    def archived_totals(self) -> dict[tuple[int, str], tuple[int, datetime | None]]:
+        """What the prune has deleted, as {(group, state): (count, earliest)}."""
+        return {
+            (row["group_id"], row["state"]): (int(row["count"]), from_iso(row["first_at"]))
+            for row in self.db.query(
+                "SELECT group_id, state, count, first_at FROM post_totals"
+            )
+        }
 
     def targets_for(self, task_id: int) -> list[TaskTarget]:
         rows = self.db.query(
@@ -973,15 +996,17 @@ class TaskRepo:
         * **Anything unfinished.** A batch still due to go out is not history.
         * **Anything still awaiting an admin.** The batch around it counts as
           finished, but the post has not landed yet: deleting it would take the
-          Queue row, the two override buttons and the follow-up's only record
-          of it all at once, and the post would still be sitting in the group's
-          moderation queue.
+          follow-up's only record of it, and the post would still be sitting
+          in the group's moderation queue.
         * **The newest `keep_per_group` posted bodies for each group**, however
           old. That is exactly what `GroupRepo.recent_bodies` reads, so the
           repeated-text guard keeps refusing wording a group has already had --
           which is the app's main protection and worth a few kilobytes for ever.
         * **Everything inside the window**, which is far wider than the daily
           cap's local-midnight lookback, so the cap is never miscounted.
+
+        What is deleted is counted first, into `post_totals`, so the
+        Dashboard's "all time" is not deleted with it.
 
         `keep_days <= 0` disables pruning entirely.
         """
@@ -1018,6 +1043,27 @@ class TaskRepo:
             return 0
 
         with self.db.transaction() as connection:
+            # Counted before they go, in the same transaction, so the
+            # Dashboard's "all time" never shrinks (the user's choice,
+            # 2026-10-14): a prune that failed half way must not leave rows
+            # both counted and still there.
+            for start in range(0, len(doomed), PRUNE_CHUNK):
+                chunk = doomed[start:start + PRUNE_CHUNK]
+                marks = ",".join("?" * len(chunk))
+                connection.execute(
+                    "INSERT INTO post_totals (group_id, state, count, first_at) "
+                    "SELECT group_id, state, COUNT(*), "
+                    "       MIN(COALESCE(posted_at, attempted_at)) "
+                    f"FROM task_targets WHERE task_id IN ({marks}) "
+                    "GROUP BY group_id, state "
+                    "ON CONFLICT (group_id, state) DO UPDATE SET "
+                    "  count = count + excluded.count, "
+                    "  first_at = CASE "
+                    "    WHEN first_at IS NULL THEN excluded.first_at "
+                    "    WHEN excluded.first_at IS NULL THEN first_at "
+                    "    ELSE MIN(first_at, excluded.first_at) END",
+                    tuple(chunk),
+                )
             # task_targets go with them: the foreign key is ON DELETE CASCADE
             # and connections run with PRAGMA foreign_keys = ON.
             connection.executemany(

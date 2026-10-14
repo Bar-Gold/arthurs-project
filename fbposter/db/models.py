@@ -250,6 +250,20 @@ class TaskTarget:
 
 
 @dataclass(frozen=True)
+class PostRecord:
+    """One group's turn in a batch, reduced to what the Dashboard counts.
+
+    `at` is when it was posted, or else when it was tried; None for a turn
+    that never came.
+    """
+
+    group_id: int
+    state: str
+    at: datetime | None = None
+    body: str = ""
+
+
+@dataclass(frozen=True)
 class Schedule:
     """A repeating post: several wordings, some groups, and when to fire.
 

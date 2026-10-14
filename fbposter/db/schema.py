@@ -23,9 +23,9 @@ DEFAULT_SETTINGS = {
     # databases that were seeded with the old value.
     "default_cooldown_hours": "8",
     "posting_timezone": "Asia/Jerusalem",
-    # How long a finished batch stays on the queue screen. A view filter
-    # only -- the rows themselves are never deleted, because the repeated
-    # -text guard and the daily cap both read them.
+    # No longer read. It was how long a finished batch stayed on the Queue
+    # screen, which the Dashboard replaced (2026-10-14). Kept because the
+    # migrations seed from this dict, and they must not change.
     "queue_retention_hours": "24",
     # How long finished batches are kept at all. Unlike the setting above
     # this one really deletes -- but never the newest posted bodies per
@@ -362,6 +362,28 @@ def _migration_012(connection: sqlite3.Connection) -> None:
     connection.execute("ALTER TABLE groups ADD COLUMN members_read_at TEXT")
 
 
+def _migration_013(connection: sqlite3.Connection) -> None:
+    """What the history prune deleted, counted, so "all time" never shrinks.
+
+    The Dashboard (2026-10-14) shows every post ever sent, overall and per
+    group, and the user chose a total that is kept for ever. `prune_history`
+    deletes finished batches after `history_retention_days`; it now adds their
+    targets here first, per group and per state, in the same transaction.
+
+    No foreign key: a group is archived, never deleted, and a cascade here
+    would be a way to lose the very counts this table exists to keep.
+    """
+    connection.execute(
+        "CREATE TABLE post_totals ("
+        "  group_id  INTEGER NOT NULL,"
+        "  state     TEXT    NOT NULL,"
+        "  count     INTEGER NOT NULL DEFAULT 0,"
+        "  first_at  TEXT,"
+        "  PRIMARY KEY (group_id, state)"
+        ")"
+    )
+
+
 # Index i applies when user_version == i, and bumps it to i + 1.
 MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _migration_001,
@@ -376,6 +398,7 @@ MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _migration_010,
     _migration_011,
     _migration_012,
+    _migration_013,
 ]
 
 LATEST_VERSION = len(MIGRATIONS)

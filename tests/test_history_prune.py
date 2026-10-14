@@ -175,9 +175,8 @@ class TestWhatGetsDeleted:
     def test_a_post_still_awaiting_an_admin_never_goes(self, db, repos):
         """The batch around it counts as finished, but the post has not landed.
 
-        Deleting it would take the Queue row, its two override buttons and the
-        follow-up's only record of it all at once, while the post itself sat on
-        in the group's moderation queue.
+        Deleting it would take the follow-up's only record of it, while the
+        post itself sat on in the group's moderation queue.
         """
         groups, tasks, _settings = repos
         group = add_group(groups)
@@ -212,6 +211,82 @@ class TestWhatGetsDeleted:
     def test_nothing_to_do_is_not_an_error(self, db, repos):
         _groups, tasks, _settings = repos
         assert tasks.prune_history(NOON, keep_days=90) == 0
+
+
+class TestAllTimeSurvivesThePrune:
+    """The Dashboard's "all time" is kept for ever (the user's choice,
+    2026-10-14): what the prune deletes is counted into `post_totals` first."""
+
+    @staticmethod
+    def all_time(tasks) -> int:
+        from fbposter import stats
+
+        return stats.summary(
+            tasks.history_records(), tasks.archived_totals(), NOON, daily_cap=25
+        ).all_time
+
+    def test_the_total_is_the_same_after_a_prune(self, db, repos):
+        groups, tasks, _settings = repos
+        group = add_group(groups)
+        posted_batch(db, tasks, group, "ancient wording", days_ago=200)
+        fill_keep_set(db, tasks, group)
+        before = self.all_time(tasks)
+
+        assert tasks.prune_history(NOON, keep_days=90) == 1
+        assert self.all_time(tasks) == before == RECENT_BODIES_LIMIT + 1
+
+    def test_what_went_is_counted_by_group_and_result(self, db, repos):
+        groups, tasks, _settings = repos
+        group = add_group(groups)
+        posted_batch(db, tasks, group, "ancient wording", days_ago=200)
+        posted_batch(db, tasks, group, "failed wording", days_ago=210,
+                     state=TASK_HALTED, target_state=TARGET_FAILED)
+        fill_keep_set(db, tasks, group)
+
+        tasks.prune_history(NOON, keep_days=90)
+        archived = tasks.archived_totals()
+        assert archived[(group.id, TARGET_DONE)] == (
+            1, NOON - timedelta(days=200)
+        )
+        assert archived[(group.id, TARGET_FAILED)][0] == 1
+
+    def test_a_second_prune_adds_on_top(self, db, repos):
+        groups, tasks, _settings = repos
+        group = add_group(groups)
+        posted_batch(db, tasks, group, "first old wording", days_ago=200)
+        fill_keep_set(db, tasks, group)
+        tasks.prune_history(NOON, keep_days=90)
+
+        posted_batch(db, tasks, group, "second old wording", days_ago=300)
+        tasks.prune_history(NOON, keep_days=90)
+        count, earliest = tasks.archived_totals()[(group.id, TARGET_DONE)]
+        assert count == 2
+        assert earliest == NOON - timedelta(days=300)
+        assert self.all_time(tasks) == RECENT_BODIES_LIMIT + 2
+
+    def test_nothing_deleted_means_nothing_counted(self, db, repos):
+        groups, tasks, _settings = repos
+        group = add_group(groups)
+        posted_batch(db, tasks, group, "recent wording", days_ago=3)
+
+        tasks.prune_history(NOON, keep_days=90)
+        assert tasks.archived_totals() == {}
+
+    def test_the_count_and_the_delete_are_one_transaction(self, db, repos, monkeypatch):
+        """A prune that fails half way must not leave rows counted twice."""
+        groups, tasks, _settings = repos
+        group = add_group(groups)
+        posted_batch(db, tasks, group, "ancient wording", days_ago=200)
+        fill_keep_set(db, tasks, group)
+        db.connection.execute(
+            "CREATE TRIGGER refuse BEFORE DELETE ON tasks "
+            "BEGIN SELECT RAISE(ABORT, 'refused'); END"
+        )
+
+        with pytest.raises(Exception, match="refused"):
+            tasks.prune_history(NOON, keep_days=90)
+        assert tasks.archived_totals() == {}
+        assert self.all_time(tasks) == RECENT_BODIES_LIMIT + 1
 
 
 class TestTheGuardsSurvive:

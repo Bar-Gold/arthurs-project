@@ -39,12 +39,10 @@ SHAPES = {
         '<path d="M21 3 10.5 13.5"/>'
         '<path d="M21 3 14.5 21l-4-7.5L3 9.5z"/>'
     ),
-    # Rows of a list: what is waiting and what went out.
-    "queue": (
-        '<path d="M9 6h11M9 12h11M9 18h11"/>'
-        '<circle cx="4.5" cy="6" r="1" fill="{colour}"/>'
-        '<circle cx="4.5" cy="12" r="1" fill="{colour}"/>'
-        '<circle cx="4.5" cy="18" r="1" fill="{colour}"/>'
+    # Bars on a baseline: how the posting is going.
+    "dashboard": (
+        '<path d="M3.5 20.5h17"/>'
+        '<path d="M7 17v-5M12 17V6M17 17v-8"/>'
     ),
     # Sliders: the rules it posts by.
     "settings": (

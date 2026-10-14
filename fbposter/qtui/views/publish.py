@@ -22,13 +22,14 @@ the serial queue and the inter-group gap all apply unchanged.
 
 from __future__ import annotations
 
-from PySide6.QtCore import QDate, QDateTime, QTime, Qt
+from PySide6.QtCore import QDate, QDateTime, QTime, Qt, Signal
 from PySide6.QtGui import QColor, QTextCharFormat
 from PySide6.QtWidgets import (
-    QAbstractSpinBox,
     QButtonGroup,
     QCalendarWidget,
     QCheckBox,
+    QComboBox,
+    QDateEdit,
     QDateTimeEdit,
     QGridLayout,
     QHBoxLayout,
@@ -38,8 +39,8 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QStackedWidget,
+    QStyledItemDelegate,
     QTextEdit,
-    QTimeEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -86,18 +87,46 @@ ANYWAY_STILL = (
 
 # How far ahead a one-off post may be scheduled. Not a technical limit -- it is
 # the range in which a mis-scroll is recoverable. Without a ceiling the year
-# section takes a mouse wheel notch straight to 2028, which is what happened.
+# section took a mouse wheel notch straight to 2028, which is what happened.
 SCHEDULE_HORIZON_DAYS = 365
 
-# How far one step moves a time, by the section the cursor is in. Stepping by
-# seconds rather than by section is what lets the minutes carry into the hour:
-# a stock QTimeEdit steps each section on its own, so with the cursor in the
-# minutes "down" at 09:00 did nothing at all -- and every default time is on
-# the hour, so the arrow looked broken more often than not.
-STEP_SECONDS = {
-    QDateTimeEdit.MinuteSection: 60,
-    QDateTimeEdit.HourSection: 3600,
-}
+# The minutes a time can be set to (the user's choice, 2026-10-14). A time
+# saved earlier on another minute keeps it; see TimeList.set_value.
+MINUTE_STEP = 15
+HOURS = tuple(range(24))
+MINUTES = tuple(range(0, 60, MINUTE_STEP))
+TIME_LIST_WIDTH = 96
+
+
+def next_slot(moment: QDateTime) -> QDateTime:
+    """The first whole `MINUTE_STEP` at or after `moment`."""
+    moment = QDateTime(moment.date(), QTime(moment.time().hour(), moment.time().minute()))
+    late = moment.time().minute() % MINUTE_STEP
+    return moment.addSecs((MINUTE_STEP - late) * 60) if late else moment
+
+
+def last_slot(moment: QDateTime) -> QDateTime:
+    """The last whole `MINUTE_STEP` at or before `moment`."""
+    moment = QDateTime(moment.date(), QTime(moment.time().hour(), moment.time().minute()))
+    return moment.addSecs(-(moment.time().minute() % MINUTE_STEP) * 60)
+
+
+def day_boxes(grid: QGridLayout, on_change, checked: bool = False) -> list[QCheckBox]:
+    """The seven day boxes, Sunday first, as the week runs in Israel.
+
+    The list is indexed by `datetime.weekday()` (0 is Monday), which is how a
+    schedule stores its days; only the order on screen starts on Sunday (the
+    user's choice, 2026-10-14). Four and three rather than seven across: at the
+    column's width seven clip their own labels down to "Mo".
+    """
+    boxes: dict[int, QCheckBox] = {}
+    for position, day in enumerate(recurrence.WEEK_ORDER):
+        box = QCheckBox(recurrence.DAY_NAMES[day])
+        box.setChecked(checked)
+        box.stateChanged.connect(lambda _s: on_change())
+        grid.addWidget(box, position // 4, position % 4)
+        boxes[day] = box
+    return [boxes[day] for day in range(7)]
 
 
 def schedule_violations(app, rule, group_ids, wordings, history: bool = True):
@@ -142,13 +171,97 @@ def schedule_violations(app, rule, group_ids, wordings, history: bool = True):
     )
 
 
-class ScheduleEntry(QDateTimeEdit):
-    """The one-off date picker, with the two ways it went wrong closed off.
+class TimeList(QComboBox):
+    """A short list of numbers to pick from: the hours, or the minutes.
 
-    A stock QDateTimeEdit opens with the *year* section selected and accepts
-    the mouse wheel, so a single scroll over the widget silently moved a post a
-    year out; two notches read as "the default is 2028". It also has no upper
-    bound at all -- 9999 is reachable.
+    Picked, never typed, and the wheel does nothing: scrolling the page past
+    it must not change when a post goes out.
+    """
+
+    def __init__(self, values, name: str) -> None:
+        super().__init__()
+        # The default delegate ignores the stylesheet's ::item rules.
+        self.setItemDelegate(QStyledItemDelegate(self))
+        self.setMaxVisibleItems(8)
+        self.setAccessibleName(name)
+        # Two digits and the arrow. Qt's own guess was half as wide again,
+        # and pushed the column past the edge of the window.
+        self.setFixedWidth(TIME_LIST_WIDTH)
+        for value in values:
+            self.addItem(f"{value:02d}", value)
+
+    def value(self) -> int:
+        return self.currentData()
+
+    def set_value(self, value: int) -> None:
+        """Choose `value`, adding it to the list if it is not there.
+
+        A repeating post saved at 09:10, before the minutes came in steps,
+        must open as 09:10 and save as 09:10, not quietly move to 09:15.
+        """
+        index = self.findData(value)
+        if index < 0:
+            index = sum(1 for i in range(self.count()) if self.itemData(i) < value)
+            self.insertItem(index, f"{value:02d}", value)
+        self.setCurrentIndex(index)
+
+    def set_choosable(self, index: int, choosable: bool) -> None:
+        """Grey out one entry, as the calendar greys out a past day."""
+        self.model().item(index).setEnabled(choosable)
+
+    def wheelEvent(self, event) -> None:  # noqa: N802 - Qt's name
+        event.ignore()
+
+
+class TimePicker(QWidget):
+    """A time of day as two lists, the hour and the minutes.
+
+    It replaced a typed field with arrows, which the user found awkward to use
+    and to change (2026-10-14). There is nothing to type, so nothing is ever
+    half-typed, and no arrow can be dead.
+    """
+
+    timeChanged = Signal(QTime)  # noqa: N815 - named like QTimeEdit's
+
+    def __init__(self, hour: int = 9, minute: int = 0) -> None:
+        super().__init__()
+        # Transparent, like row(): it sits inside a card.
+        self.setObjectName("Row")
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(theme.PAD_XS)
+        self.hour = TimeList(HOURS, "Hour")
+        self.minute = TimeList(MINUTES, "Minutes")
+        layout.addWidget(self.hour)
+        layout.addWidget(QLabel(":"))
+        layout.addWidget(self.minute)
+        self.hour.set_value(hour)
+        self.minute.set_value(minute)
+        self.hour.currentIndexChanged.connect(lambda _i: self._changed())
+        self.minute.currentIndexChanged.connect(lambda _i: self._changed())
+
+    def time(self) -> QTime:
+        return QTime(self.hour.value(), self.minute.value())
+
+    def setTime(self, time: QTime) -> None:  # noqa: N802 - named like QTimeEdit's
+        before = self.time()
+        for part, value in ((self.hour, time.hour()), (self.minute, time.minute())):
+            part.blockSignals(True)
+            part.set_value(value)
+            part.blockSignals(False)
+        if self.time() != before:
+            self._changed()
+
+    def _changed(self) -> None:
+        self.timeChanged.emit(self.time())
+
+
+class DateEntry(QDateEdit):
+    """The one-off post's day: a calendar drop-down that ignores the wheel.
+
+    A stock date field opens on the *year* and moves with the mouse wheel, so
+    one scroll over it moved a post a year out; two notches read as "the
+    default is 2028". It starts on the day instead, and the wheel does nothing.
     """
 
     def __init__(self) -> None:
@@ -156,9 +269,10 @@ class ScheduleEntry(QDateTimeEdit):
         # Styled as a drop-down rather than a stepper; see theme.py.
         self.setObjectName("DateEntry")
         self.setCalendarPopup(True)
-        self.setDisplayFormat("yyyy-MM-dd HH:mm")
+        self.setDisplayFormat("yyyy-MM-dd")
+        self.setAccessibleName("Date")
+        self.setCurrentSection(QDateTimeEdit.DaySection)
         self._quiet_calendar()
-        self.reset()
 
     def _quiet_calendar(self) -> None:
         """Take the platform's colours out of the calendar; theme.py adds ours.
@@ -166,9 +280,10 @@ class ScheduleEntry(QDateTimeEdit):
         Qt paints Saturday and Sunday red, from a locale default that is not
         even Israel's weekend, and shades the day-name row grey. An empty
         format drops the red without overriding the dimming of days that are
-        out of range.
+        out of range. The week starts on Sunday, as it does in Israel.
         """
         calendar = self.calendarWidget()
+        calendar.setFirstDayOfWeek(Qt.Sunday)
         calendar.setVerticalHeaderFormat(QCalendarWidget.NoVerticalHeader)
         calendar.setGridVisible(False)
         for day in (Qt.Saturday, Qt.Sunday):
@@ -178,28 +293,7 @@ class ScheduleEntry(QDateTimeEdit):
         header.setBackground(QColor(theme.C["SURFACE"]))
         calendar.setHeaderTextFormat(header)
 
-    def reset(self) -> None:
-        """Default to the current time, and bound the range around it.
-
-        Now rather than an hour out: an arbitrary offset is one more thing to
-        notice and undo, and the common edit is "later today" typed straight
-        over the minutes.
-
-        Called every time the panel is shown rather than once at startup: the
-        app is left open for days, and a default set at launch is a time in the
-        past by the afternoon.
-        """
-        now = QDateTime.currentDateTime()
-        now = now.addSecs(-now.time().second())  # whole minutes read better
-        self.setMinimumDateTime(now)
-        self.setMaximumDateTime(now.addDays(SCHEDULE_HORIZON_DAYS))
-        self.setDateTime(now)
-        # Land on the minutes, so the first arrow key or wheel notch moves the
-        # post by a minute rather than by a year.
-        self.setCurrentSection(QDateTimeEdit.MinuteSection)
-        self._dim_past_days(now.date())
-
-    def _dim_past_days(self, today: QDate) -> None:
+    def dim_past_days(self, today: QDate) -> None:
         """Grey out the days before today, which cannot be picked.
 
         Qt marks an out-of-range day only by giving it the window colour as a
@@ -214,76 +308,138 @@ class ScheduleEntry(QDateTimeEdit):
         for back in range(1, 43):
             calendar.setDateTextFormat(today.addDays(-back), past)
 
-    def stepBy(self, steps: int) -> None:  # noqa: N802 - Qt's name
-        """Minutes and hours carry, as a clock does; see STEP_SECONDS.
-
-        Clamped to the range, so the arrow keys can never step a post into the
-        past or past the horizon. The date sections step as Qt steps them.
-        """
-        section = self.currentSection()
-        seconds = STEP_SECONDS.get(section)
-        if seconds is None:
-            super().stepBy(steps)
-            return
-        target = self.dateTime().addSecs(steps * seconds)
-        target = max(self.minimumDateTime(), min(target, self.maximumDateTime()))
-        self.setDateTime(target)
-        self.setSelectedSection(section)
-
-    def stepEnabled(self):  # noqa: N802 - Qt's name
-        if self.currentSection() not in STEP_SECONDS:
-            return super().stepEnabled()
-        enabled = QAbstractSpinBox.StepEnabledFlag.StepNone
-        if self.dateTime() < self.maximumDateTime():
-            enabled |= QAbstractSpinBox.StepEnabledFlag.StepUpEnabled
-        if self.dateTime() > self.minimumDateTime():
-            enabled |= QAbstractSpinBox.StepEnabledFlag.StepDownEnabled
-        return enabled
-
     def wheelEvent(self, event) -> None:  # noqa: N802 - Qt's name
-        """Scrolling must never change when a post goes out.
-
-        The wheel is for the page, not for the field under the pointer.
-        """
+        """Scrolling must never change when a post goes out."""
         event.ignore()
 
 
-class TimeEntry(QTimeEdit):
-    """One time of day for a repeating post, with steppers that always answer.
+class ScheduleEntry(QWidget):
+    """The one-off moment: a day from a calendar, a time from two lists.
 
-    The stock field had three ways of ignoring a click, and the user met all of
-    them: the text box lay over half of "up" (fixed in theme.py); "down" did
-    nothing with the cursor in the minutes of a time on the hour; and "up" did
-    nothing past 23. Now the minutes carry into the hour, the clock goes round
-    in both directions, and the part being stepped is highlighted, so it is
-    plain which one the arrows are moving -- the hours unless you click into
-    the minutes.
+    Bounded to `[now, now + SCHEDULE_HORIZON_DAYS]`. An hour or a minute that
+    would land outside it is greyed out in its list, and a day picked with a
+    time already gone moves the time to the first one left.
     """
 
-    def __init__(self, hour: int, minute: int) -> None:
-        super().__init__(QTime(hour, minute))
-        self.setDisplayFormat("HH:mm")
-        # Holding a stepper speeds up, so 09:00 to 21:00 is one press, not
-        # twelve clicks.
-        self.setAccelerated(True)
+    dateTimeChanged = Signal(QDateTime)  # noqa: N815 - named like QDateTimeEdit's
 
-    def stepBy(self, steps: int) -> None:  # noqa: N802 - Qt's name
-        section = self.currentSection()
-        if section not in STEP_SECONDS:
-            section = QDateTimeEdit.HourSection
-        # QTime arithmetic wraps at midnight, which is the point.
-        self.setTime(self.time().addSecs(steps * STEP_SECONDS[section]))
-        self.setSelectedSection(section)
+    def __init__(self) -> None:
+        super().__init__()
+        self.setObjectName("Row")
+        # The day above the time: side by side they are wider than the column.
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(theme.PAD_XS)
+        self.date_entry = DateEntry()
+        self.time_picker = TimePicker()
+        layout.addWidget(self.date_entry)
+        layout.addWidget(self.time_picker, 0, Qt.AlignLeft)
+        self._minimum = QDateTime.currentDateTime()
+        self._maximum = self._minimum.addDays(SCHEDULE_HORIZON_DAYS)
+        self._shown = QDateTime()
+        self.date_entry.dateChanged.connect(lambda _d: self._parts_changed())
+        self.time_picker.timeChanged.connect(lambda _t: self._parts_changed())
+        self.reset()
 
-    def stepEnabled(self):  # noqa: N802 - Qt's name
-        return (
-            QAbstractSpinBox.StepEnabledFlag.StepUpEnabled
-            | QAbstractSpinBox.StepEnabledFlag.StepDownEnabled
-        )
+    def calendarWidget(self) -> QCalendarWidget:  # noqa: N802 - Qt's name
+        return self.date_entry.calendarWidget()
 
-    def wheelEvent(self, event) -> None:  # noqa: N802 - Qt's name
-        """Same rule as ScheduleEntry: scrolling the page must not move a post."""
-        event.ignore()
+    def dateTime(self) -> QDateTime:  # noqa: N802 - Qt's name
+        return QDateTime(self.date_entry.date(), self.time_picker.time())
+
+    def minimumDateTime(self) -> QDateTime:  # noqa: N802 - Qt's name
+        return self._minimum
+
+    def maximumDateTime(self) -> QDateTime:  # noqa: N802 - Qt's name
+        return self._maximum
+
+    def setMinimumDateTime(self, moment: QDateTime) -> None:  # noqa: N802 - Qt's name
+        self._minimum = moment
+        self._apply_range()
+
+    def setMaximumDateTime(self, moment: QDateTime) -> None:  # noqa: N802 - Qt's name
+        self._maximum = moment
+        self._apply_range()
+
+    def earliest(self) -> QDateTime:
+        """The first time on the lists that is not in the past."""
+        return next_slot(self._minimum)
+
+    def latest(self) -> QDateTime:
+        return last_slot(self._maximum)
+
+    def _apply_range(self) -> None:
+        self.date_entry.blockSignals(True)
+        self.date_entry.setDateRange(self.earliest().date(), self.latest().date())
+        self.date_entry.blockSignals(False)
+        self.setDateTime(self.dateTime())
+
+    def setDateTime(self, moment: QDateTime) -> None:  # noqa: N802 - Qt's name
+        """Show `moment`, moved inside the range if it is outside it."""
+        moment = max(self.earliest(), min(moment, self.latest()))
+        self.date_entry.blockSignals(True)
+        self.time_picker.blockSignals(True)
+        self.date_entry.setDate(moment.date())
+        self.time_picker.setTime(moment.time())
+        self.date_entry.blockSignals(False)
+        self.time_picker.blockSignals(False)
+        self._mark_choosable()
+        self._announce()
+
+    def reset(self) -> None:
+        """Default to the next quarter hour, and bound the range around now.
+
+        The next quarter rather than an hour out: an arbitrary offset is one
+        more thing to notice and undo. The current minute is not on the list,
+        and the quarter before it has already gone.
+
+        Called every time the panel is shown rather than once at startup: the
+        app is left open for days, and a default set at launch is a time in the
+        past by the afternoon.
+        """
+        now = QDateTime.currentDateTime()
+        self._minimum = now
+        self._maximum = now.addDays(SCHEDULE_HORIZON_DAYS)
+        self.date_entry.blockSignals(True)
+        self.date_entry.setDateRange(self.earliest().date(), self.latest().date())
+        self.date_entry.blockSignals(False)
+        self.date_entry.setCurrentSection(QDateTimeEdit.DaySection)
+        self.date_entry.dim_past_days(now.date())
+        self.setDateTime(self.earliest())
+
+    def interpretText(self) -> None:  # noqa: N802 - Qt's name
+        """The day can still be typed; take a half-typed one at its word."""
+        self.date_entry.interpretText()
+
+    def _parts_changed(self) -> None:
+        moment = self.dateTime()
+        if moment < self.earliest() or moment > self.latest():
+            self.setDateTime(moment)
+            return
+        self._mark_choosable()
+        self._announce()
+
+    def _mark_choosable(self) -> None:
+        """Grey out every hour and minute that would fall outside the range."""
+        day = self.date_entry.date()
+        low, high = self.earliest(), self.latest()
+        hours, minutes = self.time_picker.hour, self.time_picker.minute
+        minute_values = [minutes.itemData(i) for i in range(minutes.count())]
+
+        def fits(hour: int, minute: int) -> bool:
+            return low <= QDateTime(day, QTime(hour, minute)) <= high
+
+        for index in range(hours.count()):
+            hour = hours.itemData(index)
+            hours.set_choosable(index, any(fits(hour, m) for m in minute_values))
+        for index, minute in enumerate(minute_values):
+            minutes.set_choosable(index, fits(hours.value(), minute))
+
+    def _announce(self) -> None:
+        moment = self.dateTime()
+        if moment != self._shown:
+            self._shown = moment
+            self.dateTimeChanged.emit(moment)
 
 
 class PublishView(QWidget):
@@ -297,7 +453,7 @@ class PublishView(QWidget):
         self._recipients_shown = None
         self.mode = NOW
         self._wordings: list[QTextEdit] = []
-        self._time_rows: list[TimeEntry] = []
+        self._time_rows: list[TimePicker] = []
         self._day_boxes: list[QCheckBox] = []
         # The rules the "Post anyway" panel is currently offering to break.
         self._offered: frozenset[str] = frozenset()
@@ -694,17 +850,9 @@ class PublishView(QWidget):
         days_label = QLabel("Days")
         days_label.setObjectName("SectionHeading")
         layout.addWidget(days_label)
-        # Four and three rather than seven across: at this column width seven
-        # checkboxes clip their own labels down to "Mo", which is worse than
-        # using a second row.
         days_grid = QGridLayout()
         days_grid.setSpacing(theme.PAD_XS)
-        for index, name in enumerate(recurrence.DAY_NAMES):
-            box = QCheckBox(name)
-            box.setChecked(True)
-            box.stateChanged.connect(lambda _s: self.refresh_summary())
-            self._day_boxes.append(box)
-            days_grid.addWidget(box, index // 4, index % 4)
+        self._day_boxes = day_boxes(days_grid, self.refresh_summary, checked=True)
         layout.addLayout(days_grid)
         return panel
 
@@ -803,9 +951,10 @@ class PublishView(QWidget):
         line = row()
         layout = QHBoxLayout(line)
         layout.setContentsMargins(0, 0, 0, 0)
-        entry = TimeEntry(hour, minute)
+        entry = TimePicker(hour, minute)
         entry.timeChanged.connect(lambda _t: self.refresh_summary())
-        layout.addWidget(entry, 1)
+        layout.addWidget(entry)
+        layout.addStretch(1)
         remove = QPushButton("Remove")
         remove.setObjectName("Link")
         remove.clicked.connect(lambda _c, w=line, e=entry: self._remove_time(w, e))
@@ -816,7 +965,7 @@ class PublishView(QWidget):
         self.refresh_summary()
         return True
 
-    def _remove_time(self, line: QWidget, entry: TimeEntry) -> None:
+    def _remove_time(self, line: QWidget, entry: TimePicker) -> None:
         if len(self._time_rows) == 1:
             self.notify("A repeating post needs at least one time of day.", "warning")
             return
@@ -829,17 +978,15 @@ class PublishView(QWidget):
         return [e.time().toString("HH:mm") for e in self._time_rows]
 
     def commit_typed_times(self) -> None:
-        """Take a half-typed time at its word before acting on it.
+        """Take a half-typed date at its word before acting on it.
 
         Clicking a button used to take focus from the field, and losing focus
         is what makes Qt read what was typed. Buttons no longer take focus on a
         click (widgets.AppStyle), so the actions that use these values ask for
-        it themselves. Deliberately not in times(): refresh_summary() calls
-        that on every keystroke, and interpreting mid-typing would finish the
-        hour for you after its first digit.
+        it themselves. Deliberately not in refresh_summary(), which runs on
+        every keystroke: interpreting mid-typing finishes the field for you
+        after its first digit. The times are picked from lists, never typed.
         """
-        for entry in self._time_rows:
-            entry.interpretText()
         self.schedule_entry.interpretText()
 
     def days(self) -> list[int]:

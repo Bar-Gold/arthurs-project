@@ -36,9 +36,9 @@ from ..connection import ConnectionResult, ConnectionState, check_connection
 from ..worker import PostingWorker
 from . import icons, theme
 from .views.compose import ComposeView
+from .views.dashboard import DashboardView
 from .views.groups import IMPORT_PENDING_KEY, GroupsView
 from .views.publish import PublishView
-from .views.queue import QueueView
 from .views.schedule_edit import ScheduleEditView
 from .views.settings import SettingsView
 from .views.welcome import WelcomeView
@@ -67,7 +67,7 @@ CHROME_WATCH_MS = keepalive.WATCH_EVERY_S * 1000
 CHECK_DEADLINE_MS = keepalive.CHECK_DEADLINE_S * 1000
 
 # The order is the flow: what to say, who to say it to, when to say it, and
-# what happened. The sidebar is the sequence, so it reads top to bottom. Each
+# how it is going. The sidebar is the sequence, so it reads top to bottom. Each
 # item has an icon (icons.py); the first three used to be numbered "1." to
 # "3.", which the user replaced with the icons on 2026-10-12. Settings is not
 # part of the flow at all, so it sits at the foot of the sidebar, away from
@@ -76,12 +76,13 @@ NAV_ITEMS = (
     ("compose", "Compose", ComposeView),
     ("groups", "Groups", GroupsView),
     ("publish", "Publish", PublishView),
-    ("queue", "Queue", QueueView),
+    ("dashboard", "Dashboard", DashboardView),
     ("settings", "Settings", SettingsView),
 )
 
-# Keys that form the three-step path, in order. Queue is where you look
-# afterwards, not a step, so it sits below a divider.
+# Keys that form the three-step path, in order. The Dashboard is where you
+# look afterwards, not a step, so it sits below a divider. It replaced the
+# Queue screen (2026-10-14).
 FLOW_STEPS = ("compose", "groups", "publish")
 
 # Screens that are not in the sidebar, and the item that stays lit while one
@@ -95,7 +96,7 @@ NAV_HINTS = {
     "compose": "Write the post",
     "groups": "Choose the groups",
     "publish": "Choose when",
-    "queue": "See what happened",
+    "dashboard": "See how the posting is going",
     "settings": "Pause posting, and the cooldown between posts",
 }
 
@@ -269,8 +270,8 @@ class App(QMainWindow):
                 # purpose, not a step you walk through.
                 column.addStretch(1)
                 self._build_paused_notice(column)
-            if key == "queue":
-                # Queue is not a step -- it is where you look afterwards.
+            if key == "dashboard":
+                # Not a step: it is where you look afterwards.
                 column.addSpacing(theme.PAD_S)
                 divider = QFrame()
                 divider.setObjectName("Divider")
@@ -883,9 +884,9 @@ class App(QMainWindow):
             "power": "warning",
         }.get(event.kind, "info")
         self.toast(event.message, level)
-        queue_view = self.views.get("queue")
-        if queue_view is not None and hasattr(queue_view, "refresh"):
-            queue_view.refresh()
+        dashboard = self.views.get("dashboard")
+        if dashboard is not None and hasattr(dashboard, "refresh"):
+            dashboard.refresh()
         # A schedule that just fired has a new "next run"; the card would go on
         # showing the slot it already used otherwise.
         if event.kind in ("scheduled", "schedule_error", "missed"):

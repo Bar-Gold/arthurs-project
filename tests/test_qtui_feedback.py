@@ -48,8 +48,8 @@ def lit(qt_app) -> list[str]:
 class TestWhereAmI:
     def test_a_sidebar_screen_lights_itself(self, qt_app):
         qt_app.show_view("settings")
-        qt_app.show_view("queue")
-        assert lit(qt_app) == ["queue"]
+        qt_app.show_view("dashboard")
+        assert lit(qt_app) == ["dashboard"]
 
     def test_the_setup_screen_lights_nothing(self, qt_app):
         qt_app.show_view("settings")
@@ -171,7 +171,7 @@ class TestUndo:
 class TestUndoingACancel:
     def test_the_batch_goes_back_as_it_was(self, qt_app, groups):
         task = qt_app.task_repo.create(BODY, [(groups[0].id, BODY)])
-        qt_app.views["queue"].cancel(task.id)
+        qt_app.views["dashboard"].cancel(task.id)
         assert qt_app.task_repo.get(task.id).state == TASK_CANCELLED
 
         qt_app.banner.undo_button.click()
@@ -184,7 +184,7 @@ class TestUndoingACancel:
         from fbposter.qtui.app import TOO_LATE_TO_UNDO
 
         task = qt_app.task_repo.create(BODY, [(groups[0].id, BODY)])
-        qt_app.views["queue"].cancel(task.id)
+        qt_app.views["dashboard"].cancel(task.id)
         qt_app.task_repo.mark_task(task.id, TASK_DONE, finished=True)
 
         qt_app.banner.undo_button.click()

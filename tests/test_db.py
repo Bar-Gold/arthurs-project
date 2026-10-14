@@ -50,6 +50,13 @@ class TestSchema:
         names = {row["name"] for row in rows}
         assert {"groups", "templates", "tasks", "task_targets", "settings"} <= names
 
+    def test_deleted_history_has_somewhere_to_be_counted(self, db):
+        """Migration 013: the Dashboard's all-time totals outlive the prune."""
+        columns = {row["name"] for row in db.query("PRAGMA table_info(post_totals)")}
+        assert columns == {"group_id", "state", "count", "first_at"}
+        # No foreign key: a cascade would be a way to lose the counts.
+        assert db.query("PRAGMA foreign_key_list(post_totals)") == []
+
     def test_the_cut_tables_are_not_created(self):
         """tags, group_tags and run_log were cut from v1 on purpose."""
         from fbposter.db import schema

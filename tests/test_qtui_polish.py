@@ -104,7 +104,7 @@ class TestOneAccentButtonPerScreen:
             if button.objectName() == "Primary"
         ]
 
-    @pytest.mark.parametrize("key", ["compose", "groups", "publish", "queue"])
+    @pytest.mark.parametrize("key", ["compose", "groups", "publish", "dashboard"])
     def test_at_most_one(self, qt_app, key):
         found = self.primaries(qt_app.views[key])
         assert len(found) <= 1, f"{key} has several filled buttons: {found}"

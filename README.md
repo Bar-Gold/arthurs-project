@@ -47,11 +47,11 @@ Requirements:
 *   Suppress Chrome's background throttling so an unfocused window still behaves normally:
     `--disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-renderer-backgrounding`
 *   Attach media with `set_input_files` on the file input element. Never trigger the native OS file-picker dialog. It is modal and does steal focus.
-*   The app's own UI must not force itself to the foreground or open a dialog to report status. Status belongs in the in-app queue view or a passive in-window toast. The only dialogs are ones the user's own action just raised: the image picker, the warning when closing the window would stop queued or repeating posts, and the notice that the app is already running.
+*   The app's own UI must not force itself to the foreground or open a dialog to report status. Status belongs on the in-app Dashboard or in a passive in-window toast. The only dialogs are ones the user's own action just raised: the image picker, the warning when closing the window would stop queued or repeating posts, and the notice that the app is already running.
 *   **Sleep handling:** hold off system sleep while a batch is in flight (`SetThreadExecutionState` with `ES_CONTINUOUS | ES_SYSTEM_REQUIRED`; the display may still turn off). Schedules are stored as absolute timestamps and recomputed on wake, so suspend/resume never drifts. A slot missed while the machine was asleep is surfaced to the user, not fired late in a burst.
 
 ## 6. Core Features & UI Requirements
-A left sidebar navigates between four screens, in the order the work happens: **Compose (what) → Groups (where) → Publish (when) → Queue (what happened)**; appearance follows the Windows theme. The UI stays uncluttered and readable, and never opens a modal dialog to tell the user something. Status goes to a passive in-window toast.
+A left sidebar navigates between four screens, in the order the work happens: **Compose (what) → Groups (where) → Publish (when) → Dashboard (how it is going)**; appearance follows the Windows theme. The UI stays uncluttered and readable, and never opens a modal dialog to tell the user something. Status goes to a passive in-window toast.
 
 The **connection indicator lives in the sidebar**, not in a screen of its own: it is the "Check connection" action from §4, and nothing else in the app works without it, so it is visible from everywhere.
 
@@ -81,10 +81,13 @@ The **connection indicator lives in the sidebar**, not in a screen of its own: i
         *   The Compose text is the first wording; this screen collects alternates.
         *   Pause, resume and delete; the next run is shown before and after creating one.
     *   Warns before creating anything that a time falls outside the posting window, that the frequency is inside the per-group cooldown, or that there are too few wordings for the number of groups.
-*   **Queue**
-    *   **Live queue view:** what is pending, running, waiting, done or failed, and the countdown to the next group. Batches from a repeating post are labelled with its name.
-    *   Cancel a run mid-batch.
-    *   **Retention (display).** Anything unfinished is always shown; finished batches drop off the screen after `queue_retention_hours` (24 by default), with an "All" toggle for the rest. This only hides rows.
+*   **Dashboard** (replaced the Queue screen, 2026-10-14)
+    *   **Numbers:** posted today against the daily limit, the last 7 days against the week before, the last 30 days, all time, the success rate, the next scheduled post, active repeating posts, and how many different wordings went out in the last 7 days. Days are Israel days.
+    *   **Charts:** posts per day for the last 14 days, and how every post of the last 30 days ended.
+    *   **By group:** today, 7 days and all time per group, its last post, and when its cooldown lets it be posted to again.
+    *   **Going out:** every batch still to go out, with Cancel (and Undo). Batches from a repeating post are labelled with its name.
+    *   **Recent activity:** the last 15 groups the worker reached, with the result and the reason under any that did not go out.
+    *   **All time never shrinks.** What the storage retention below deletes is counted first, so the totals stay.
     *   **Retention (storage).** Finished batches are deleted for good after `history_retention_days` (90 by default; 0 disables), once a day, so the database does not grow without bound. It never deletes anything unfinished, and never the newest 20 posted bodies per group. Those are what stop the same wording going to a group twice (§7), so they are kept for ever. `VACUUM` returns the freed space to disk.
 
 **Post-v1 (see §10):** "Groups of Groups" tags, video attachments, and pause/skip-a-single-group mid-batch. They are listed here only so the shape of the finished app is clear; do not build them into v1. Recurring schedules were also cut from v1 and have since been built, at the user's request.
@@ -133,7 +136,7 @@ Stored at `C:\FBAutomation\fbposter.db`, beside the Chrome profile (or under `%L
 *   `task_targets`: task_id, group_id, position, **body**, state, attempted_at, posted_at, post_url, error, resolve_misses, **`UNIQUE(task_id, group_id)`**
 *   `schedules`: a repeating post's definition, never a queue entry: name, **bodies** (the wordings it rotates through), media_paths, times and days (Israel local), state, run_count, next_run_at, last_run_at. When one comes due, the worker creates an ordinary `tasks` row from it.
 *   `schedule_targets`: schedule_id, group_id, position, `UNIQUE(schedule_id, group_id)`
-*   `settings`: key/value: daily cap, posting window and its time zone, default cooldown, queue and history retention, plus the worker's own bookkeeping (`next_post_after`, `last_prune_at`)
+*   `settings`: key/value: daily cap, posting window and its time zone, default cooldown, history retention (and an unused queue retention, from the old Queue screen), plus the worker's own bookkeeping (`next_post_after`, `last_prune_at`)
 
 Two columns carry most of the safety weight. **`UNIQUE(task_id, group_id)`** means the database itself refuses to let one batch target the same group twice. A duplicate post is the worst failure mode here, so it is not left to application code. **`task_targets.body`** is per-group rather than per-batch, which is what makes content variation expressible at all.
 
@@ -143,7 +146,7 @@ Two columns carry most of the safety weight. **`UNIQUE(task_id, group_id)`** mea
 *   **Daily cap: 25** individual group posts: just above the realistic ceiling of 3 posts x 7 groups, so it catches a runaway rather than normal use.
 *   **Posting window: 08:00-23:00.**
 *   **Cooldown: 8h** between posts to the same group, the same for every group. It was 24h, and was lowered by the user so that two or three posts a day to one group is possible at all. It is no longer editable per group.
-*   **"Post anyway".** Any of these rules can be broken for one batch or one repeating post, by choice: Publish lists what would be broken and offers "Post anyway" instead of refusing. The choice is recorded on the batch, honoured when it posts, and shown in the Queue. Nothing is broken without that second click.
+*   **"Post anyway".** Any of these rules can be broken for one batch or one repeating post, by choice: Publish lists what would be broken and offers "Post anyway" instead of refusing. The choice is recorded on the batch, honoured when it posts, and shown on the Dashboard while it waits to go out. Nothing is broken without that second click.
 *   **Identical text is never sent to the same group twice**, regardless of cooldown. This is the rule that does the real work: posting more often to an active group is only safe while the wording changes.
 
 ## 10. Scope Control

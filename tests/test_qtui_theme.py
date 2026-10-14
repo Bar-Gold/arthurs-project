@@ -200,8 +200,8 @@ class TestNavigationReadsAsAFlow:
     def test_the_first_three_are_the_steps(self):
         assert FLOW_STEPS == ("compose", "groups", "publish")
 
-    def test_queue_is_not_a_step(self):
-        assert "queue" not in FLOW_STEPS
+    def test_the_dashboard_is_not_a_step(self):
+        assert "dashboard" not in FLOW_STEPS
 
     def test_every_nav_item_has_a_plain_english_hint(self):
         for key, _label, _view in NAV_ITEMS:

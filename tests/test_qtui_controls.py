@@ -3,9 +3,9 @@
 Written after the Repeat time field's arrows were reported as "partially
 working or not working at all". Both were true, for different reasons: the
 text box lay over the left half of "up", so clicks there went into the text;
-and with the cursor in the minutes, "down" at 09:00 did nothing, because a
-stock time field steps each section on its own and 00 was its floor. Every
-default time is on the hour, so the second one was the common case.
+and with the cursor in the minutes, "down" at 09:00 did nothing. The times are
+now picked from two lists (2026-10-14), but the Settings screen's number boxes
+still have steppers, so the click tests below run against one of those.
 
 The click tests use real hit-testing geometry under the real stylesheet, since
 that is where the first bug lived -- no amount of calling stepBy() finds it.
@@ -22,9 +22,7 @@ from PySide6.QtCore import QDate, QDateTime, QPoint, Qt, QTime
 from PySide6.QtGui import QColor, QWheelEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
-    QAbstractSpinBox,
     QComboBox,
-    QDateTimeEdit,
     QPushButton,
     QSpinBox,
     QStyle,
@@ -34,11 +32,15 @@ from PySide6.QtWidgets import (
 )
 
 from fbposter.qtui import theme
-from fbposter.qtui.views.publish import ScheduleEntry, TimeEntry
+from fbposter.qtui.views.publish import (
+    HOURS,
+    MINUTE_STEP,
+    MINUTES,
+    ScheduleEntry,
+    TimePicker,
+)
+from fbposter.qtui.views.settings import HourEntry
 from fbposter.qtui.widgets import AppStyle
-
-UP = QAbstractSpinBox.StepEnabledFlag.StepUpEnabled
-DOWN = QAbstractSpinBox.StepEnabledFlag.StepDownEnabled
 
 
 def wheel_over(widget) -> QWheelEvent:
@@ -54,11 +56,12 @@ def wheel_over(widget) -> QWheelEvent:
     )
 
 
-def time_entry(text: str, section) -> TimeEntry:
-    hour, minute = (int(part) for part in text.split(":"))
-    entry = TimeEntry(hour, minute)
-    entry.setCurrentSection(section)
-    return entry
+def choosable(combo: QComboBox) -> list[int]:
+    return [
+        combo.itemData(i)
+        for i in range(combo.count())
+        if combo.model().item(i).isEnabled()
+    ]
 
 
 class TestAClickOnAStepperLands:
@@ -69,7 +72,8 @@ class TestAClickOnAStepperLands:
         holder = QWidget()
         holder.setStyleSheet(theme.stylesheet())
         layout = QVBoxLayout(holder)
-        entry = TimeEntry(9, 0)
+        entry = HourEntry("Hour")
+        entry.setValue(9)
         layout.addWidget(entry)
         holder.resize(240, 60)
         holder.show()
@@ -108,85 +112,105 @@ class TestAClickOnAStepperLands:
             # A real click goes to whatever child is under the pointer. The
             # text box being there is exactly the bug.
             assert entry.childAt(point) is None, f"{point} lands in the text box"
-            entry.setTime(QTime(9, 0))
-            entry.setCurrentSection(QDateTimeEdit.HourSection)
+            entry.setValue(9)
             QTest.mouseClick(entry, Qt.LeftButton, Qt.NoModifier, point)
             qt_application.processEvents()
             assert entry.text() == expected, f"click at {point} did not step"
 
 
-class TestTheTimeStepsLikeAClock:
-    def test_down_from_the_hour_with_the_cursor_in_the_minutes(self, qt_application):
-        """The half of the report that was not about geometry."""
-        entry = time_entry("09:00", QDateTimeEdit.MinuteSection)
-        entry.stepBy(-1)
-        assert entry.text() == "08:59"
+class TestATimeIsPicked:
+    """The typed field with arrows, replaced by two lists (2026-10-14)."""
 
-    def test_the_minutes_carry_into_the_hour(self, qt_application):
-        entry = time_entry("09:59", QDateTimeEdit.MinuteSection)
-        entry.stepBy(1)
-        assert entry.text() == "10:00"
+    def test_the_hours_are_the_whole_day(self, qt_application):
+        picker = TimePicker()
+        shown = [picker.hour.itemData(i) for i in range(picker.hour.count())]
+        assert shown == list(HOURS) == list(range(24))
 
-    def test_the_hours_go_round_past_midnight(self, qt_application):
-        entry = time_entry("23:30", QDateTimeEdit.HourSection)
-        entry.stepBy(1)
-        assert entry.text() == "00:30"
+    def test_the_minutes_come_every_quarter_hour(self, qt_application):
+        picker = TimePicker()
+        shown = [picker.minute.itemData(i) for i in range(picker.minute.count())]
+        assert shown == list(MINUTES) == list(range(0, 60, MINUTE_STEP))
+        assert MINUTE_STEP == 15
 
-    def test_and_back_the_other_way(self, qt_application):
-        entry = time_entry("00:15", QDateTimeEdit.HourSection)
-        entry.stepBy(-1)
-        assert entry.text() == "23:15"
+    def test_it_shows_two_digits(self, qt_application):
+        picker = TimePicker(7, 0)
+        assert (picker.hour.currentText(), picker.minute.currentText()) == ("07", "00")
 
-    @pytest.mark.parametrize("text", ["00:00", "23:59", "12:00"])
-    def test_neither_arrow_is_ever_dead(self, qt_application, text):
-        for section in (QDateTimeEdit.HourSection, QDateTimeEdit.MinuteSection):
-            entry = time_entry(text, section)
-            assert entry.stepEnabled() & UP
-            assert entry.stepEnabled() & DOWN
+    def test_it_reads_back_what_was_set(self, qt_application):
+        picker = TimePicker()
+        picker.setTime(QTime(21, 45))
+        assert picker.time() == QTime(21, 45)
 
-    def test_the_part_being_stepped_is_the_part_highlighted(self, qt_application):
-        """Otherwise nothing says whether the arrows move hours or minutes."""
-        entry = time_entry("09:00", QDateTimeEdit.MinuteSection)
-        entry.stepBy(1)
-        assert entry.currentSection() == QDateTimeEdit.MinuteSection
-        assert entry.lineEdit().selectedText() == "01"
+    def test_a_saved_time_off_the_quarter_is_kept(self, qt_application):
+        """A post saved at 09:10 must not quietly move when it is edited."""
+        picker = TimePicker(9, 10)
+        assert picker.time() == QTime(9, 10)
+        shown = [picker.minute.itemData(i) for i in range(picker.minute.count())]
+        assert shown == sorted(shown)
 
-    def test_holding_an_arrow_speeds_up(self, qt_application):
-        assert TimeEntry(9, 0).isAccelerated()
+    def test_picking_says_so(self, qt_application):
+        picker = TimePicker(9, 0)
+        seen = []
+        picker.timeChanged.connect(seen.append)
+        picker.hour.setCurrentIndex(picker.hour.findData(18))
+        picker.minute.setCurrentIndex(picker.minute.findData(30))
+        assert seen == [QTime(18, 0), QTime(18, 30)]
+
+    def test_nothing_is_typed(self, qt_application):
+        picker = TimePicker()
+        assert not picker.hour.isEditable()
+        assert not picker.minute.isEditable()
 
     def test_the_wheel_does_not_move_it(self, qt_application):
         """Scrolling the page past a time must not change when a post goes out."""
-        entry = TimeEntry(9, 0)
-        entry.wheelEvent(wheel_over(entry))
-        assert entry.text() == "09:00"
+        picker = TimePicker(9, 0)
+        for part in (picker.hour, picker.minute):
+            part.wheelEvent(wheel_over(part))
+        assert picker.time() == QTime(9, 0)
 
 
-class TestTheOneOffPickerCarriesToo:
-    def test_the_minutes_carry_into_the_hour(self, qt_application):
+class TestTheOneOffPickerStaysInRange:
+    def test_a_past_hour_today_is_greyed_out(self, qt_application):
         entry = ScheduleEntry()
-        tomorrow = QDateTime(QDate.currentDate().addDays(1), QTime(10, 59))
-        entry.setDateTime(tomorrow)
-        entry.setCurrentSection(QDateTimeEdit.MinuteSection)
-        entry.stepBy(1)
-        assert entry.dateTime() == QDateTime(tomorrow.date(), QTime(11, 0))
+        earliest = entry.earliest()
+        if earliest.date() != QDate.currentDate():
+            pytest.skip("too close to midnight: no time of today is left")
+        assert choosable(entry.time_picker.hour) == list(range(earliest.time().hour(), 24))
 
-    def test_it_cannot_step_into_the_past(self, qt_application):
+    def test_every_time_of_a_later_day_can_be_picked(self, qt_application):
         entry = ScheduleEntry()
-        entry.setCurrentSection(QDateTimeEdit.MinuteSection)
-        assert not entry.stepEnabled() & DOWN
-        entry.stepBy(-5)
-        assert entry.dateTime() == entry.minimumDateTime()
+        entry.setDateTime(QDateTime(QDate.currentDate().addDays(2), QTime(10, 0)))
+        assert choosable(entry.time_picker.hour) == list(HOURS)
+        assert choosable(entry.time_picker.minute) == list(MINUTES)
 
-    def test_it_cannot_step_past_the_horizon(self, qt_application):
+    def test_a_past_hour_picked_anyway_moves_to_the_first_left(self, qt_application):
         entry = ScheduleEntry()
-        entry.setDateTime(entry.maximumDateTime())
-        entry.setCurrentSection(QDateTimeEdit.HourSection)
-        assert not entry.stepEnabled() & UP
-        entry.stepBy(3)
-        assert entry.dateTime() == entry.maximumDateTime()
+        earliest = entry.earliest()
+        if earliest.time().hour() == 0:
+            pytest.skip("no earlier hour today")
+        hour = entry.time_picker.hour
+        hour.setCurrentIndex(hour.findData(earliest.time().hour() - 1))
+        assert entry.dateTime() == earliest
+
+    def test_today_picked_with_its_time_gone_moves_to_the_first_left(self, qt_application):
+        entry = ScheduleEntry()
+        earliest = entry.earliest()
+        entry.setDateTime(QDateTime(earliest.date().addDays(1), QTime(0, 0)))
+        entry.date_entry.setDate(earliest.date())
+        assert entry.dateTime() == earliest
+
+    def test_it_cannot_go_past_the_horizon(self, qt_application):
+        entry = ScheduleEntry()
+        entry.setDateTime(entry.maximumDateTime().addDays(3))
+        assert entry.dateTime() <= entry.maximumDateTime()
 
 
 class TestTheCalendar:
+    def test_the_week_starts_on_sunday(self, qt_application):
+        """As it does in Israel (the user's choice, 2026-10-14)."""
+        entry = ScheduleEntry()  # the calendar dies with it
+        assert entry.calendarWidget().firstDayOfWeek() == Qt.Sunday
+
     def test_the_weekend_is_not_painted_red(self, qt_application):
         entry = ScheduleEntry()  # the calendar dies with it
         calendar = entry.calendarWidget()
@@ -211,16 +235,16 @@ class TestTheGroupsScreenHasNoCooldownControl:
 
 
 class TestPublishReadsWhatWasTyped:
-    def test_a_half_typed_time_is_taken_before_publishing(self, qt_app, monkeypatch):
+    def test_a_half_typed_date_is_taken_before_publishing(self, qt_app, monkeypatch):
         """Buttons no longer take focus from a field on a click, and losing
-        focus is what made Qt read what had been typed."""
+        focus is what made Qt read what had been typed. The day can still be
+        typed; the times are picked from lists."""
         publish = qt_app.views["publish"]
         seen = []
-        for entry in publish._time_rows + [publish.schedule_entry]:
-            monkeypatch.setattr(entry, "interpretText", lambda e=entry: seen.append(e))
+        entry = publish.schedule_entry
+        monkeypatch.setattr(entry, "interpretText", lambda: seen.append(entry))
         publish.publish()
-        assert publish.schedule_entry in seen
-        assert all(entry in seen for entry in publish._time_rows)
+        assert seen == [entry]
 
     def test_a_time_row_does_not_paint_the_window_colour(self, qt_app):
         """It sits in the white "When" card; a bare QWidget drew a grey band."""

@@ -263,6 +263,15 @@ class TestDescribe:
         text = recurrence.describe(recurrence.build(["09:00"], days=[0, 2, 4]))
         assert text == "Mon, Wed, Fri at 09:00"
 
+    def test_the_week_starts_on_sunday(self):
+        """As it does in Israel; the stored days still count from Monday."""
+        text = recurrence.describe(recurrence.build(["09:00"], days=[0, 5, 6]))
+        assert text == "Sun, Mon, Sat at 09:00"
+
+    def test_the_order_shown_covers_every_day_once(self):
+        assert sorted(recurrence.WEEK_ORDER) == list(range(7))
+        assert recurrence.DAY_NAMES[recurrence.WEEK_ORDER[0]] == "Sun"
+
 
 class TestPreview:
     def test_it_lists_the_next_few_runs(self):

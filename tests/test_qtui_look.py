@@ -65,37 +65,43 @@ class TestStatusesAreBadges:
         task = qt_app.task_repo.create(BODY, [(g.id, BODY) for g in groups])
         first, second = qt_app.task_repo.targets_for(task.id)
         qt_app.task_repo.mark_target(first.id, TARGET_DONE, posted=True, post_url="u")
+        # Tried, as the worker's claim records it: Recent activity lists only
+        # groups whose turn came.
         qt_app.task_repo.mark_target(
-            second.id, TARGET_UNCONFIRMED, error="Look at the group."
+            second.id, TARGET_UNCONFIRMED, error="Look at the group.", attempted=True
         )
         qt_app.task_repo.mark_task(task.id, TASK_HALTED, finished=True)
-        qt_app.show_view("queue")
+        qt_app.task_repo.create(BODY, [(groups[0].id, BODY)])
+        qt_app.show_view("dashboard")
 
-        shown = badges(qt_app.views["queue"].holder)
+        shown = badges(qt_app.views["dashboard"].holder)
         assert shown["Posted"] == "SUCCESS"
         assert shown["Might have posted"] == "DANGER"
-        assert shown["Stopped"] == "DANGER"
+        assert shown["Queued"] == "TEXT_MUTED"
 
     def test_a_finished_batch_reads_by_what_reached_the_groups(self, qt_app, groups):
+        from fbposter.qtui.views.dashboard import task_label
+
         task = qt_app.task_repo.create(BODY, [(groups[0].id, BODY)])
         (target,) = qt_app.task_repo.targets_for(task.id)
         qt_app.task_repo.mark_target(target.id, TARGET_DONE, posted=True, post_url="u")
         qt_app.task_repo.mark_task(task.id, TASK_DONE, finished=True)
-        qt_app.show_view("queue")
-        assert badge_list(qt_app.views["queue"].holder) == [
-            ("Posted", "SUCCESS"),
-            ("Posted", "SUCCESS"),
-        ]
+        task = qt_app.task_repo.get(task.id)
+        targets = qt_app.task_repo.targets_for(task.id)
+        assert task_label(task, targets) == ("Posted", "SUCCESS")
 
     def test_the_time_is_its_own_line_under_the_words(self, qt_app, groups):
         """It shared one bold line with the words, joined by a dash."""
         from PySide6.QtWidgets import QLabel
 
         qt_app.task_repo.create(BODY, [(groups[0].id, BODY)])
-        qt_app.show_view("queue")
-        texts = [label.text() for label in qt_app.views["queue"].holder.findChildren(QLabel)]
+        qt_app.show_view("dashboard")
+        texts = [
+            label.text()
+            for label in qt_app.views["dashboard"].holder.findChildren(QLabel)
+        ]
         assert BODY in texts
-        assert "Right away" in texts
+        assert any(text.startswith("Right away") for text in texts)
 
     def test_a_repeating_post_says_whether_it_is_on(self, qt_app, groups):
         from fbposter import recurrence
@@ -138,7 +144,6 @@ class TestChoicesAreJoinedToggles:
         "view,names",
         [
             ("compose", ("write_button", "preview_button")),
-            ("queue", ("recent_button", "all_button")),
         ],
     )
     def test_each_toggle_is_one_control(self, qt_app, view, names):
@@ -159,12 +164,15 @@ class TestChoicesAreJoinedToggles:
         assert sum(button.isChecked() for button in buttons) == 1
 
     def test_choosing_one_lets_go_of_the_other(self, qt_app):
-        queue = qt_app.views["queue"]
-        qt_app.show_view("queue")
-        queue.all_button.click()
-        assert queue.all_button.isChecked() and not queue.recent_button.isChecked()
-        queue.recent_button.click()
-        assert queue.recent_button.isChecked() and not queue.all_button.isChecked()
+        from fbposter.qtui.views.publish import NOW, ONCE
+
+        publish = qt_app.views["publish"]
+        qt_app.show_view("publish")
+        once, now = publish.mode_buttons[ONCE], publish.mode_buttons[NOW]
+        once.click()
+        assert once.isChecked() and not now.isChecked()
+        now.click()
+        assert now.isChecked() and not once.isChecked()
 
     def test_the_wording_tabs_are_not_filled_with_the_accent(self):
         """Only the screen's next step is filled with the accent."""

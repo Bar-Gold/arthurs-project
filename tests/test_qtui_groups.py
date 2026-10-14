@@ -21,7 +21,12 @@ from PySide6.QtWidgets import QLineEdit, QPushButton
 
 from fbposter.db.models import TARGET_DONE
 from fbposter.qtui.views.groups import HIDE_REMOVED, SHOW_REMOVED
-from fbposter.qtui.views.publish import ONCE, SCHEDULE_HORIZON_DAYS, ScheduleEntry
+from fbposter.qtui.views.publish import (
+    MINUTE_STEP,
+    ONCE,
+    SCHEDULE_HORIZON_DAYS,
+    ScheduleEntry,
+)
 
 URL = "https://www.facebook.com/groups/demo{}"
 
@@ -356,7 +361,7 @@ class TestTheFlowBetweenScreens:
             "compose",
             "groups",
             "publish",
-            "queue",
+            "dashboard",
             # Not a step: somewhere you go on purpose, at the foot.
             "settings",
         ]
@@ -389,10 +394,13 @@ class TestTheFlowBetweenScreens:
 class TestTheOnceDatePicker:
     """The 2028 report. The default was never wrong; the widget was."""
 
-    def test_it_defaults_to_the_current_time(self, qt_application):
-        """Not an hour out: an arbitrary offset is one more thing to undo."""
+    def test_it_defaults_to_the_next_quarter_hour(self, qt_application):
+        """Not an hour out: an arbitrary offset is one more thing to undo. The
+        minutes come every quarter hour, so the next one is the soonest."""
         entry = ScheduleEntry()
-        assert abs(entry.dateTime().secsTo(QDateTime.currentDateTime())) < 60
+        ahead = QDateTime.currentDateTime().secsTo(entry.dateTime())
+        assert -60 < ahead <= MINUTE_STEP * 60
+        assert entry.dateTime().time().minute() % MINUTE_STEP == 0
 
     def test_the_default_has_whole_minutes(self, qt_application):
         assert ScheduleEntry().dateTime().time().second() == 0
@@ -401,33 +409,35 @@ class TestTheOnceDatePicker:
         entry = ScheduleEntry()
         assert entry.dateTime().date().year() == QDateTime.currentDateTime().date().year()
 
-    def test_the_cursor_starts_on_the_minutes_not_the_year(self, qt_application):
-        """A stock QDateTimeEdit starts on the year, which is how one wheel
+    def test_the_cursor_starts_on_the_day_not_the_year(self, qt_application):
+        """A stock date field starts on the year, which is how one wheel
         notch became a year."""
         entry = ScheduleEntry()
-        assert entry.currentSection() == QDateTimeEdit.MinuteSection
+        assert entry.date_entry.currentSection() == QDateTimeEdit.DaySection
 
     def test_the_year_cannot_be_scrolled_into_the_future(self, qt_application):
         entry = ScheduleEntry()
-        entry.setCurrentSection(QDateTimeEdit.YearSection)
-        entry.stepBy(2)
+        entry.date_entry.setCurrentSection(QDateTimeEdit.YearSection)
+        entry.date_entry.stepBy(2)
         horizon = QDateTime.currentDateTime().addDays(SCHEDULE_HORIZON_DAYS)
         assert entry.dateTime() <= horizon
 
     def test_the_wheel_does_not_move_it_at_all(self, qt_application):
         entry = ScheduleEntry()
         before = entry.dateTime()
-        event = QWheelEvent(
-            QPoint(10, 10),
-            entry.mapToGlobal(QPoint(10, 10)),
-            QPoint(0, 0),
-            QPoint(0, 120),
-            Qt.NoButton,
-            Qt.NoModifier,
-            Qt.NoScrollPhase,
-            False,
-        )
-        entry.wheelEvent(event)
+        parts = (entry.date_entry, entry.time_picker.hour, entry.time_picker.minute)
+        for part in parts:
+            event = QWheelEvent(
+                QPoint(10, 10),
+                part.mapToGlobal(QPoint(10, 10)),
+                QPoint(0, 0),
+                QPoint(0, 120),
+                Qt.NoButton,
+                Qt.NoModifier,
+                Qt.NoScrollPhase,
+                False,
+            )
+            part.wheelEvent(event)
         assert entry.dateTime() == before
 
     def test_it_refuses_a_time_in_the_past(self, qt_application):
@@ -443,7 +453,8 @@ class TestTheOnceDatePicker:
         entry.setDateTime(stale)
         entry.reset()
         assert entry.dateTime() > stale
-        assert abs(entry.dateTime().secsTo(QDateTime.currentDateTime())) < 60
+        ahead = QDateTime.currentDateTime().secsTo(entry.dateTime())
+        assert -60 < ahead <= MINUTE_STEP * 60
 
     def test_reset_also_moves_the_floor_forward(self, qt_application):
         entry = ScheduleEntry()
