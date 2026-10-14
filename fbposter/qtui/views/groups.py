@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 )
 
 from fbposter import chrome
+from fbposter.connection import ConnectionState
 from fbposter.errors import FBPosterError
 
 from .. import theme
@@ -33,13 +34,19 @@ from ..widgets import card, clear
 # group's number instead, which is meaningless to the person who pasted a link.
 LOOKING_UP = "Looking up the group's name…"
 
+# Set at the first login and cleared once the groups have been read off
+# Facebook. A setting, not memory, so a read that fails is tried again at the
+# next connection, including after a restart.
+IMPORT_PENDING_KEY = "groups_import_pending"
+IMPORT_LABEL = "Get my groups from Facebook"
+IMPORTING_LABEL = "Getting your groups…"
+
 
 class GroupsView(QWidget):
     title = "Groups"
-    subtitle = (
-        "Tick the groups this post goes to. Leave out groups you are an admin "
-        "of, since Facebook can schedule posts there by itself."
-    )
+    # The admin advice is gone: the user chose (2026-10-13) to have every
+    # group added, the ones they manage included.
+    subtitle = "Tick the groups this post goes to."
 
     def __init__(self, app) -> None:
         super().__init__()
@@ -57,6 +64,8 @@ class GroupsView(QWidget):
         # the name arrives, rather than announcing a number.
         self._announce: set[int] = set()
         self._checkboxes: dict[int, QCheckBox] = {}
+        # True while the groups are being read off Facebook.
+        self._importing = False
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -75,7 +84,15 @@ class GroupsView(QWidget):
         # moment you type, taking the only explanation of the field with it.
         add_label = QLabel("Add a group")
         add_label.setObjectName("SectionHeading")
-        outer.addWidget(add_label)
+        heading_line = QHBoxLayout()
+        heading_line.addWidget(add_label)
+        heading_line.addStretch(1)
+        # Every group the account is in, read off Facebook. It also runs by
+        # itself once, after the first login (App._on_check_result).
+        self.import_button = QPushButton(IMPORT_LABEL)
+        self.import_button.clicked.connect(lambda: self.import_from_facebook())
+        heading_line.addWidget(self.import_button)
+        outer.addLayout(heading_line)
 
         entry = QHBoxLayout()
         self.url_entry = QLineEdit()
@@ -128,6 +145,7 @@ class GroupsView(QWidget):
 
     def on_show(self) -> None:
         self.refresh()
+        self.refresh_import_button()
         self._fetch_missing_names()
 
     def notify(self, message: str, level: str = "info") -> None:
@@ -237,6 +255,91 @@ class GroupsView(QWidget):
         name = group.display_name if group is not None else "The group"
         return f"{name} is back, in everything it was taken out of."
 
+    # -- reading the groups off Facebook -------------------------------------
+    def refresh_import_button(self) -> None:
+        """Usable only while connected, and not while a read is under way."""
+        connected = self.app.connection_state is ConnectionState.CONNECTED
+        self.import_button.setText(IMPORTING_LABEL if self._importing else IMPORT_LABEL)
+        self.import_button.setEnabled(
+            connected and not self._importing and self.app.group_finder is not None
+        )
+        self.import_button.setToolTip(
+            "" if connected else "Available once the app is connected to Facebook."
+        )
+
+    def import_from_facebook(self, automatic: bool = False) -> None:
+        """Read every group the account is in, and add the ones not in the list.
+
+        New groups start ticked (the user's choice). A group the user removed
+        is never added back (`GroupRepo.import_found`). The automatic run after
+        the first login says nothing when it fails: it is tried again at the
+        next connection, and the client never asked for it.
+        """
+        finder = self.app.group_finder
+        if self._importing or finder is None:
+            return
+        self._importing = True
+        self.refresh_import_button()
+
+        def work():
+            # Off the drawing thread, like the name lookups: the probe can
+            # take a second, and the read itself takes several.
+            if chrome.probe() is None:
+                return None
+            return finder.find()
+
+        def done(result):
+            self._importing = False
+            if result is None:
+                if not automatic:
+                    self.notify(
+                        "Chrome isn't connected, so your groups could not be read.",
+                        "warning",
+                    )
+            elif not result.ok:
+                if not automatic:
+                    self.notify(result.error, "error")
+            else:
+                self._add_found(result, automatic)
+            self.refresh_import_button()
+
+        def failed(exc):
+            self._importing = False
+            if not automatic:
+                self.notify(f"Your groups could not be read: {exc}", "error")
+            self.refresh_import_button()
+
+        self.app.run_in_background(work, done, failed)
+
+    def _add_found(self, result, automatic: bool) -> None:
+        new = self.app.group_repo.import_found(
+            (found.ref.identifier, found.ref.url, found.name) for found in result.groups
+        )
+        self.app.settings_repo.set(IMPORT_PENDING_KEY, "0")
+        for group in new:
+            self.app.set_group_selected(group.id, True)
+        self.refresh()
+        count = len(new)
+        if count:
+            message = (
+                f"Added {count} of your Facebook group{'s' if count != 1 else ''}, "
+                "all ticked. Untick any you do not want to post to."
+            )
+        elif automatic:
+            return  # nothing new, and nobody asked
+        else:
+            message = "No new groups found. Every group you are in is already in the list."
+        short = result.expected is not None and len(result.groups) < result.expected
+        if short:
+            message += (
+                f" Facebook lists {result.expected} groups and {len(result.groups)} "
+                "could be read; paste the link of any that is missing."
+            )
+        self.notify(message, "warning" if short else "success")
+        # A group whose name could not be read off the list gets the usual
+        # lookup, one at a time.
+        self._fetch_missing_names()
+
     # -- names -------------------------------------------------------------
     def look_up_missing_names(self) -> None:
         """Called when Chrome becomes reachable, which is the first moment a
@@ -344,7 +447,9 @@ class GroupsView(QWidget):
         clear(self.rows)
         self._checkboxes = {}
         if not groups:
-            note = QLabel("No groups yet. Paste a group URL above.")
+            note = QLabel(
+                f"No groups yet. Paste a group link above, or press {IMPORT_LABEL}."
+            )
             note.setObjectName("Muted")
             self.rows.addWidget(note)
             self.rows.addStretch(1)

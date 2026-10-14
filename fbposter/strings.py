@@ -40,6 +40,12 @@ def group_url(identifier: str) -> str:
     return f"{BASE_URL}/groups/{identifier}/"
 
 
+# Every group the account belongs to, the ones it manages included, under one
+# heading with the count in brackets: "All groups you've joined (12)". Read
+# live on 2026-10-13. See automation/groupfinder.py for what is read off it.
+YOUR_GROUPS_URL = f"{BASE_URL}/groups/joins/"
+
+
 # Where Facebook lists your own posts in a group, "Pending" first. Verified on
 # 2026-08-17: /pending/ is the *admin* moderation queue and is not this.
 MY_CONTENT_PATH = "my_pending_content"

@@ -226,6 +226,35 @@ class GroupRepo:
         assert stored is not None
         return stored
 
+    def import_found(self, found: Iterable[tuple[str, str, str]]) -> list[Group]:
+        """Add the groups read off Facebook, as (identifier, url, name).
+
+        Only groups not in the table at all are added. One the user removed is
+        archived, not gone, and it stays removed: unlike pasting its link,
+        which is the user asking for it back, an import is the app deciding,
+        and it must never overrule a removal. Facebook writes a group's short
+        name in any case it likes, so the match ignores case.
+
+        The name comes with it, so the Groups screen has nothing to look up.
+        Fifty nameless groups would be fifty page loads in a row.
+        """
+        default_cooldown = SettingsRepo(self.db).get_int("default_cooldown_hours", 8)
+        added: list[int] = []
+        with self.db.transaction() as connection:
+            for identifier, url, name in found:
+                known = connection.execute(
+                    "SELECT 1 FROM groups WHERE lower(identifier) = lower(?)", (identifier,)
+                ).fetchone()
+                if known:
+                    continue
+                cursor = connection.execute(
+                    "INSERT INTO groups (identifier, url, name, cooldown_hours, notes, created_at) "
+                    "VALUES (?, ?, ?, ?, '', ?)",
+                    (identifier, url, name, default_cooldown, to_iso(utcnow())),
+                )
+                added.append(cursor.lastrowid)
+        return [group for group in (self.get(group_id) for group_id in added) if group]
+
     def remove(self, group_id: int) -> Removal:
         """Take a group out of the list without destroying what went to it.
 

@@ -76,7 +76,7 @@ powershell -ExecutionPolicy Bypass -File packaging\build.ps1 -SkipInstaller  # .
 
 `status` exits 0 when logged in, 1 when not, 2 on error (Chrome not running, etc.).
 
-There is no linter or formatter configured, and no pytest config file. The suite is the whole check. Baseline: **1642 tests, 75-170s**. The spread is machine load, not the suite; the Qt GUI files are much of it. A run of *five minutes or more* means something is reaching the network; see the `SilentNamer` note below.
+There is no linter or formatter configured, and no pytest config file. The suite is the whole check. Baseline: **1676 tests, 75-170s**. The spread is machine load, not the suite; the Qt GUI files are much of it. A run of *five minutes or more* means something is reaching the network; see the `SilentNamer` note below.
 
 **Do not add `playwright install`.** It is unnecessary and was verified so against Chrome 150: the app attaches to the user's real Chrome over CDP and never launches Playwright's bundled Chromium, so the driver shipped inside the pip package is all that is required.
 
@@ -106,7 +106,7 @@ Scripts: `scripts/setup_always_on.ps1`: the laptop power plan and the logon task
 
 Packaging: `packaging/`: `fbposter.spec` (PyInstaller), `installer.iss` (Inno Setup), `build.ps1` (both, plus the suite), `entry.py`, `SETUP.md` (the client's one-pager). Its rules are in `packaging/CLAUDE.md`.
 
-Automation: `automation/poster.py` (`GroupPoster`: arrive → compose → type → attach → publish → verify, plus the read-only `probe`), `detect.py` (`classify` a page as OK / checkpoint / login / rate-limit / unavailable), `humanize.py` (`Humanizer`: keystroke timing, hovers, arrival scroll, the inter-group gap), `groupinfo.py` (read a group's display name off the `h1` **inside `[role="main"]`**; cosmetic, and must never raise into a caller).
+Automation: `automation/poster.py` (`GroupPoster`: arrive → compose → type → attach → publish → verify, plus the read-only `probe`), `detect.py` (`classify` a page as OK / checkpoint / login / rate-limit / unavailable), `humanize.py` (`Humanizer`: keystroke timing, hovers, arrival scroll, the inter-group gap), `groupinfo.py` (read a group's display name off the `h1` **inside `[role="main"]`**; cosmetic, and must never raise into a caller), `groupfinder.py` (read every group the account is in off Facebook's "Your groups" page; see "Reading the client's groups off Facebook").
 
 UI: `qtui/app.py` (window, sidebar, connection pill, paused line, worker-event pump, background thread helper), `qtui/views/` (compose, groups, publish, queue: the nav order is the flow; `settings`, at the foot of the sidebar; plus `welcome`, the first-run wizard, and `schedule_edit`, which edits one repeating post from its card on Publish; neither is in the sidebar), `qtui/theme.py` (palette + one stylesheet), `qtui/widgets.py` (`card`, `row`, `clear`, `replace_at`, `badge`, `segmented`, `AppStyle`), `qtui/icons.py` (the sidebar and status icons, as SVG strings), `qtui/assets/`.
 
@@ -188,6 +188,16 @@ The queue screen shows every unfinished batch however old, plus batches finished
 **Do not "tidy up" by deleting old rows.** `task_targets` is what the repeated-text rule and `sent_before` read, and what `posted_count_since` counts for the daily cap. Deleting history would silently switch off the app's main anti-ban protection and let a body be reposted. The screen would look tidier and the account would be at more risk. `tests/test_qtui_queue.py::TestNothingIsDeleted` guards both halves.
 
 A batch still pending or running is never hidden, whatever its age: hiding something still due to go out is worse than a cluttered screen.
+
+### Reading the client's groups off Facebook
+
+A client used to paste every group link by hand. Now the app reads them off Facebook's "Your groups" page (`strings.YOUR_GROUPS_URL`, `/groups/joins/`): by itself once, after the first login, and from the "Get my groups from Facebook" button on Groups after that. The user's choices, 2026-10-13: every group is added, the ones the account manages included; new ones start ticked; a group the user removed is never added back.
+
+- **Read live on 2026-10-13** (an English account in 12 groups, one managed): inside `[role="main"]`, one heading with the count in brackets ("All groups you've joined (12)") and every group under it, the managed one included. Each group has three links to the same address: its picture (no text), its name, and a "View group" button. **The button carries an `aria-label` and the name link does not**, so the name is read without a word of Facebook's, in any language; taking the longest text would have named a group called "TRY" "View group". Addresses use the number, or the group's short name when it has one. All 12 were there on arrival; a longer list is assumed to load as it is scrolled, which is unverified live.
+- **Read only, and bounded.** One page load, scrolled with `Humanizer.browse`, links read from `[role="main"]` only (`groups_from_links`, pure). It stops at the heading's count, after `QUIET_SCROLLS` (3) scrolls with nothing new, at `MAX_SCROLLS` (60), or after `TIME_LIMIT_S` (180s). It clicks and types nothing. A checkpoint, login or block page adds nothing and says so; a page with neither a list nor a heading is an error, never "no groups".
+- **`GroupRepo.import_found` adds only identifiers not in the table, active or archived**, matched ignoring case. Unlike pasting a link, which is the user asking for a group back, an import is the app deciding, and it must not overrule a removal. The names come with the groups, because fifty nameless groups would be fifty page loads in a row through the name lookup. A group pasted by number and listed by its short name (or the reverse) is not recognised as the same one and is added twice; it can be removed.
+- **The first login is the moment `SETUP_COMPLETE_KEY` is first set.** That sets `groups_import_pending`, and the import runs on each `CONNECTED` until a read succeeds; a failed automatic read says nothing and waits for the next connection, never a timer. A client upgrading from an older version is already set up and never gets an automatic import. Switching Facebook account does not import either; the button does.
+- **`App.group_finder` is `None` until `run()` switches it on**, like `_clear_stuck_tabs`: a window the suite builds must not open Facebook even with the app's Chrome running on the machine. `tests/test_group_import.py` covers all of it with a fake page and a stub finder.
 
 ### Removing a group archives it; it has never been safe to delete one
 
@@ -278,7 +288,7 @@ Nothing in the suite opens Chrome, hits Facebook, or waits out a real delay. Kee
 - **`tests/fake_page.py`** stands in for a Playwright `Page`, recording every call into `page.calls`. It implements only the surface `GroupPoster` actually uses, so a poster that starts calling something new fails loudly instead of quietly passing. Its knobs (`missing`, `redirect_to`, `body_text`, `wait_fails_for`, `never_detaches`) are how the halt paths, the slow-publish path and the dry-run boundary get exercised.
 - **`Humanizer(rng=, sleep=)`**: pass a seeded `Random` and a no-op sleep and the human pacing is deterministic and instant.
 - **`PostingWorker(poster=, now=, sleep=, blocker=, tick_seconds=)`**: the whole loop, including the inter-group gap and crash recovery, runs without a thread, a browser or the wall clock.
-- **`App(check_fn=, db=, group_namer=)`**: a temporary database and `SilentNamer`. Constructing an `App` deliberately does not start the worker.
+- **`App(check_fn=, db=, group_namer=)`**: a temporary database and `SilentNamer`. Constructing an `App` deliberately does not start the worker. `App.group_finder` is `None` (switched off) unless a test passes a stub; `run()` switches the live one on.
 - **Looking inside Chrome is inert until `qtui.app.run()` switches it on.** `session.before_attach` is `None`, and a window's `_clear_stuck_tabs` and `_restart_chrome` do nothing, unless `run()` wires up `tabs.py`. The suite never does, so no test can look inside, let alone close a tab in, the app's Chrome running on the developer's machine. `tests/test_tabs.py` tests the DevTools client against a WebSocket server on a thread of its own.
 - **Qt tests run offscreen.** `tests/conftest.py` has a session-scoped `qt_application` (one `QApplication`, `QT_QPA_PLATFORM=offscreen`) and a per-test `qt_app` window on a temporary database. Offscreen is not tidiness: this app's central promise is that it never takes focus, and a suite that popped real windows would break that on the developer's own machine every time it ran. Drive views through their own methods rather than synthesised clicks. Note that `deleteLater()` widgets keep painting until the event loop turns, so anything that reads pixels needs a real loop turn first. Two "duplicate row" and "giant blue rectangle" scares came from screenshotting without one.
 
@@ -461,7 +471,7 @@ These are safety requirements, not preferences. The user posts as an ordinary gr
 
 - **Enforce content variation.** Per Meta's Spam policy, accounts get restricted at *low* frequencies when repetitive content is present. At this volume that is the actual ban vector, not post count. Warn before byte-identical text goes to more than two groups; make per-group editing easy.
 
-Expected volume is low by design: 2-3 posts/day to 5-7 groups each, with content that varies between runs. Tune for looking normal, never for throughput. Groups where the user is an admin should be excluded: Facebook schedules those natively with no automation needed.
+Expected volume is low by design: 2-3 posts/day to 5-7 groups each, with content that varies between runs. Tune for looking normal, never for throughput. Groups where the user is an admin used to be left out, since Facebook schedules those natively; the user reversed that on 2026-10-13, and reading the groups off Facebook adds them like any other.
 
 ## Scope Discipline
 

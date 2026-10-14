@@ -64,6 +64,7 @@ The **connection indicator lives in the sidebar**, not in a screen of its own: i
     *   Templates are a starting point, not a lock. The user edits before sending.
 *   **Groups**: both the recipient picker for this post and the list itself, deliberately one screen.
     *   Tick the groups this post goes to; "Select all" / "Clear"; the count is always visible.
+    *   The client's groups are read off Facebook by themselves after the first login, and with "Get my groups from Facebook" later; they start ticked, and a removed group is never added back.
     *   Add Facebook group URLs right here (only groups where the user can post). A group added this way starts ticked.
     *   URLs are reduced to a canonical group identifier, so the same group pasted in two different forms cannot be added (or posted to) twice.
     *   Per-group record of the last successful post time, so the UI can warn about posting to the same group too soon.

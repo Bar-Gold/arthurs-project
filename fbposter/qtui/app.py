@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 )
 
 from .. import always_on, chrome, config, keepalive, login, onboarding, power, session, tabs
+from ..automation.groupfinder import LiveGroupFinder
 from ..automation.groupinfo import LiveGroupNamer
 from ..db import Database
 from ..db.models import SCHEDULE_ACTIVE
@@ -35,7 +36,7 @@ from ..connection import ConnectionResult, ConnectionState, check_connection
 from ..worker import PostingWorker
 from . import icons, theme
 from .views.compose import ComposeView
-from .views.groups import GroupsView
+from .views.groups import IMPORT_PENDING_KEY, GroupsView
 from .views.publish import PublishView
 from .views.queue import QueueView
 from .views.schedule_edit import ScheduleEditView
@@ -125,7 +126,7 @@ class App(QMainWindow):
     _worker_event = Signal(object)
 
     def __init__(self, check_fn=check_connection, db: Database | None = None,
-                 group_namer=None, confirm_close=None) -> None:
+                 group_namer=None, confirm_close=None, group_finder=None) -> None:
         super().__init__()
         self._check_fn = check_fn
         # The real one by default, which opens a modal dialog. closeEvent asks
@@ -136,6 +137,11 @@ class App(QMainWindow):
         self.worker: PostingWorker | None = None
         self.worker_events: "queue.Queue" = queue.Queue()
         self.group_namer = group_namer if group_namer is not None else LiveGroupNamer()
+        # Reads the account's groups off Facebook (automation/groupfinder.py).
+        # None means switched off, and that is the default: run() switches the
+        # real one on, so no window the suite builds can open Facebook, even
+        # with the app's Chrome running on the machine.
+        self.group_finder = group_finder
         self.db = db if db is not None else Database(config.database_path())
         self.group_repo = GroupRepo(self.db)
         self.template_repo = TemplateRepo(self.db)
@@ -559,6 +565,12 @@ class App(QMainWindow):
         if result.state is ConnectionState.CONNECTED:
             # Only a real connection retires the wizard. Anything less and the
             # window goes on opening there, which is where the fix is.
+            if self.settings_repo.get(SETUP_COMPLETE_KEY) != "1":
+                # The first login: the client's groups are read off Facebook
+                # next (below), so nobody pastes links. Stored, so a read that
+                # fails is tried at the next connection. A client upgrading
+                # from an older version is already set up, so never gets it.
+                self.settings_repo.set(IMPORT_PENDING_KEY, "1")
             self.settings_repo.set(SETUP_COMPLETE_KEY, "1")
         self._set_connection(result.state, result.detail)
         self._refresh_welcome()
@@ -568,6 +580,8 @@ class App(QMainWindow):
             # was next opened. This is the first moment it can be read. Only
             # nameless groups are looked up, so usually this does nothing.
             self.views["groups"].look_up_missing_names()
+            if self.settings_repo.get(IMPORT_PENDING_KEY) == "1":
+                self.views["groups"].import_from_facebook(automatic=True)
 
         if self._startup_retry_pending:
             self._startup_retry_pending = False
@@ -615,6 +629,9 @@ class App(QMainWindow):
         settings = self.views.get("settings")
         if settings is not None:
             settings.refresh_account()
+        groups = self.views.get("groups")
+        if groups is not None:
+            groups.refresh_import_button()
         if announce and detail:
             self.toast(detail, level)
 
@@ -982,6 +999,7 @@ def run() -> int:
     # only it may restart one. Every window the suite builds keeps the inert
     # defaults, so no test can reach a Chrome running on the machine.
     window._clear_stuck_tabs = lambda: tabs.clear_stuck_tabs()
+    window.group_finder = LiveGroupFinder()
     window._restart_chrome = lambda: tabs.restart_chrome()
     window.always_on = always_on.AlwaysOn()
     session.before_attach = tabs.clear_stuck_tabs
