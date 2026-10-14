@@ -343,12 +343,13 @@ class TestTheUsersOwnChromeIsNeverTouched:
     def test_nothing_in_the_app_closes_or_kills_a_chrome(self):
         """Read as code, not text: the comments that explain the ban mention it.
 
-        One exception, and only one, since 2026-09-27: `tabs.restart_chrome`,
-        the last resort for a connection check that has stalled, sends
-        `Browser.close` -- to the app's own Chrome, once its process has been
+        One exception, and only one place: `tabs._close_owned` sends
+        `Browser.close` to the app's own Chrome, once its process has been
         shown to run on the app's profile (tests/test_tabs.py pins that a
-        Chrome on any other profile is never closed). Nothing kills a process,
-        anywhere.
+        Chrome on any other profile is never closed). Two things use it:
+        `restart_chrome`, the last resort for a stalled check (2026-09-27),
+        and `close_chrome`, when the app closes (2026-10-14). Nothing kills a
+        process, anywhere.
         """
         import ast
         from pathlib import Path
@@ -357,7 +358,7 @@ class TestTheUsersOwnChromeIsNeverTouched:
 
         banned_calls = {"kill", "terminate", "TerminateProcess"}
         banned_text = ("taskkill", "Stop-Process", "Browser.close")
-        allowed = {("tabs.py", "restart_chrome", "Browser.close")}
+        allowed = {("tabs.py", "_close_owned", "Browser.close")}
         offenders = []
         for path in Path(fbposter.__file__).parent.rglob("*.py"):
             tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -383,14 +384,18 @@ class TestTheUsersOwnChromeIsNeverTouched:
         assert sorted(set(offenders)) == []
 
     def test_the_one_close_is_behind_the_proof(self):
-        """restart_chrome asks whose Chrome it is before it can reach the close."""
+        """The close asks whose Chrome it is before it can reach the close,
+        and both its callers hold off while a post is open."""
         import inspect
 
         from fbposter import tabs
 
-        source = inspect.getsource(tabs.restart_chrome)
+        source = inspect.getsource(tabs._close_owned)
         assert source.index("_owned_client(") < source.index('"Browser.close"')
         assert "return NOT_OURS" in source
+        for caller in (tabs.restart_chrome, tabs.close_chrome):
+            body = inspect.getsource(caller)
+            assert body.index("if _posting:") < body.index("_close_owned(")
 
 
 # -- a Chrome whose port answers but whose tabs do not --------------------------

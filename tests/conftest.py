@@ -24,6 +24,9 @@ class SilentNamer:
     def name_for(self, url):
         return ""
 
+    def info_for(self, urls):
+        return {}
+
 
 @pytest.fixture(scope="session")
 def qt_application():

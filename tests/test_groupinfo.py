@@ -219,3 +219,142 @@ class TestTheNameIsReadAsSoonAsItIsThere:
         assert kinds[:2] == ["goto", "wait_for_function"]
         assert kinds[-1] == "close"
         assert all(call[1] < 1000 for call in page.calls if call[0] == "wait_for_timeout")
+
+
+class MembersPage(FakePage):
+    """Answers READ_MEMBERS with `members`, and READ_NAME as FakePage does."""
+
+    def __init__(self, members="", heading="TRY", fails_on=None) -> None:
+        super().__init__(heading=heading)
+        self.members = members
+        self.fails_on = fails_on
+        self.calls = []
+
+    def goto(self, url, **kwargs):
+        self.calls.append(("goto", url))
+        if url == self.fails_on:
+            raise RuntimeError("page did not load")
+
+    def wait_for_function(self, script, **kwargs):
+        self.calls.append(("wait_for_function", script))
+
+    def wait_for_timeout(self, ms):
+        pass
+
+    def evaluate(self, script):
+        from fbposter.automation.groupinfo import READ_MEMBERS
+
+        if script == READ_MEMBERS:
+            return self.members
+        return super().evaluate(script)
+
+    def close(self):
+        self.calls.append(("close",))
+
+
+class TestTheMemberCount:
+    """Read live on 2026-10-14: "Private group · 2 members" under the name,
+    the count a link to the member list, with no aria-label."""
+
+    def test_it_is_kept_as_facebook_wrote_it(self):
+        from fbposter.automation.groupinfo import read_members
+
+        assert read_members(MembersPage("12K members")) == "12K members"
+        assert read_members(MembersPage("\u200f12 אלף חברים")) == "12 אלף חברים"
+
+    def test_no_count_on_the_page_reads_as_empty(self):
+        from fbposter.automation.groupinfo import read_members
+
+        assert read_members(MembersPage("")) == ""
+
+    def test_a_page_that_blows_up_yields_nothing_rather_than_raising(self):
+        from fbposter.automation.groupinfo import read_members
+
+        assert read_members(FakePage(raises=True)) == ""
+
+    def test_it_is_found_by_its_address_not_by_a_word(self):
+        """Any language: the member-list link, inside the group's own main
+        landmark, skipping the labelled "See everyone" beside it."""
+        from fbposter.automation.groupinfo import READ_MEMBERS
+
+        assert '[role="main"]' in READ_MEMBERS
+        assert 'a[href*="/members"]' in READ_MEMBERS
+        assert "hasAttribute('aria-label')" in READ_MEMBERS
+        assert "members" not in READ_MEMBERS.replace('"/members"', "")
+
+
+class TestOneVisitReadsBoth:
+    def attach(self, monkeypatch, page):
+        from contextlib import contextmanager
+
+        from fbposter.automation import groupinfo
+
+        class Context:
+            def new_page(self):
+                return page
+
+        @contextmanager
+        def attach(*_a, **_k):
+            yield Context()
+
+        monkeypatch.setattr(groupinfo.session, "attach", attach)
+
+    def test_name_and_count_come_from_the_same_page(self, monkeypatch):
+        from fbposter.automation.groupinfo import GroupInfo
+
+        page = MembersPage("2 members")
+        self.attach(monkeypatch, page)
+        url = "https://www.facebook.com/groups/1/"
+        assert LiveGroupNamer().info_for([url]) == {url: GroupInfo("TRY", "2 members")}
+        assert [c[0] for c in page.calls].count("goto") == 1
+        assert page.calls[-1] == ("close",)
+
+    def test_a_page_that_did_not_load_is_left_out_and_still_closed(self, monkeypatch):
+        """Left out, not empty: the screen tells "not tried" from "no count"."""
+        one, two = "https://www.facebook.com/groups/1/", "https://www.facebook.com/groups/2/"
+        page = MembersPage("2 members", fails_on=one)
+        self.attach(monkeypatch, page)
+        assert list(LiveGroupNamer().info_for([one, two])) == [two]
+        assert [c for c in page.calls if c[0] == "close"] == [("close",), ("close",)]
+
+
+class TestOneTabForTheWholeSweep:
+    """The user's request (2026-10-14): one tab, going from group to group,
+    rather than a new tab for each."""
+
+    URLS = [f"https://www.facebook.com/groups/{n}/" for n in (1, 2, 3)]
+
+    def run(self, monkeypatch, page):
+        from contextlib import contextmanager
+
+        from fbposter.automation import groupinfo
+
+        opened = []
+
+        class Context:
+            def new_page(self):
+                opened.append(1)
+                return page
+
+        @contextmanager
+        def attach(*_a, **_k):
+            yield Context()
+
+        monkeypatch.setattr(groupinfo.session, "attach", attach)
+        return LiveGroupNamer().info_for(self.URLS), opened
+
+    def test_every_group_is_read_in_one_tab_closed_at_the_end(self, monkeypatch):
+        page = MembersPage("2 members")
+        found, opened = self.run(monkeypatch, page)
+        assert list(found) == self.URLS
+        assert len(opened) == 1
+        assert [c[1] for c in page.calls if c[0] == "goto"] == self.URLS
+        assert [c for c in page.calls if c[0] == "close"] == [("close",)]
+        assert page.calls[-1] == ("close",)
+
+    def test_a_failed_group_gets_the_rest_a_fresh_tab(self, monkeypatch):
+        page = MembersPage("2 members", fails_on=self.URLS[1])
+        found, opened = self.run(monkeypatch, page)
+        assert list(found) == [self.URLS[0], self.URLS[2]]
+        assert len(opened) == 2
+        assert page.calls[-1] == ("close",)

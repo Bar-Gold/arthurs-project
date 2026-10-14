@@ -268,6 +268,12 @@ class TestUndoingARemove:
         qt_app.group_repo.add_from_url(one.url)
         assert qt_app.group_repo.restore(one.id, removal) is False
 
+    def test_not_once_it_has_been_brought_back(self, qt_app, groups):
+        one, _two = groups
+        removal = qt_app.group_repo.remove(one.id)
+        qt_app.group_repo.bring_back(one.id)
+        assert qt_app.group_repo.restore(one.id, removal) is False
+
 
 class TestWarningsLookLikeWarnings:
     def test_the_publish_summary_colours_its_warnings_only(self, qt_app, groups):

@@ -63,10 +63,13 @@ The **connection indicator lives in the sidebar**, not in a screen of its own: i
     *   "Save as Template" storing text + media paths for reuse.
     *   Templates are a starting point, not a lock. The user edits before sending.
 *   **Groups**: both the recipient picker for this post and the list itself, deliberately one screen.
-    *   Tick the groups this post goes to; "Select all" / "Clear"; the count is always visible.
+    *   Tick the groups this post goes to, by clicking anywhere on a group's row; "Select all" / "Clear"; the count is always visible.
+    *   Each group shows its member count as Facebook writes it ("12K members"), read off the group's page once, in the same visit as its name.
     *   The client's groups are read off Facebook by themselves after the first login, and with "Get my groups from Facebook" later; they start ticked, and a removed group is never added back.
-    *   Add Facebook group URLs right here (only groups where the user can post). A group added this way starts ticked.
-    *   URLs are reduced to a canonical group identifier, so the same group pasted in two different forms cannot be added (or posted to) twice.
+    *   A search box narrows the list by name; "Select all" / "Clear" then act on the matches only.
+    *   There is no box for adding a group by its link (removed 2026-10-14): every group comes off Facebook.
+    *   A removed group can be brought back from "Show removed groups" under the list, with its posting history. It starts ticked.
+    *   Group addresses are reduced to a canonical group identifier, so the same group cannot be added (or posted to) twice.
     *   Per-group record of the last successful post time, so the UI can warn about posting to the same group too soon.
     *   Cooldown defaults to **8 hours** (lowered from 24, so two or three posts a day to one group is possible).
 *   **Publish**: the one place that decides *when*. Compose owns the text and the groups and carries no timing controls at all.

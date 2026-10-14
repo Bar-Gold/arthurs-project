@@ -113,6 +113,9 @@ class Group:
     notes: str = ""
     archived: bool = False
     created_at: datetime | None = None
+    # As Facebook writes it ("12K members"); empty until read.
+    members: str = ""
+    members_read_at: datetime | None = None
 
     @classmethod
     def from_row(cls, row: Mapping[str, Any]) -> "Group":
@@ -126,6 +129,8 @@ class Group:
             notes=row["notes"] or "",
             archived=bool(row["archived"]),
             created_at=from_iso(row["created_at"]),
+            members=row["members"] or "",
+            members_read_at=from_iso(row["members_read_at"]),
         )
 
     @property

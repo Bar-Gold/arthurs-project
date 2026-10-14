@@ -1,8 +1,9 @@
-"""Reading a group's display name off its page.
+"""Reading a group's display name and member count off its page.
 
 Purely cosmetic: it turns "2509198906266893" in the Groups list into
-"bar-test". Nothing here may raise into the caller, because failing to look up
-a name must never stop a group being added or a batch being queued.
+"bar-test", with "2 members" beside it. Nothing here may raise into the
+caller, because failing to look up a name must never stop a group being added
+or a batch being queued.
 
 A logged-in group page carries no og:title, so the name comes from the group
 heading, with the tab title as a fallback.
@@ -10,10 +11,12 @@ heading, with the tab title as a fallback.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Protocol
 
 from .. import session
 from ..groups import clean_group_title
+from ..text import strip_invisible
 
 NAV_TIMEOUT_MS = 45_000
 
@@ -67,10 +70,45 @@ READ_NAME = """
 """
 
 
+# The member count, as Facebook writes it ("2 members"), read live on
+# 2026-10-14 off an English account. It sits in the line under the group's
+# name, "Private group · 2 members", and is a link to the group's member list.
+# The other link there, "See everyone", carries an aria-label; the count's
+# link does not. So it is found by its address and the missing label, never by
+# a word of Facebook's, and the text is kept as Facebook wrote it, in the
+# account's own language. Only an English account and a two-member group were
+# seen live; a large group ("12K members") is assumed to look the same.
+READ_MEMBERS = """
+() => {
+  const main = document.querySelector('[role="main"]');
+  if (!main) return '';
+  for (const a of main.querySelectorAll('a[href*="/members"]')) {
+    if (a.hasAttribute('aria-label')) continue;
+    const text = (a.innerText || '').trim();
+    if (text) return text;
+  }
+  return '';
+}
+"""
+HAS_MEMBERS = "() => !!(" + READ_MEMBERS.strip() + ")()"
+# It arrived with the heading when read live; this only covers a slow page.
+MEMBERS_TIMEOUT_MS = 3_000
+
+
+@dataclass(frozen=True)
+class GroupInfo:
+    """What one visit to a group's page found. Either may be empty."""
+
+    name: str
+    members: str = ""
+
+
 class GroupNamer(Protocol):
-    """One method, so the UI can be tested without a browser."""
+    """So the UI can be tested without a browser."""
 
     def name_for(self, group_url: str) -> str: ...
+
+    def info_for(self, group_urls: list[str]) -> dict[str, GroupInfo]: ...
 
 
 def wait_for_heading(page: Any) -> bool:
@@ -91,6 +129,23 @@ def wait_for_heading(page: Any) -> bool:
     return True
 
 
+def read_members(page: Any) -> str:
+    """The member count on an already-loaded group page, or "". Never raises."""
+    try:
+        page.wait_for_function(
+            HAS_MEMBERS, polling=HEADING_POLL_MS, timeout=MEMBERS_TIMEOUT_MS
+        )
+    except Exception:
+        pass  # read anyway: an empty answer is the honest one
+    try:
+        text = page.evaluate(READ_MEMBERS)
+    except Exception:
+        return ""
+    if not isinstance(text, str):
+        return ""
+    return " ".join(strip_invisible(text).split())
+
+
 def read_name(page: Any) -> str:
     """Extract a name from an already-loaded group page."""
     try:
@@ -105,38 +160,60 @@ def read_name(page: Any) -> str:
 
 
 class LiveGroupNamer:
-    """Fetches names from real Chrome, reusing one attachment for a whole sweep.
+    """Fetches names from real Chrome: one connection and one tab per sweep.
 
-    Opening a session per group would mean a burst of tabs the moment the
-    Groups screen is opened; `names_for` walks them on a single connection
-    instead.
+    The tab goes from group to group and is closed when the sweep ends (the
+    user's request, 2026-10-14). It used to be a new tab for every group. One
+    tab does not mean fewer visits to Facebook, since every group's count is
+    on its own page, but it is how a person would go through them.
     """
 
     def name_for(self, group_url: str) -> str:
         return self.names_for([group_url]).get(group_url, "")
 
     def names_for(self, group_urls: list[str]) -> dict[str, str]:
-        names: dict[str, str] = {}
+        return {url: info.name for url, info in self.info_for(group_urls).items()}
+
+    def info_for(self, group_urls: list[str]) -> dict[str, GroupInfo]:
+        """Name and member count for each group whose page loaded.
+
+        A group whose page could not be loaded is left out, so the caller can
+        tell "not tried" from "tried, and the page had no count".
+        """
+        found: dict[str, GroupInfo] = {}
         try:
             with session.attach() as context:
-                for url in group_urls:
-                    page = context.new_page()
-                    try:
-                        # "commit", not "domcontentloaded": the heading is
-                        # watched for from the first byte, and read as soon
-                        # as it is there.
-                        page.goto(url, timeout=NAV_TIMEOUT_MS, wait_until="commit")
-                        wait_for_heading(page)
-                        names[url] = read_name(page)
-                    except Exception:
-                        # One unreachable group must not abandon the rest.
-                        names[url] = ""
-                    finally:
+                page = None
+                try:
+                    for url in group_urls:
+                        if page is None:
+                            page = context.new_page()
                         try:
-                            page.close()
+                            # "commit", not "domcontentloaded": the heading is
+                            # watched for from the first byte, and read as
+                            # soon as it is there. A navigation that has
+                            # committed has replaced the last group's page,
+                            # so nothing of it can be read by mistake.
+                            page.goto(url, timeout=NAV_TIMEOUT_MS, wait_until="commit")
+                            wait_for_heading(page)
+                            found[url] = GroupInfo(read_name(page), read_members(page))
                         except Exception:
-                            pass
+                            # One unreachable group must not abandon the rest,
+                            # and the tab it failed in may be in any state, so
+                            # the next group gets a fresh one.
+                            _close(page)
+                            page = None
+                finally:
+                    if page is not None:
+                        _close(page)
         except Exception:
-            # No Chrome, no session: every name simply stays unknown.
+            # No Chrome, no session: everything simply stays unknown.
             pass
-        return names
+        return found
+
+
+def _close(page: Any) -> None:
+    try:
+        page.close()
+    except Exception:
+        pass

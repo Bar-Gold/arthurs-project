@@ -350,6 +350,18 @@ def _migration_011(connection: sqlite3.Connection) -> None:
     )
 
 
+def _migration_012(connection: sqlite3.Connection) -> None:
+    """Each group's member count, as Facebook writes it ("12K members").
+
+    Read off the group's own page, in the same visit as its name (2026-10-14).
+    `members_read_at` is when that was last tried, so a count that cannot be
+    read is not tried again on every visit to the Groups screen: every try is
+    a real page load. Cosmetic only, like `name`.
+    """
+    connection.execute("ALTER TABLE groups ADD COLUMN members TEXT NOT NULL DEFAULT ''")
+    connection.execute("ALTER TABLE groups ADD COLUMN members_read_at TEXT")
+
+
 # Index i applies when user_version == i, and bumps it to i + 1.
 MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _migration_001,
@@ -363,6 +375,7 @@ MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _migration_009,
     _migration_010,
     _migration_011,
+    _migration_012,
 ]
 
 LATEST_VERSION = len(MIGRATIONS)

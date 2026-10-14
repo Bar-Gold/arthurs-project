@@ -56,6 +56,10 @@ KEEP = object()
 # What a queued post records for a group the user removed before its turn.
 GROUP_REMOVED = "You removed this group from your list before its turn."
 
+# A member count that could not be read is tried again after this long, not
+# on every visit to the Groups screen (`GroupRepo.missing_details`).
+MEMBERS_RETRY = timedelta(days=1)
+
 
 class Removal(NamedTuple):
     """What removing a group took it out of, for the Groups screen to say.
@@ -197,10 +201,10 @@ class GroupRepo:
             if not existing.archived:
                 raise DuplicateGroup(f"Group {ref.identifier} is already in the list.")
             # Removing a group archives it, so the row is still here holding
-            # every post ever made to it. Pasting the URL again is how the user
-            # undoes a removal, and it has to bring the history back with it --
-            # returning a fresh empty group would be the repeated-text guard
-            # going blank, which is the thing archiving exists to prevent.
+            # every post ever made to it. Adding it again has to bring the
+            # history back with it -- returning a fresh empty group would be
+            # the repeated-text guard going blank, which is the thing archiving
+            # exists to prevent.
             self.db.write("UPDATE groups SET archived = 0 WHERE id = ?", (existing.id,))
             restored = self.get(existing.id)
             assert restored is not None
@@ -268,8 +272,8 @@ class GroupRepo:
         on screen to show it had happened.
 
         Archiving hides the row and keeps the history. `list()` already
-        excludes archived groups, so the screens need no change; `add_from_url`
-        un-archives, so pasting the URL again is the undo.
+        excludes archived groups, so the screens need no change; `bring_back`
+        un-archives, from the Removed list on the Groups screen.
 
         It also takes the group out of every repeating post and every queued
         post still to go out, and adding it back puts it in neither: the user's
@@ -355,8 +359,8 @@ class GroupRepo:
         Puts back exactly what `remove` changed, and only what is still as it
         left it: a repeating post deleted since stays deleted, and a queued
         post's turn is handed back only while it still reads "removed". Undo
-        is not re-adding -- pasting the link again still brings the group back
-        into neither -- it is taking back a click a moment ago.
+        is not re-adding -- "Bring back" on the Removed list still puts the
+        group back into neither -- it is taking back a click a moment ago.
         """
         with self.db.transaction() as connection:
             row = connection.execute(
@@ -385,6 +389,27 @@ class GroupRepo:
                 )
         return True
 
+    def removed(self) -> list[Group]:
+        """The groups the user removed, for the Groups screen's Removed list."""
+        rows = self.db.query("SELECT * FROM groups WHERE archived = 1 ORDER BY id")
+        return [Group.from_row(row) for row in rows]
+
+    def bring_back(self, group_id: int) -> Group | None:
+        """Put a removed group back in the list, history and all.
+
+        The Removed list's "Bring back", which replaced pasting the link again
+        when the paste box went (2026-10-14). Same rule as that was: the
+        history comes back, so the repeat guard still knows what the group was
+        sent, but its place in repeating and queued posts does not. Only Undo,
+        straight after removing, puts those back (`restore`). None if the
+        group is gone or already back.
+        """
+        with self.db.transaction() as connection:
+            changed = connection.execute(
+                "UPDATE groups SET archived = 0 WHERE id = ? AND archived = 1", (group_id,)
+            ).rowcount
+        return self.get(group_id) if changed else None
+
     def active(self, group_id: int) -> "Group | None":
         """The group, but only if it is still in the user's list.
 
@@ -406,6 +431,32 @@ class GroupRepo:
             "SELECT * FROM groups WHERE archived = 0 AND TRIM(name) = '' ORDER BY id"
         )
         return [Group.from_row(row) for row in rows]
+
+    def missing_details(self, now: datetime | None = None) -> list[Group]:
+        """Groups whose page is worth opening: no name yet, or no member count.
+
+        A member count that could not be read is tried again only after
+        `MEMBERS_RETRY`, not on every visit to the Groups screen. Every try is
+        a real page load, and if Facebook ever moves the count, every group
+        would otherwise be reopened each time the screen is shown.
+        """
+        before = to_iso((now or utcnow()) - MEMBERS_RETRY)
+        rows = self.db.query(
+            "SELECT * FROM groups WHERE archived = 0 AND ("
+            "  TRIM(name) = ''"
+            "  OR (members = '' AND (members_read_at IS NULL OR members_read_at < ?))"
+            ") ORDER BY id",
+            (before,),
+        )
+        return [Group.from_row(row) for row in rows]
+
+    def set_members(self, group_id: int, members: str, when: datetime | None = None) -> None:
+        """Store the member count read off the group's page, even an empty one,
+        so a count that cannot be read waits `MEMBERS_RETRY` before the next try."""
+        self.db.write(
+            "UPDATE groups SET members = ?, members_read_at = ? WHERE id = ?",
+            (members, to_iso(when or utcnow()), group_id),
+        )
 
     def set_cooldown(self, group_id: int, hours: int) -> None:
         self.db.write("UPDATE groups SET cooldown_hours = ? WHERE id = ?", (hours, group_id))

@@ -20,7 +20,7 @@ from fbposter.db.models import (
     TASK_RUNNING,
     utcnow,
 )
-from fbposter.db.repo import GroupRepo, SettingsRepo, TaskRepo, TemplateRepo
+from fbposter.db.repo import GroupRepo, ScheduleRepo, SettingsRepo, TaskRepo, TemplateRepo
 from fbposter.db.schema import DEFAULT_SETTINGS, LATEST_VERSION, current_version
 from fbposter.errors import DuplicateGroup, InvalidGroupURL
 
@@ -712,6 +712,44 @@ class TestRemovingAGroupIsNotForgettingIt:
         assert groups.active(9999) is None
 
 
+class TestBringingARemovedGroupBack:
+    """The Removed list on the Groups screen, which replaced pasting the link
+    again when the paste box went. Same rules as that was."""
+
+    def test_removed_lists_only_removed_groups(self, db, groups):
+        keep = groups.add_from_url("https://www.facebook.com/groups/keep")
+        gone = groups.add_from_url("https://www.facebook.com/groups/gone")
+        groups.remove(gone.id)
+        assert [g.id for g in groups.removed()] == [gone.id]
+        assert [g.id for g in groups.list()] == [keep.id]
+
+    def test_it_comes_back_with_its_history(self, db, groups):
+        group, body = TestRemovingAGroupIsNotForgettingIt().posted(db, groups)
+        groups.remove(group.id)
+        back = groups.bring_back(group.id)
+        assert back is not None and back.id == group.id
+        assert groups.active(group.id) is not None
+        assert groups.recent_bodies(group.id) == [body]
+        assert groups.removed() == []
+
+    def test_it_comes_back_in_no_repeating_post(self, db, groups):
+        group = groups.add_from_url("https://www.facebook.com/groups/one")
+        schedules = ScheduleRepo(db)
+        schedule = schedules.create(
+            name="Bikes", bodies=["one", "two"], group_ids=[group.id], times=["09:00"]
+        )
+        groups.remove(group.id)
+        groups.bring_back(group.id)
+        assert schedules.get(schedule.id).group_ids == []
+
+    def test_a_group_on_the_list_is_not_brought_back(self, db, groups):
+        group = groups.add_from_url("https://www.facebook.com/groups/one")
+        assert groups.bring_back(group.id) is None
+
+    def test_a_group_that_never_existed(self, db, groups):
+        assert groups.bring_back(9999) is None
+
+
 class TestCountingWhatIsStillDue:
     """Read when the window is closing, because closing stops the worker."""
 
@@ -1013,3 +1051,39 @@ class TestOldPostsThatMayHaveGoneOutAreRelabelled:
             "login": "failed",
             "window": "failed",
         }
+
+
+class TestMemberCounts:
+    """Read off each group's page with its name (2026-10-14). Every read is a
+    real page load, so one that found nothing waits before it is tried again."""
+
+    def test_a_group_without_a_count_is_looked_up(self, groups):
+        group = groups.add_from_url("https://www.facebook.com/groups/one", name="One")
+        assert [g.id for g in groups.missing_details()] == [group.id]
+
+    def test_a_group_with_a_count_and_a_name_is_left_alone(self, groups):
+        group = groups.add_from_url("https://www.facebook.com/groups/one", name="One")
+        groups.set_members(group.id, "2 members")
+        assert groups.missing_details() == []
+        assert groups.get(group.id).members == "2 members"
+
+    def test_a_count_that_could_not_be_read_waits_a_day(self, groups):
+        from fbposter.db.models import utcnow
+        from fbposter.db.repo import MEMBERS_RETRY
+
+        group = groups.add_from_url("https://www.facebook.com/groups/one", name="One")
+        tried = utcnow()
+        groups.set_members(group.id, "", when=tried)
+        assert groups.missing_details(now=tried + MEMBERS_RETRY / 2) == []
+        later = tried + MEMBERS_RETRY + timedelta(minutes=1)
+        assert [g.id for g in groups.missing_details(now=later)] == [group.id]
+
+    def test_a_group_without_a_name_is_looked_up_whatever_its_count(self, groups):
+        group = groups.add_from_url("https://www.facebook.com/groups/one")
+        groups.set_members(group.id, "2 members")
+        assert [g.id for g in groups.missing_details()] == [group.id]
+
+    def test_a_removed_group_is_not_looked_up(self, groups):
+        group = groups.add_from_url("https://www.facebook.com/groups/one", name="One")
+        groups.remove(group.id)
+        assert groups.missing_details() == []

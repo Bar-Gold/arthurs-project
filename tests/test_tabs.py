@@ -474,6 +474,43 @@ class TestTheLastResort:
         assert outcome == tabs.GONE and launched == []
 
 
+class TestClosingWithTheApp:
+    """The user's choice (2026-10-14): the background Chrome closes when the
+    app does. Same rules as the restart: only the app's own, never mid-post."""
+
+    def close(self, fake, probe=lambda: VERSION):
+        return tabs.close_chrome(
+            profile_dir=PROFILE, open_client=fake.open,
+            command_line_of=fake.command_line, probe=probe,
+        )
+
+    def test_the_apps_chrome_is_closed(self):
+        fake = FakeChrome([page("a")])
+        assert self.close(fake) == tabs.CLOSED
+        assert fake.shut
+
+    def test_a_chrome_on_another_profile_is_never_closed(self):
+        fake = FakeChrome([page("a")], argv=["chrome.exe"])
+        assert self.close(fake) == tabs.NOT_OURS
+        assert not fake.shut
+        assert "Browser.close" not in fake.calls
+
+    def test_never_mid_post(self):
+        fake = FakeChrome([page("a")])
+        with tabs.posting():
+            assert self.close(fake) == tabs.POSTING
+        assert not fake.shut and fake.calls == []
+
+    def test_nothing_to_close_when_it_has_gone(self):
+        fake = FakeChrome([page("a")])
+        assert self.close(fake, probe=lambda: None) == tabs.GONE
+        assert fake.calls == []
+
+    def test_it_is_not_started_again(self, monkeypatch):
+        monkeypatch.setattr(tabs.chrome, "launch", lambda *a, **k: pytest.fail("launched"))
+        assert self.close(FakeChrome([page("a")])) == tabs.CLOSED
+
+
 # -- where it runs --------------------------------------------------------------
 class TestItRunsBeforeEveryConnection:
     def test_session_attach_runs_it_first(self, monkeypatch):

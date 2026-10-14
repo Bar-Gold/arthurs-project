@@ -179,6 +179,9 @@ class App(QMainWindow):
         # running on the machine.
         self._clear_stuck_tabs = lambda: []
         self._restart_chrome = lambda: tabs.GONE
+        # Closing the app's Chrome when this window closes. Inert for the same
+        # reason, or every window the suite closes would close it.
+        self._close_chrome = lambda: tabs.GONE
         # Starting with Windows and keeping the PC awake (always_on.py). Inert
         # for the same reason: the real one changes the machine's power plan
         # and scheduled tasks, and run() is the only place that wires it up.
@@ -927,6 +930,16 @@ class App(QMainWindow):
         self._chrome_watch.stop()
         self._check_deadline.stop()
         self.db.close()
+        # Then Chrome itself goes (the user's choice, 2026-10-14): nothing
+        # posts while the app is shut, and the next start opens it again.
+        # After the watcher has stopped, so nothing starts it straight back,
+        # and with the window already hidden, so a Chrome slow to answer
+        # cannot leave it sitting on screen. Never fails the close.
+        self.hide()
+        try:
+            self._close_chrome()
+        except Exception:
+            pass
         super().closeEvent(event)
 
 
@@ -1001,6 +1014,7 @@ def run() -> int:
     window._clear_stuck_tabs = lambda: tabs.clear_stuck_tabs()
     window.group_finder = LiveGroupFinder()
     window._restart_chrome = lambda: tabs.restart_chrome()
+    window._close_chrome = lambda: tabs.close_chrome()
     window.always_on = always_on.AlwaysOn()
     session.before_attach = tabs.clear_stuck_tabs
     window.show()

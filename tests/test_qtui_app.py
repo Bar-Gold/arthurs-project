@@ -175,3 +175,40 @@ class TestAWindowThatNeverStartedTheWorker:
         win.repeat()
         assert win.app.close() is True
         assert win.asked == []
+
+
+class TestChromeClosesWithTheApp:
+    """The user's choice (2026-10-14): the background Chrome closes when the
+    window does, after the scheduler and the Chrome watcher have stopped."""
+
+    def test_closing_the_window_closes_chrome(self, window):
+        win = window()
+        order = []
+        win.app._close_chrome = lambda: order.append("chrome")
+        win.worker.stop = lambda: order.append("worker")
+        assert win.app.close() is True
+        assert order == ["worker", "chrome"]
+        assert not win.app._chrome_watch.isActive()
+
+    def test_staying_open_keeps_chrome(self, window):
+        win = window(answer=False)
+        win.batch()
+        closed = []
+        win.app._close_chrome = lambda: closed.append(1)
+        assert win.app.close() is False
+        assert closed == []
+
+    def test_a_failure_to_close_chrome_does_not_stop_the_window_closing(self, window):
+        win = window()
+
+        def broken():
+            raise RuntimeError("Chrome did not answer")
+
+        win.app._close_chrome = broken
+        assert win.app.close() is True
+
+    def test_a_window_the_suite_builds_never_closes_a_real_chrome(self, window):
+        from fbposter import tabs
+
+        win = window()
+        assert win.app._close_chrome() == tabs.GONE

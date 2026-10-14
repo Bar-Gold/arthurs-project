@@ -9,6 +9,10 @@ minute changes to the group's name". Three things added up to that:
   group waited until the Groups screen was next opened;
 * a lookup made while Chrome was still starting was never retried until then.
 
+Groups now come off Facebook with their names (the paste box went on
+2026-10-14), so a nameless group is one whose name could not be read off the
+list, or one added before that. The rules for looking one up are unchanged.
+
 These tests hold the background work in a queue and release it by hand, so the
 order of events is exact and nothing reaches a browser.
 """
@@ -18,6 +22,7 @@ from __future__ import annotations
 import pytest
 
 from fbposter import chrome
+from fbposter.automation.groupinfo import GroupInfo
 from fbposter.qtui.views.groups import LOOKING_UP
 from fbposter.connection import ConnectionResult, ConnectionState
 
@@ -33,11 +38,14 @@ class Namer:
         self.sweeps: list[list[str]] = []
 
     def names_for(self, urls):
-        self.sweeps.append(list(urls))
-        return {url: self.names.get(url, "") for url in urls}
+        return {url: info.name for url, info in self.info_for(urls).items()}
 
     def name_for(self, url):
         return self.names_for([url]).get(url, "")
+
+    def info_for(self, urls):
+        self.sweeps.append(list(urls))
+        return {url: GroupInfo(self.names.get(url, "")) for url in urls}
 
 
 class HeldBack:
@@ -65,10 +73,10 @@ def held(qt_app, monkeypatch):
 
 
 def add(qt_app, url):
-    view = qt_app.views["groups"]
-    view.url_entry.setText(url)
-    assert view.add_group()
-    return qt_app.group_repo.list()[-1]
+    """A nameless group arrives, and the screen is told to name it."""
+    group = qt_app.group_repo.add_from_url(url)
+    qt_app.views["groups"].look_up_missing_names()
+    return group
 
 
 def row_text(qt_app, group_id) -> str:
@@ -81,20 +89,11 @@ class TestTheNumberIsNeverShown:
         assert row_text(qt_app, group.id) == LOOKING_UP
         assert group.identifier not in row_text(qt_app, group.id)
 
-    def test_the_toast_does_not_announce_a_number(self, qt_app, held):
-        group = add(qt_app, FIRST)
-        assert group.identifier not in qt_app.toast_label.text()
-
     def test_the_name_replaces_the_placeholder(self, qt_app, held):
         group = add(qt_app, FIRST)
         held.release()
         assert row_text(qt_app, group.id) == "Bikes Tel Aviv"
         assert qt_app.group_repo.get(group.id).name == "Bikes Tel Aviv"
-
-    def test_the_toast_names_it_when_the_name_arrives(self, qt_app, held):
-        add(qt_app, FIRST)
-        held.release()
-        assert "Bikes Tel Aviv" in qt_app.toast_label.text()
 
 
 class TestNoRequestIsDropped:
@@ -107,15 +106,6 @@ class TestNoRequestIsDropped:
         assert held.jobs, "the second group's lookup was dropped"
         held.release()
         assert row_text(qt_app, second.id) == "יד שנייה חיפה"
-
-    def test_the_group_just_added_goes_first(self, qt_app, held):
-        """Ahead of an older group whose name could not be read before."""
-        old = qt_app.group_repo.add_from_url(SECOND)  # nameless
-        new = add(qt_app, FIRST)
-        held.release()
-        assert qt_app.group_namer.sweeps[0][0] == FIRST
-        assert qt_app.group_repo.get(old.id).name
-        assert qt_app.group_repo.get(new.id).name
 
 
 class TestWhenTheNameCannotBeRead:
@@ -134,11 +124,11 @@ class TestWhenTheNameCannotBeRead:
         held.release()
         assert held.jobs == []
 
-    def test_no_chrome_says_why(self, qt_app, held, monkeypatch):
+    def test_no_chrome_falls_back_to_the_number(self, qt_app, held, monkeypatch):
         monkeypatch.setattr(chrome, "probe", lambda *a, **k: None)
-        add(qt_app, FIRST)
+        group = add(qt_app, FIRST)
         held.release()
-        assert "Chrome" in qt_app.toast_label.text()
+        assert row_text(qt_app, group.id) == group.identifier
 
 
 class TestTheNameIsReadOnceChromeIsUp:
@@ -150,8 +140,9 @@ class TestTheNameIsReadOnceChromeIsUp:
         held.release()
         assert qt_app.group_repo.get(group.id).name == "Bikes Tel Aviv"
 
-    def test_nothing_is_opened_when_every_name_is_known(self, qt_app, held):
-        qt_app.group_repo.add_from_url(FIRST, name="Bikes Tel Aviv")
+    def test_nothing_is_opened_when_every_name_and_count_is_known(self, qt_app, held):
+        group = qt_app.group_repo.add_from_url(FIRST, name="Bikes Tel Aviv")
+        qt_app.group_repo.set_members(group.id, "2 members")
         qt_app._on_check_result(ConnectionResult(ConnectionState.CONNECTED, ""))
         assert held.jobs == []
 
@@ -159,3 +150,67 @@ class TestTheNameIsReadOnceChromeIsUp:
         qt_app.group_repo.add_from_url(FIRST)
         qt_app._on_check_result(ConnectionResult(ConnectionState.CHROME_DOWN, ""))
         assert held.jobs == []
+
+
+class Counter(Namer):
+    """Answers with a member count too; None for a page that never loaded."""
+
+    def __init__(self, members: dict[str, str | None]) -> None:
+        super().__init__({FIRST: "Read off the page"})
+        self.members = members
+
+    def info_for(self, urls):
+        self.sweeps.append(list(urls))
+        return {
+            url: GroupInfo(self.names.get(url, ""), self.members[url])
+            for url in urls
+            if self.members.get(url) is not None
+        }
+
+
+def members_shown(qt_app, group_id) -> str:
+    from PySide6.QtWidgets import QLabel
+
+    row = qt_app.views["groups"]._rows[group_id]
+    labels = [label.text() for label in row.findChildren(QLabel)]
+    return " ".join(labels)
+
+
+class TestTheMemberCount:
+    """Read in the same visit as the name (2026-10-14), for groups already
+    in the list as well as new ones."""
+
+    def test_a_named_group_gets_its_count(self, qt_app, held):
+        group = qt_app.group_repo.add_from_url(FIRST, name="Bikes Tel Aviv")
+        qt_app.group_namer = Counter({FIRST: "12K members"})
+        qt_app.views["groups"].look_up_missing_names()
+        held.release()
+        stored = qt_app.group_repo.get(group.id)
+        assert stored.members == "12K members"
+        assert stored.name == "Bikes Tel Aviv", "a known name is never replaced"
+        assert "12K members" in members_shown(qt_app, group.id)
+
+    def test_a_page_with_no_count_is_not_reopened_on_every_visit(self, qt_app, held):
+        group = qt_app.group_repo.add_from_url(FIRST, name="Bikes Tel Aviv")
+        qt_app.group_namer = Counter({FIRST: ""})
+        view = qt_app.views["groups"]
+        view.look_up_missing_names()
+        held.release()
+        assert qt_app.group_repo.get(group.id).members_read_at is not None
+        view.on_show()
+        assert held.jobs == []
+
+    def test_a_page_that_never_loaded_is_tried_again(self, qt_app, held):
+        group = qt_app.group_repo.add_from_url(FIRST, name="Bikes Tel Aviv")
+        qt_app.group_namer = Counter({FIRST: None})
+        view = qt_app.views["groups"]
+        view.look_up_missing_names()
+        held.release()
+        assert qt_app.group_repo.get(group.id).members_read_at is None
+        view.on_show()
+        assert held.jobs, "a group whose page never loaded was given up on"
+
+    def test_no_count_shows_nothing_rather_than_a_placeholder(self, qt_app, held):
+        group = qt_app.group_repo.add_from_url(FIRST, name="Bikes Tel Aviv")
+        qt_app.views["groups"].refresh()
+        assert "member" not in members_shown(qt_app, group.id).lower()

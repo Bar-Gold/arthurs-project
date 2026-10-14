@@ -3,7 +3,11 @@
 The middle step of the flow: Compose says what, this says where, Publish says
 when. Picking recipients and managing the list are the same screen on purpose:
 the moment you notice a group is missing is the moment you are choosing groups,
-so the "add a group" box is right here rather than somewhere else.
+so "Get my groups from Facebook" is right here rather than somewhere else.
+
+There is no box for pasting a group's link any more (removed 2026-10-14): every
+group comes off Facebook. A search box narrows the list instead, and a removed
+group comes back from the removed groups under the list.
 
 The ticks themselves live on the window (`App.selected_groups`), because
 Compose opens a wording tab per chosen group and Publish sends to them; three
@@ -12,8 +16,10 @@ screens reading one set is the only way they cannot disagree.
 
 from __future__ import annotations
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -25,7 +31,7 @@ from PySide6.QtWidgets import (
 
 from fbposter import chrome
 from fbposter.connection import ConnectionState
-from fbposter.errors import FBPosterError
+from fbposter.text import strip_invisible
 
 from .. import theme
 from ..widgets import card, clear
@@ -40,6 +46,52 @@ LOOKING_UP = "Looking up the group's name…"
 IMPORT_PENDING_KEY = "groups_import_pending"
 IMPORT_LABEL = "Get my groups from Facebook"
 IMPORTING_LABEL = "Getting your groups…"
+SEARCH_PLACEHOLDER = "Search your groups"
+SHOW_REMOVED = "Show removed groups ({count})"
+HIDE_REMOVED = "Hide removed groups"
+
+
+def matches(group, query: str) -> bool:
+    """Whether a row matches the search: the name it shows, ignoring case.
+
+    A group with no name yet shows its number, so the number matches then.
+    Invisible marks are dropped from both sides, because a name read off
+    Facebook can carry them and the user never types them.
+    """
+    wanted = strip_invisible(query).strip().casefold()
+    return not wanted or wanted in strip_invisible(group.display_name).casefold()
+
+
+class GroupRow(QFrame):
+    """A group's card, which ticks and unticks it wherever it is clicked.
+
+    The user's request (2026-10-14): the little box alone was too small a
+    target. A click on the box itself is the box's own, and one on "Remove" is
+    the button's; Qt passes every other click on the card up to here. The box
+    still takes the keyboard focus, so Tab and Space work as before.
+    """
+
+    def __init__(self, box: QCheckBox) -> None:
+        super().__init__()
+        self.setObjectName("Card")
+        self.box = box
+        self.setCursor(Qt.PointingHandCursor)
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt's name
+        # Accepted, so the release comes here too.
+        if event.button() == Qt.LeftButton:
+            event.accept()
+        else:
+            super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802 - Qt's name
+        # Only a release still over the card, as for any button: dragging off
+        # it is how a person takes a click back.
+        if event.button() == Qt.LeftButton and self.rect().contains(event.position().toPoint()):
+            self.box.toggle()
+            event.accept()
+        else:
+            super().mouseReleaseEvent(event)
 
 
 class GroupsView(QWidget):
@@ -60,10 +112,17 @@ class GroupsView(QWidget):
         # dropped, and the group it was for then showed its number until this
         # screen was next opened -- which could be minutes.
         self._lookup_again = False
-        # Added on this screen and still nameless: the toast names them when
-        # the name arrives, rather than announcing a number.
-        self._announce: set[int] = set()
         self._checkboxes: dict[int, QCheckBox] = {}
+        # Every row as drawn, so a search hides and shows them rather than
+        # rebuilding fifty cards on every keystroke.
+        self._rows: dict[int, QWidget] = {}
+        self._groups: dict[int, object] = {}
+        self._removed_rows: dict[int, QWidget] = {}
+        self._removed_groups: dict[int, object] = {}
+        self._show_removed = False
+        self.removed_heading: QLabel | None = None
+        # Made by refresh(); None until the list is first drawn.
+        self.empty_note: QLabel | None = None
         # True while the groups are being read off Facebook.
         self._importing = False
 
@@ -80,32 +139,22 @@ class GroupsView(QWidget):
         outer.addWidget(sub)
         outer.addSpacing(theme.HEADER_GAP)
 
-        # A visible label, not just a placeholder: placeholder text vanishes the
-        # moment you type, taking the only explanation of the field with it.
-        add_label = QLabel("Add a group")
-        add_label.setObjectName("SectionHeading")
-        heading_line = QHBoxLayout()
-        heading_line.addWidget(add_label)
-        heading_line.addStretch(1)
+        top = QHBoxLayout()
+        # A placeholder is enough here, unlike the old link box: what is
+        # typed into a search box explains itself.
+        self.search = QLineEdit()
+        self.search.setPlaceholderText(SEARCH_PLACEHOLDER)
+        self.search.setAccessibleName(SEARCH_PLACEHOLDER)
+        self.search.setClearButtonEnabled(True)
+        self.search.textChanged.connect(lambda _text: self.apply_search())
+        top.addWidget(self.search, 1)
         # Every group the account is in, read off Facebook. It also runs by
-        # itself once, after the first login (App._on_check_result).
+        # itself once, after the first login (App._on_check_result). Not
+        # #Primary: the accent here belongs to "Next: when to send".
         self.import_button = QPushButton(IMPORT_LABEL)
         self.import_button.clicked.connect(lambda: self.import_from_facebook())
-        heading_line.addWidget(self.import_button)
-        outer.addLayout(heading_line)
-
-        entry = QHBoxLayout()
-        self.url_entry = QLineEdit()
-        self.url_entry.setPlaceholderText("https://www.facebook.com/groups/…")
-        self.url_entry.setAccessibleName("Facebook group URL")
-        self.url_entry.returnPressed.connect(self.add_group)
-        entry.addWidget(self.url_entry, 1)
-        # Not #Primary -- see the note on the Compose attach button. The accent
-        # here belongs to "Next: when to send".
-        add = QPushButton("Add group")
-        add.clicked.connect(self.add_group)
-        entry.addWidget(add)
-        outer.addLayout(entry)
+        top.addWidget(self.import_button)
+        outer.addLayout(top)
         outer.addSpacing(theme.PAD_M)
 
         tools = QHBoxLayout()
@@ -131,6 +180,17 @@ class GroupsView(QWidget):
         self.rows.setSpacing(theme.PAD_XS)
         self.area.setWidget(self.holder)
         outer.addWidget(self.area, 1)
+
+        # Under the list, apart from it: a removed group is not one you are
+        # choosing from, and fifty of them in view would bury the ones you are.
+        self.removed_toggle = QPushButton("")
+        self.removed_toggle.setObjectName("Link")
+        self.removed_toggle.setVisible(False)
+        self.removed_toggle.clicked.connect(lambda: self.toggle_removed())
+        removed_line = QHBoxLayout()
+        removed_line.addWidget(self.removed_toggle)
+        removed_line.addStretch(1)
+        outer.addLayout(removed_line)
 
         footer = QHBoxLayout()
         back = QPushButton("← Back to Compose")
@@ -160,7 +220,12 @@ class GroupsView(QWidget):
         self.refresh_count()
 
     def set_all(self, selected: bool) -> None:
+        """Tick or clear the groups on show: only the matches while a search
+        is typed (the user's choice, 2026-10-14)."""
+        shown = set(self.shown_group_ids())
         for group_id, box in self._checkboxes.items():
+            if group_id not in shown:
+                continue
             box.blockSignals(True)
             box.setChecked(selected)
             box.blockSignals(False)
@@ -179,49 +244,14 @@ class GroupsView(QWidget):
             compose.refresh_tabs()
 
     # -- actions -----------------------------------------------------------
-    def add_group(self) -> bool:
-        raw = self.url_entry.text().strip()
-        if not raw:
-            return False
-        try:
-            group = self.app.group_repo.add_from_url(raw)
-        except FBPosterError as exc:
-            self.notify(str(exc), "error")
-            return False
-
-        # Pasting the link of a removed group brings it back, history and all.
-        # Saying so matters: the user is about to wonder why the repeat guard
-        # already knows what this group has been sent.
-        restored = bool(self.app.group_repo.recent_bodies(group.id, limit=1))
-
-        self.url_entry.clear()
-        # A group added here was added to be posted to, so it starts ticked.
-        self.app.set_group_selected(group.id, True)
-        if restored:
-            self.notify(
-                f"Brought {group.display_name} back, along with its posting history.",
-                "success",
-            )
-        elif group.name:
-            self.notify(f"Added {group.name}.", "success")
-        else:
-            # Never "Added 1697911281266837." -- the name follows in seconds.
-            self._announce.add(group.id)
-            self.notify("Group added. Looking up its name…", "success")
-        # Before the refresh, so the new row is drawn saying it is looking up
-        # its name, and never flashes the number first.
-        self._fetch_missing_names(first=group.id)
-        self.refresh()
-        return True
-
     def remove_group(self, group_id: int) -> None:
         was_selected = group_id in self.app.selected_groups
         removal = self.app.group_repo.remove(group_id)
         self.app.set_group_selected(group_id, False)
         self.refresh()
         # "Remove" is on every row, one click from the tick beside it. Undo
-        # puts the group back into exactly what it was taken out of; pasting
-        # the link again still does not.
+        # puts the group back into exactly what it was taken out of; "Bring
+        # back" later does not.
         undo = lambda: self._restore_group(group_id, removal, was_selected)  # noqa: E731
         taken_from = []
         if removal.schedules:
@@ -233,16 +263,19 @@ class GroupsView(QWidget):
                 f"{removal.batches} queued post{'s' if removal.batches != 1 else ''}"
             )
         if taken_from:
-            # Said here because adding the group back does not undo it.
+            # Said here because bringing the group back does not undo it.
             self.app.toast(
-                f"Group removed, and taken out of {' and '.join(taken_from)}. Paste "
-                "its link again to bring it back to the list.",
+                f"Group removed, and taken out of {' and '.join(taken_from)}. It can "
+                "be brought back from the removed groups under the list.",
                 "info",
                 undo=undo,
             )
         else:
             self.app.toast(
-                "Group removed. Paste its link again to bring it back.", "info", undo=undo
+                "Group removed. It can be brought back from the removed groups "
+                "under the list.",
+                "info",
+                undo=undo,
             )
 
     def _restore_group(self, group_id: int, removal, was_selected: bool) -> str | None:
@@ -254,6 +287,31 @@ class GroupsView(QWidget):
         group = self.app.group_repo.get(group_id)
         name = group.display_name if group is not None else "The group"
         return f"{name} is back, in everything it was taken out of."
+
+    def bring_back(self, group_id: int) -> None:
+        """Put a removed group back in the list, from the removed groups.
+
+        It starts ticked, as a group added by pasting its link used to: it was
+        brought back in order to be posted to. Its history comes with it, and
+        the toast says so, because the repeat guard already knows what it was
+        sent. It is not put back in any repeating or queued post.
+        """
+        group = self.app.group_repo.bring_back(group_id)
+        if group is None:
+            self.refresh()
+            return
+        self.app.set_group_selected(group.id, True)
+        if self.app.group_repo.recent_bodies(group.id, limit=1):
+            message = f"Brought {group.display_name} back, along with its posting history."
+        else:
+            message = f"Brought {group.display_name} back."
+        self.notify(message, "success")
+        self.refresh()
+        self._fetch_missing_names()
+
+    def toggle_removed(self) -> None:
+        self._show_removed = not self._show_removed
+        self.refresh()
 
     # -- reading the groups off Facebook -------------------------------------
     def refresh_import_button(self) -> None:
@@ -333,44 +391,42 @@ class GroupsView(QWidget):
         if short:
             message += (
                 f" Facebook lists {result.expected} groups and {len(result.groups)} "
-                "could be read; paste the link of any that is missing."
+                f"could be read; press {IMPORT_LABEL} again for the rest."
             )
         self.notify(message, "warning" if short else "success")
         # A group whose name could not be read off the list gets the usual
         # lookup, one at a time.
         self._fetch_missing_names()
 
-    # -- names -------------------------------------------------------------
+    # -- names and member counts --------------------------------------------
     def look_up_missing_names(self) -> None:
         """Called when Chrome becomes reachable, which is the first moment a
         group added while it was still starting can have its name read."""
         self._fetch_missing_names()
 
-    def _fetch_missing_names(
-        self, first: int | None = None, skip: frozenset[int] = frozenset()
-    ) -> None:
-        """Look up display names, but never at the cost of blocking the window.
+    def _fetch_missing_names(self, skip: frozenset[int] = frozenset()) -> None:
+        """Look up display names and member counts, but never at the cost of
+        blocking the window. One visit to a group's page reads both.
 
         Guarded on the debug port being open, because the namer is injectable
         precisely so tests never reach the live site.
 
-        `first` is a group just added: it goes to the front, ahead of any group
-        whose name could not be read before. `skip` is what an earlier sweep in
-        the same chain already tried -- a name that could not be read a moment
-        ago will not be read by asking again straight away.
+        `skip` is what an earlier sweep in the same chain already tried -- a
+        name that could not be read a moment ago will not be read by asking
+        again straight away.
         """
-        missing = [g for g in self.app.group_repo.missing_names() if g.id not in skip]
+        missing = [g for g in self.app.group_repo.missing_details() if g.id not in skip]
         if self._naming:
-            # Queued, not dropped; finish() runs it.
+            # Queued, not dropped; finish() runs it. The rows say so now,
+            # rather than showing a number until the running sweep ends.
             if missing:
                 self._lookup_again = True
-                if first is not None:
-                    self._looking_up.add(first)
+                self._looking_up.update(group.id for group in missing)
+                self.refresh()
             return
         if not missing:
             return
 
-        missing.sort(key=lambda group: group.id != first)
         self._naming = True
         self._looking_up = {group.id for group in missing}
         self.refresh()
@@ -385,26 +441,21 @@ class GroupsView(QWidget):
             # This screen ran it on every single show.
             if chrome.probe() is None:
                 return None  # not "no names": nothing could be asked at all
-            return self.app.group_namer.names_for(urls)
+            return self.app.group_namer.info_for(urls)
 
         def done(found):
             for group in missing:
-                name = (found or {}).get(group.url, "")
-                if name:
-                    self.app.group_repo.set_name(group.id, name)
-                    if group.id in self._announce:
-                        self.notify(f"Added {name}.", "success")
-                elif group.id in self._announce and found is None:
-                    self.notify(
-                        "Chrome isn't connected yet, so the new group shows its "
-                        "number until its name can be read.",
-                        "warning",
-                    )
-                self._announce.discard(group.id)
+                info = (found or {}).get(group.url)
+                if info is None:
+                    continue  # its page never loaded: not tried, so not recorded
+                # A name already known came off Facebook's own list; it stays.
+                if info.name and not group.name:
+                    self.app.group_repo.set_name(group.id, info.name)
+                if not group.members:
+                    self.app.group_repo.set_members(group.id, info.members)
             finish()
 
         def failed(_exc):
-            self._announce.difference_update(group.id for group in missing)
             finish()
 
         def finish():
@@ -420,13 +471,18 @@ class GroupsView(QWidget):
         self.app.run_in_background(work, done, failed)
 
     # -- rendering ---------------------------------------------------------
-    def _snapshot(self, groups) -> tuple:
+    def _snapshot(self, groups, removed) -> tuple:
         """Everything a row draws. Rebuilding twelve of them cost 30ms on
-        every visit to this screen, to redraw the identical list."""
+        every visit to this screen, to redraw the identical list.
+
+        The search is not in it: typing hides and shows rows that are already
+        drawn (`apply_search`), it never rebuilds them."""
         selected = self.app.selected_groups
-        return tuple(
-            (g.id, self._label(g), g.id in selected)
-            for g in groups
+        return (
+            tuple((g.id, self._label(g), g.members, g.id in selected) for g in groups),
+            tuple((g.id, g.display_name) for g in removed) if self._show_removed else (),
+            len(removed),
+            self._show_removed,
         )
 
     def _label(self, group) -> str:
@@ -436,8 +492,9 @@ class GroupsView(QWidget):
 
     def refresh(self, force: bool = False) -> None:
         groups = self.app.group_repo.list()
-        snapshot = self._snapshot(groups)
-        if not force and snapshot == self._snapshot_shown and self._checkboxes:
+        removed = self.app.group_repo.removed()
+        snapshot = self._snapshot(groups, removed)
+        if not force and snapshot == self._snapshot_shown:
             # The count still gets restated: it is one setText, and it also
             # reaches Compose, which needs to hear about the selection.
             self.refresh_count()
@@ -446,26 +503,70 @@ class GroupsView(QWidget):
 
         clear(self.rows)
         self._checkboxes = {}
-        if not groups:
-            note = QLabel(
-                f"No groups yet. Paste a group link above, or press {IMPORT_LABEL}."
-            )
-            note.setObjectName("Muted")
-            self.rows.addWidget(note)
-            self.rows.addStretch(1)
-            self.refresh_count()
-            return
+        self._rows = {}
+        self._groups = {group.id: group for group in groups}
+        self._removed_rows = {}
+        self._removed_groups = {group.id: group for group in removed}
+        self.removed_heading = None
 
+        # One note for both empty cases, worded by apply_search.
+        self.empty_note = QLabel("")
+        self.empty_note.setObjectName("Muted")
+        self.empty_note.setWordWrap(True)
+        self.rows.addWidget(self.empty_note)
         for group in groups:
-            self.rows.addWidget(self._row(group))
+            row = self._row(group)
+            self._rows[group.id] = row
+            self.rows.addWidget(row)
+
+        self.removed_toggle.setVisible(bool(removed))
+        self.removed_toggle.setText(
+            HIDE_REMOVED if self._show_removed else SHOW_REMOVED.format(count=len(removed))
+        )
+        if removed and self._show_removed:
+            self.removed_heading = QLabel("Removed groups")
+            self.removed_heading.setObjectName("SectionHeading")
+            self.rows.addSpacing(theme.PAD_M)
+            self.rows.addWidget(self.removed_heading)
+            for group in removed:
+                row = self._removed_row(group)
+                self._removed_rows[group.id] = row
+                self.rows.addWidget(row)
+
         self.rows.addStretch(1)
+        self.apply_search()
         self.refresh_count()
 
-    def _row(self, group) -> QWidget:
-        holder = card()
-        layout = QHBoxLayout(holder)
-        layout.setContentsMargins(theme.PAD_M, theme.PAD_S, theme.PAD_S, theme.PAD_S)
+    # -- search ------------------------------------------------------------
+    def shown_group_ids(self) -> list[int]:
+        """The groups in the list that match the search, in list order."""
+        query = self.search.text()
+        return [gid for gid, group in self._groups.items() if matches(group, query)]
 
+    def apply_search(self) -> None:
+        """Hide the rows that do not match. Nothing is rebuilt, and nothing
+        is unticked: a hidden group that is ticked still gets the post."""
+        if self.empty_note is None:
+            return  # nothing drawn yet; refresh() calls this when it is
+        query = self.search.text()
+        shown = set(self.shown_group_ids())
+        for group_id, row in self._rows.items():
+            row.setVisible(group_id in shown)
+        any_removed = False
+        for group_id, row in self._removed_rows.items():
+            visible = matches(self._removed_groups[group_id], query)
+            row.setVisible(visible)
+            any_removed = any_removed or visible
+        if self.removed_heading is not None:
+            self.removed_heading.setVisible(any_removed)
+
+        if not self._groups:
+            self.empty_note.setText(f"No groups yet. Press {IMPORT_LABEL}.")
+        elif not shown:
+            self.empty_note.setText(f"No group matches \"{query.strip()}\".")
+        self.empty_note.setVisible(not shown)
+
+    def _row(self, group) -> QWidget:
         label = self._label(group)
         box = QCheckBox(label)
         box.setChecked(group.id in self.app.selected_groups)
@@ -475,7 +576,17 @@ class GroupsView(QWidget):
         )
         box.toggled.connect(lambda on, gid=group.id: self.toggle(gid, on))
         self._checkboxes[group.id] = box
+
+        holder = GroupRow(box)
+        layout = QHBoxLayout(holder)
+        layout.setContentsMargins(theme.PAD_M, theme.PAD_S, theme.PAD_S, theme.PAD_S)
         layout.addWidget(box, 1)
+
+        # As Facebook writes it, in the account's language: "12K members".
+        if group.members:
+            members = QLabel(group.members)
+            members.setObjectName("Muted")
+            layout.addWidget(members)
 
         # No cooldown control. There is one rule for every group -- the
         # default gap, set on the Settings screen -- and breaking it is a
@@ -486,4 +597,17 @@ class GroupsView(QWidget):
         remove.setObjectName("Link")
         remove.clicked.connect(lambda _c, gid=group.id: self.remove_group(gid))
         layout.addWidget(remove)
+        return holder
+
+    def _removed_row(self, group) -> QWidget:
+        holder = card()
+        layout = QHBoxLayout(holder)
+        layout.setContentsMargins(theme.PAD_M, theme.PAD_S, theme.PAD_S, theme.PAD_S)
+        name = QLabel(group.display_name)
+        name.setObjectName("Muted")
+        layout.addWidget(name, 1)
+        back = QPushButton("Bring back")
+        back.setObjectName("Link")
+        back.clicked.connect(lambda _c, gid=group.id: self.bring_back(gid))
+        layout.addWidget(back)
         return holder

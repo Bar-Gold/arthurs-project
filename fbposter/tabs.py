@@ -60,8 +60,9 @@ SECOND_LOOK_S = 5.0
 # How long Chrome gets to close before a restart gives up on it.
 CLOSE_WAIT_S = 20.0
 
-# What restart_chrome reports.
+# What restart_chrome and close_chrome report.
 RESTARTED = "restarted"
+CLOSED = "closed"
 NOT_OURS = "not_ours"
 WOULD_NOT_CLOSE = "would_not_close"
 POSTING = "posting"
@@ -147,17 +148,9 @@ def restart_chrome(
         version = probe()
         if version is None:
             return GONE
-        client = _owned_client(version, profile, open_client, command_line_of)
-        if client is None:
+        if _close_owned(version, profile, open_client, command_line_of) == NOT_OURS:
             return NOT_OURS
-        with client:
-            try:
-                client.call("Browser.close")
-            except (CdpError, TimeoutError, OSError):
-                # The reply may never come: Chrome is closing the very
-                # connection it would arrive on. Whether it went is judged
-                # below, by the port and the profile lock.
-                pass
+        # Whether it went is judged by the port and the profile lock.
         deadline = monotonic() + CLOSE_WAIT_S
         while probe() is not None or profile_busy():
             if monotonic() >= deadline:
@@ -165,6 +158,51 @@ def restart_chrome(
             sleep(0.25)
         launch()
     return RESTARTED
+
+
+def close_chrome(
+    port: int = config.DEBUG_PORT,
+    profile_dir: Path | None = None,
+    *,
+    open_client: Callable[[str], CdpClient] = CdpClient.open,
+    command_line_of: Callable[[int], list[str] | None] | None = None,
+    probe: Callable[[], dict | None] | None = None,
+) -> str:
+    """Close the app's own Chrome because the app is closing.
+
+    The user's choice (2026-10-14): a background Chrome left running after
+    the app had closed was a stray window with nothing to do, since nothing
+    posts while the app is shut. The next start of the app opens it again,
+    and the Facebook login is on disk in the profile, as it is after any
+    close. Same rules as `restart_chrome`: only the app's own Chrome, proven,
+    and never while a post is open. It does not wait to see it go; the app is
+    exiting either way.
+    """
+    profile = profile_dir or config.resolve_profile_dir()
+    probe = probe or (lambda: chrome.probe(port))
+    with _LOCK:
+        if _posting:
+            return POSTING
+        version = probe()
+        if version is None:
+            return GONE
+        return _close_owned(version, profile, open_client, command_line_of)
+
+
+def _close_owned(version, profile_dir, open_client, command_line_of) -> str:
+    """Send `Browser.close` to the browser `version` describes, only if it is
+    the app's own. The one place in the app that closes a Chrome."""
+    client = _owned_client(version, profile_dir, open_client, command_line_of)
+    if client is None:
+        return NOT_OURS
+    with client:
+        try:
+            client.call("Browser.close")
+        except (CdpError, TimeoutError, OSError):
+            # The reply may never come: Chrome is closing the very
+            # connection it would arrive on.
+            pass
+    return CLOSED
 
 
 # -- whose Chrome is this? ---------------------------------------------------
