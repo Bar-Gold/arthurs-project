@@ -52,7 +52,7 @@ from fbposter.db.models import SCHEDULE_ACTIVE, SCHEDULE_PAUSED, utcnow
 
 from .. import theme
 from ..widgets import badge, card, clear, row, segmented, set_note_lines
-from .compose import pictures_only
+from .compose import media_only
 
 RIGHT_COLUMN_WIDTH = 340
 # Room for the column's scroll bar, so the column keeps its width when it shows.
@@ -127,6 +127,18 @@ def day_boxes(grid: QGridLayout, on_change, checked: bool = False) -> list[QChec
         grid.addWidget(box, position // 4, position % 4)
         boxes[day] = box
     return [boxes[day] for day in range(7)]
+
+
+def following(set_names) -> str | None:
+    """The one thing a repeating post linked to group sets does differently,
+    said where it is set up and where it is edited."""
+    if not set_names:
+        return None
+    them = "it" if len(set_names) == 1 else "them"
+    return (
+        f"Follows {', '.join(set_names)}: a group added to {them} later gets "
+        "this post from its next run."
+    )
 
 
 def schedule_violations(app, rule, group_ids, wordings, history: bool = True):
@@ -502,6 +514,11 @@ class PublishView(QWidget):
         """Chosen on the Groups screen. This view only reads them."""
         return self.app.selected_group_ids()
 
+    def picked_set_names(self) -> list[str]:
+        """The group sets picked on the Groups screen, by name."""
+        picked = self.app.selected_sets
+        return [s.name for s in self.app.group_set_repo.list() if s.id in picked]
+
     def base_body(self) -> str:
         return self.compose.base_body().strip()
 
@@ -622,14 +639,15 @@ class PublishView(QWidget):
         if snippet:
             note = f"“{snippet}”"
         elif self.compose.attachments:
-            note = f"{pictures_only(len(self.compose.attachments))}."
+            note = f"{media_only(self.compose.attachments)}."
         else:
             note = "Nothing written yet. Start on Compose."
         self.preview_note.setText(note)
 
-        # None never equals a list, so the first call always draws -- including
+        # None never equals a tuple, so the first call always draws -- including
         # the empty case, which has its own "no groups picked" note.
-        plan = self._recipient_plan(selected)
+        sets = tuple(self.picked_set_names())
+        plan = (sets, self._recipient_plan(selected))
         if plan == self._recipients_shown:
             return
         self._recipients_shown = plan
@@ -640,6 +658,12 @@ class PublishView(QWidget):
             note.setObjectName("Muted")
             note.setWordWrap(True)
             self.recipient_box.addWidget(note)
+        if sets:
+            source = QLabel(f"Group sets: {', '.join(sets)}")
+            source.setObjectName("Muted")
+            source.setWordWrap(True)
+            self.recipient_box.addWidget(source)
+        plan = plan[1]
         for group_id, name, reworded in plan:
             holder = row()
             line = QHBoxLayout(holder)
@@ -1060,6 +1084,9 @@ class PublishView(QWidget):
         lines = [f"{report.summary} · {count}"]
         if report.next_runs:
             lines.append(f"First run {clock.format_local(report.next_runs[0])}")
+        follows = following(self.picked_set_names())
+        if follows:
+            lines.append(follows)
         # Said before the button is pressed, from the same checks it applies.
         warnings = [
             v.message
@@ -1108,11 +1135,11 @@ class PublishView(QWidget):
         wordings = self.wordings()
         if not wordings and self.compose.attachments:
             # The rotation of wordings is what keeps each run from being the
-            # same post to the same group; pictures alone are identical every
+            # same post to the same group; pictures or videos alone are identical every
             # run, which is the repetition the repeat guard exists to stop.
             self.notify(
-                "A repeating post needs some text as well as pictures: pictures "
-                "on their own are the same post every run. They can go out "
+                "A repeating post needs some text as well as pictures or videos: "
+                "on their own they are the same post every run. They can go out "
                 "with Now or Once.",
                 "error",
             )
@@ -1153,10 +1180,13 @@ class PublishView(QWidget):
             )
 
         first = recurrence.next_occurrence(rule, utcnow())
+        # A picked set is stored as the set, not as its groups: the post
+        # follows it from here on. The ticked groups no set brings are its own.
         schedule = self.app.schedule_repo.create(
             name=self.name_entry.text().strip(),
             bodies=wordings,
-            group_ids=groups,
+            group_ids=self.app.plain_group_ids(),
+            set_ids=self.app.selected_set_ids(),
             times=list(rule.times),
             days=list(rule.days),
             media_paths=[str(p) for p in self.compose.attachments],
@@ -1285,9 +1315,13 @@ class PublishView(QWidget):
             summary = recurrence.describe(recurrence.build(schedule.times, schedule.days))
         except recurrence.InvalidRecurrence as exc:
             summary = f"Unusable rule: {exc}"
+        # recipient_ids: the groups its next run goes to, sets included.
+        groups = len(schedule.recipient_ids)
+        sets = len(schedule.set_ids)
         detail = QLabel(
-            f"{summary} · {len(schedule.group_ids)} group"
-            f"{'s' if len(schedule.group_ids) != 1 else ''} · "
+            f"{summary} · "
+            + (f"{sets} group set{'s' if sets != 1 else ''} · " if sets else "")
+            + f"{groups} group{'s' if groups != 1 else ''} · "
             f"{len(schedule.bodies)} wording{'s' if len(schedule.bodies) != 1 else ''}"
         )
         detail.setObjectName("Muted")

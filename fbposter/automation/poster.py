@@ -11,13 +11,14 @@ Two rules from CLAUDE.md are load-bearing here:
 
 from __future__ import annotations
 
+import base64
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Sequence
 
-from .. import strings
-from ..errors import AutomationHalted, ComposerNotFound, PostNotVerified
+from .. import media, strings
+from ..errors import AutomationHalted, ComposerNotFound, PostNotVerified, UploadStalled
 from ..text import strip_invisible
 from .detect import PageVerdict, classify, halt_message
 from .humanize import Humanizer
@@ -43,6 +44,19 @@ RENDER_POLL_MS = 500
 # How long to wait, once the post window has closed, for Facebook's reply to
 # the Post click. It came about five seconds after the click live.
 CREATION_WAIT_MS = 15_000
+
+# Waiting for an attached video to finish uploading (see wait_for_uploads).
+UPLOAD_POLL_MS = 2_000
+# No movement for this long and the upload is taken to have stalled. There is
+# no limit on the upload as a whole: the user chose none (2026-10-15), and a
+# big video on a slow line legitimately takes many minutes -- a 58 MB one was
+# a fifth of the way up after five minutes, live.
+UPLOAD_STALL_MS = 5 * 60_000
+# Consecutive looks with nothing uploading before it counts as finished, so a
+# moment between one file's bar and the next is not mistaken for the end.
+UPLOAD_QUIET_POLLS = 2
+# How often the page is checked for a checkpoint during a long upload.
+UPLOAD_GUARD_EVERY_MS = 30_000
 
 # Long enough to be unique to this post, short enough to survive Facebook
 # reflowing or truncating the text in the feed.
@@ -86,12 +100,37 @@ class PostRequest:
     sent_before: bool = False
 
 
+def _post_id_from_story_id(story_id: Any) -> str:
+    """The post's number inside a story id, or "".
+
+    A story id is base64 of "S:_I<author>:<kind>:<post number>". Read live on
+    2026-10-15 off a video post, whose number opened that exact post.
+    """
+    if not isinstance(story_id, str) or not story_id:
+        return ""
+    try:
+        decoded = base64.b64decode(story_id + "=" * (-len(story_id) % 4)).decode("ascii")
+    except (ValueError, UnicodeDecodeError):
+        return ""
+    parts = decoded.split(":")
+    if len(parts) < 3 or parts[0] != "S" or not parts[-1].isdigit():
+        return ""
+    return parts[-1]
+
+
 def created_post_url(reply_text: str, group_url: str = "") -> str:
     """The new post's own link, from Facebook's reply to the Post click.
 
     "" when the reply does not describe a new post. The shape was read off the
     live site on 2026-10-07: data.story_create.story carries `url`
     (.../permalink/<id>/) and `legacy_story_hideable_id` (the <id>).
+
+    **A video post replies differently** (read live 2026-10-15): `story` is
+    null and `publishing_flow` is "FALLBACK", because Facebook publishes the
+    post only once it has processed the video, a minute or two later. The
+    post's number is then inside `story_create.story_id`, and the link built
+    from it opened that exact post. So for a video the reply is still proof
+    that this post was made, though it may not be in the feed yet.
     """
     for line in reply_text.splitlines():
         line = line.strip().removeprefix("for (;;);")
@@ -103,14 +142,18 @@ def created_post_url(reply_text: str, group_url: str = "") -> str:
             continue
         data = reply.get("data") if isinstance(reply, dict) else None
         created = data.get("story_create") if isinstance(data, dict) else None
-        story = created.get("story") if isinstance(created, dict) else None
-        if not isinstance(story, dict):
+        if not isinstance(created, dict):
             continue
-        url = story.get("url")
-        if isinstance(url, str) and url.startswith("http"):
-            return url
-        post_id = str(story.get("legacy_story_hideable_id") or "")
-        if post_id.isdigit() and group_url:
+        story = created.get("story")
+        if isinstance(story, dict):
+            url = story.get("url")
+            if isinstance(url, str) and url.startswith("http"):
+                return url
+            post_id = str(story.get("legacy_story_hideable_id") or "")
+            if post_id.isdigit() and group_url:
+                return group_url.rstrip("/") + f"/permalink/{post_id}/"
+        post_id = _post_id_from_story_id(created.get("story_id"))
+        if post_id and group_url:
             return group_url.rstrip("/") + f"/permalink/{post_id}/"
     return ""
 
@@ -339,7 +382,7 @@ class GroupPoster:
         self.human.type_text(self.page.keyboard, body)
 
     def attach_media(self, dialog: Any, paths: Sequence[Path]) -> None:
-        """Attach images by writing straight to the file input.
+        """Attach pictures and videos by writing straight to the file input.
 
         **Do not click the Photo/video button.** Clicking it opens the native
         Windows "Open" dialog, which is modal, steals focus, and was observed
@@ -348,7 +391,8 @@ class GroupPoster:
 
         The input element is already in the composer's DOM before that button
         is touched, so setting files on it directly is both safer and simpler.
-        All images go in one call; the input carries `multiple`.
+        Everything goes in one call; the input carries `multiple`, and accepts
+        pictures and videos together (read live 2026-10-15).
         """
         if not paths:
             return
@@ -358,6 +402,90 @@ class GroupPoster:
         file_input = dialog.locator('input[type="file"]').first
         file_input.set_input_files([str(path) for path in paths])
         self.human.settle()
+        self.wait_for_uploads(dialog)
+
+    def _upload_progress(self, dialog: Any) -> list[float] | None:
+        """How far each upload in the post window has got, or None if none is.
+
+        Facebook draws a `progressbar` over a video while it uploads ("Uploading
+        video", aria-valuenow 0 to 100) and removes it when the upload is done.
+        Read by role and number only, so no language is involved.
+        """
+        bars = dialog.get_by_role("progressbar")
+        count = bars.count()
+        if not count:
+            return None
+        values = []
+        for index in range(count):
+            try:
+                values.append(float(bars.nth(index).get_attribute("aria-valuenow") or 0))
+            except Exception:
+                values.append(0.0)  # no number, or a bar that went as it was read
+        return values
+
+    def _post_is_disabled(self, dialog: Any) -> bool:
+        button = self._first_present(
+            [dialog.get_by_role("button", name=name, exact=True) for name in strings.POST_BUTTONS]
+        )
+        if button is None:
+            return False  # publish() reports a missing button in its own words
+        try:
+            return button.get_attribute("aria-disabled") == "true"
+        except Exception:
+            return False
+
+    def wait_for_uploads(self, dialog: Any) -> None:
+        """Wait until every attached file has finished uploading.
+
+        **Facebook lets Post be clicked long before a video has uploaded.**
+        Watched live on 2026-10-15: Post is disabled for about a second after
+        the files are set, then enabled again while a 58 MB video sat at 1%.
+        So Post being clickable says nothing, and the progress bar is what is
+        watched: it goes when the upload is done (six seconds for a 1 MB
+        video). What a click mid-upload does was not tested, on purpose.
+
+        No overall limit: the wait lasts as long as the upload keeps moving.
+        Five minutes without movement raises UploadStalled, before Post, so
+        "nothing was posted" is true. The page is still checked for a
+        checkpoint every half minute.
+        """
+        quiet = 0
+        last: list[float] | None = None
+        still_for = 0
+        since_guard = 0
+        while True:
+            progress = self._upload_progress(dialog)
+            if progress is None and not self._post_is_disabled(dialog):
+                quiet += 1
+                if quiet >= UPLOAD_QUIET_POLLS:
+                    return
+                last = None
+            else:
+                quiet = 0
+                # Movement is any bar going up, or a bar coming or going: one
+                # video finishing lowers the total while the next carries on.
+                moved = progress is not None and (
+                    last is None
+                    or len(progress) != len(last)
+                    or any(now > before for now, before in zip(progress, last))
+                )
+                last = progress
+                if moved:
+                    still_for = 0
+                else:
+                    still_for += UPLOAD_POLL_MS
+                if still_for >= UPLOAD_STALL_MS:
+                    raise UploadStalled(
+                        "A video stopped uploading to Facebook: no progress for "
+                        f"{UPLOAD_STALL_MS // 60_000} minutes. Post was not clicked, so "
+                        "nothing was posted. Check the internet connection, then queue "
+                        "it again."
+                    )
+            self.page.wait_for_timeout(UPLOAD_POLL_MS)
+            since_guard += UPLOAD_POLL_MS
+            if since_guard >= UPLOAD_GUARD_EVERY_MS:
+                since_guard = 0
+                self.guard()
 
     def publish(self, dialog: Any) -> bool:
         """Click Post. Returns whether the composer actually closed.
@@ -737,12 +865,15 @@ class GroupPoster:
         follows, as a person would take, for the "pending admin approval"
         banner; a checkpoint or a block shown there still halts the batch.
         """
-        confirmed = PostOutcome(
-            posted=True,
-            verified=True,
-            post_url=url,
-            detail="Posted. Facebook confirmed it and gave the post its own link.",
-        )
+        detail = "Posted. Facebook confirmed it and gave the post its own link."
+        if any(media.is_video(path) for path in request.media_paths):
+            # Facebook publishes a video post once it has processed the video,
+            # a minute or two after the click (seen live, 2026-10-15).
+            detail += (
+                " A video can take a few minutes to show in the group while "
+                "Facebook processes it."
+            )
+        confirmed = PostOutcome(posted=True, verified=True, post_url=url, detail=detail)
         if not request.group_url:
             return confirmed
         try:
@@ -779,7 +910,7 @@ class GroupPoster:
             self.discard()
             raise PostNotVerified(
                 "Clicked Post, but the post window was still open a minute later. A "
-                "post with only pictures has no words to look for, so whether it "
+                "post with only pictures or videos has no words to look for, so whether it "
                 "went out cannot be checked. Look at the group before queueing it "
                 "again, because posting it twice is worse than not posting it."
             )
@@ -806,7 +937,7 @@ class GroupPoster:
             posted=True,
             verified=False,
             detail=(
-                "Only pictures were uploaded, so the app could not check that it "
+                "Only pictures or videos were uploaded, so the app could not check that it "
                 "posted. Facebook closed the post window, which usually means it "
                 "went out. Look at the group to be sure."
             ),

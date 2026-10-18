@@ -63,6 +63,13 @@ class AutomationHalted(FBPosterError):
         self.may_have_posted = may_have_posted
 
 
+class UploadStalled(FBPosterError):
+    """A picture or video stopped uploading before Post was clicked.
+
+    Raised before the click, so nothing was posted and saying so is true.
+    """
+
+
 class ComposerNotFound(FBPosterError):
     """A required composer element could not be located.
 

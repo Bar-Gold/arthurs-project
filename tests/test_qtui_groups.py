@@ -362,6 +362,8 @@ class TestTheFlowBetweenScreens:
             "groups",
             "publish",
             "dashboard",
+            # Not a step: where sets are made (the user's choice, 2026-10-15).
+            "group_sets",
             # Not a step: somewhere you go on purpose, at the foot.
             "settings",
         ]

@@ -95,7 +95,14 @@ def attach(endpoint: str | None = None) -> Iterator[BrowserContext]:
 
     with sync_playwright() as playwright:
         try:
-            browser = playwright.chromium.connect_over_cdp(endpoint)
+            # is_local: this Chrome is always the app's own, on this PC
+            # (config.CDP_HOST is 127.0.0.1). Without it Playwright treats an
+            # attached browser as remote and copies every upload through the
+            # connection, refusing anything over 50 MB: "Cannot transfer files
+            # larger than 50Mb to a browser not co-located with the server",
+            # seen live on 2026-10-15 with a 58 MB video. With it, Chrome reads
+            # the file from disk itself.
+            browser = playwright.chromium.connect_over_cdp(endpoint, is_local=True)
         except PlaywrightError as exc:
             raise ConnectionFailed(
                 f"Could not open a CDP session at {endpoint}: {exc}"

@@ -16,6 +16,10 @@ groups, pictures, times and days. Two things deliberately do not:
 A group removed from the Groups list is not here at all: removing it took it
 out of every repeating post (`GroupRepo.remove`).
 
+Group sets are picked here whole, as on the Groups screen: a group a ticked
+set brings shows ticked and greyed, with the set's name beside it. The post
+stores the set, not its groups, so it follows the set from its next run.
+
 Saving judges the rules exactly as creating does (`publish.schedule_violations`),
 but only a rule the post did not already have "Post anyway" for is offered
 again. A rule it no longer breaks is dropped from the list, so the card never
@@ -49,7 +53,8 @@ from fbposter.text import strip_invisible
 
 from .. import theme
 from ..widgets import card, clear, row, set_note_lines
-from .compose import IMAGE_FILTER
+from .compose import ATTACH_LABEL, MEDIA_FILTER, NO_ATTACHMENTS, check_attachments
+from .groups import SET_COLUMNS, in_sets, set_label
 from .publish import (
     ANYWAY_EFFECT,
     ANYWAY_STILL,
@@ -59,6 +64,7 @@ from .publish import (
     RIGHT_COLUMN_WIDTH,
     TimePicker,
     day_boxes,
+    following,
     schedule_violations,
 )
 
@@ -85,6 +91,13 @@ class ScheduleEditView(QWidget):
         self._wordings: list[QTextEdit] = []
         self._pictures: list[str] = []
         self._group_boxes: dict[int, QCheckBox] = {}
+        # Beside each group: which ticked set brings it, when one does.
+        self._group_notes: dict[int, QLabel] = {}
+        # The groups ticked by hand. A box a set has ticked shows the set's
+        # tick, so this is what it goes back to when the set is unticked.
+        self._own: set[int] = set()
+        self._set_boxes: dict[int, QCheckBox] = {}
+        self._sets: dict[int, object] = {}
         self._time_rows: list[TimePicker] = []
         self._day_boxes: list[QCheckBox] = []
         self._offered: frozenset[str] = frozenset()
@@ -145,6 +158,23 @@ class ScheduleEditView(QWidget):
         column.addWidget(self.rotation_note)
         column.addSpacing(theme.PAD_S)
 
+        # Hidden while there are no sets to pick.
+        self.sets_section = row()
+        sets_column = QVBoxLayout(self.sets_section)
+        sets_column.setContentsMargins(0, 0, 0, theme.PAD_S)
+        sets_column.setSpacing(theme.PAD_XS)
+        sets_label = QLabel("Group sets")
+        sets_label.setObjectName("SectionHeading")
+        sets_column.addWidget(sets_label)
+        sets_card = card()
+        self.set_grid = QGridLayout(sets_card)
+        self.set_grid.setContentsMargins(theme.PAD_M, theme.PAD_S, theme.PAD_M, theme.PAD_S)
+        self.set_grid.setHorizontalSpacing(theme.PAD_L)
+        self.set_grid.setVerticalSpacing(theme.PAD_XS)
+        sets_column.addWidget(sets_card)
+        self.sets_section.setVisible(False)
+        column.addWidget(self.sets_section)
+
         groups_label = QLabel("Groups")
         groups_label.setObjectName("SectionHeading")
         column.addWidget(groups_label)
@@ -159,11 +189,11 @@ class ScheduleEditView(QWidget):
         column.addSpacing(theme.PAD_S)
 
         pictures_header = QHBoxLayout()
-        pictures_label = QLabel("Pictures")
+        pictures_label = QLabel("Pictures and videos")
         pictures_label.setObjectName("SectionHeading")
         pictures_header.addWidget(pictures_label)
         pictures_header.addStretch(1)
-        self.attach_button = QPushButton("Attach images")
+        self.attach_button = QPushButton(ATTACH_LABEL)
         self.attach_button.clicked.connect(self._pick_files)
         pictures_header.addWidget(self.attach_button)
         column.addLayout(pictures_header)
@@ -315,19 +345,43 @@ class ScheduleEditView(QWidget):
             for body in schedule.bodies:
                 self.add_wording(body)
 
+            sets = self.app.group_set_repo.list()
+            self._sets = {s.id: s for s in sets}
+            clear(self.set_grid)
+            self._set_boxes = {}
+            for index, group_set in enumerate(sets):
+                box = QCheckBox(set_label(group_set))
+                box.setChecked(group_set.id in schedule.set_ids)
+                box.toggled.connect(lambda _on: self.refresh_covered())
+                self.set_grid.addWidget(box, index // SET_COLUMNS, index % SET_COLUMNS)
+                self._set_boxes[group_set.id] = box
+            self.sets_section.setVisible(bool(sets))
+
             active = self.app.group_repo.list()
             clear(self.group_box)
             self._group_boxes = {}
+            self._group_notes = {}
+            self._own = set(schedule.group_ids)
             for group in active:
+                line = row()
+                layout = QHBoxLayout(line)
+                layout.setContentsMargins(0, 0, 0, 0)
                 box = QCheckBox(group.display_name)
                 box.setChecked(group.id in schedule.group_ids)
-                box.stateChanged.connect(lambda _s: self.refresh_summary())
-                self.group_box.addWidget(box)
+                box.toggled.connect(lambda on, gid=group.id: self._toggle_own(gid, on))
+                layout.addWidget(box, 1)
+                note = QLabel("")
+                note.setObjectName("Muted")
+                note.setVisible(False)
+                layout.addWidget(note)
+                self.group_box.addWidget(line)
                 self._group_boxes[group.id] = box
+                self._group_notes[group.id] = note
             if not active:
                 note = QLabel("No groups yet. Add them on the Groups screen.")
                 note.setObjectName("Muted")
                 self.group_box.addWidget(note)
+            self.refresh_covered()
 
             self._pictures = list(schedule.media_paths)
             self._render_pictures()
@@ -385,8 +439,51 @@ class ScheduleEditView(QWidget):
 
     # -- groups ------------------------------------------------------------
     def ticked_group_ids(self) -> list[int]:
-        """Ticked groups from the current list, in the order it shows them."""
+        """Every group the post goes to, in the order the list shows them:
+        the ones ticked by hand and the ones its ticked sets bring."""
         return [gid for gid, box in self._group_boxes.items() if box.isChecked()]
+
+    def ticked_set_ids(self) -> list[int]:
+        return [sid for sid, box in self._set_boxes.items() if box.isChecked()]
+
+    def covered(self) -> dict[int, list[str]]:
+        """Each group a ticked set brings, with the sets' names."""
+        covered: dict[int, list[str]] = {}
+        for set_id in self.ticked_set_ids():
+            group_set = self._sets.get(set_id)
+            if group_set is not None:
+                for group_id in group_set.group_ids:
+                    covered.setdefault(group_id, []).append(group_set.name)
+        return covered
+
+    def _toggle_own(self, group_id: int, on: bool) -> None:
+        # refresh_covered() sets a box with its signals blocked, so only a
+        # tick by hand (or a test standing in for one) reaches here.
+        if on:
+            self._own.add(group_id)
+        else:
+            self._own.discard(group_id)
+        self.refresh_summary()
+
+    def refresh_covered(self) -> None:
+        """Grey the groups a ticked set brings; give the rest their own tick."""
+        covered = self.covered()
+        for group_id, box in self._group_boxes.items():
+            names = covered.get(group_id)
+            box.blockSignals(True)
+            box.setChecked(bool(names) or group_id in self._own)
+            box.blockSignals(False)
+            box.setEnabled(not names)
+            note = self._group_notes.get(group_id)
+            if note is not None:
+                note.setText(in_sets(names) if names else "")
+                note.setVisible(bool(names))
+        self.refresh_summary()
+
+    def plain_group_ids(self) -> list[int]:
+        """The groups ticked by hand that no ticked set brings."""
+        covered = self.covered()
+        return [gid for gid in self._group_boxes if gid in self._own and gid not in covered]
 
     def group_ids_to_save(self) -> list[int]:
         """What the post will hold: its old order first, new groups after.
@@ -394,32 +491,39 @@ class ScheduleEditView(QWidget):
         Keeping the old order keeps the rotation where it was -- the position
         is part of which wording a group gets next. Only ticked groups are
         kept, and only groups on the list can be ticked, so a group removed
-        from the list is never written back into the post.
+        from the list is never written back into the post. A group a ticked
+        set brings is the set's, so it is stored through the set.
         """
-        ticked = self.ticked_group_ids()
-        kept = [gid for gid in self._loaded.group_ids if gid in ticked]
-        return kept + [gid for gid in ticked if gid not in kept]
+        plain = self.plain_group_ids()
+        kept = [gid for gid in self._loaded.group_ids if gid in plain]
+        return kept + [gid for gid in plain if gid not in kept]
+
+    def set_ids_to_save(self) -> list[int]:
+        """The sets it follows, old order first, for the same reason."""
+        ticked = self.ticked_set_ids()
+        kept = [sid for sid in self._loaded.set_ids if sid in ticked]
+        return kept + [sid for sid in ticked if sid not in kept]
 
     # -- pictures ----------------------------------------------------------
     def _pick_files(self) -> None:
         """The Compose picker, for the same reason it is allowed there: the
         user just pressed the button that asks for it."""
         chosen, _filter = QFileDialog.getOpenFileNames(
-            self, "Attach images", "", IMAGE_FILTER
+            self, ATTACH_LABEL, "", MEDIA_FILTER
         )
         self.add_pictures(chosen)
 
     def add_pictures(self, paths) -> int:
-        added = 0
-        for name in paths:
-            path = str(Path(name))
-            if path not in self._pictures:
-                self._pictures.append(path)
-                added += 1
-        if added:
+        """Pictures and videos, judged exactly as Compose judges them."""
+        accepted, message, level = check_attachments(
+            paths, [Path(p) for p in self._pictures]
+        )
+        self._pictures.extend(str(path) for path in accepted)
+        if accepted:
             self._render_pictures()
-            self.notify(f"Attached {added} file{'s' if added != 1 else ''}.", "success")
-        return added
+        if message:
+            self.notify(message, level)
+        return len(accepted)
 
     def remove_picture(self, path: str) -> None:
         if path in self._pictures:
@@ -433,7 +537,7 @@ class ScheduleEditView(QWidget):
         clear(self.picture_box)
         self.refresh_summary()
         if not self._pictures:
-            note = QLabel("No images attached.")
+            note = QLabel(NO_ATTACHMENTS)
             note.setObjectName("Muted")
             self.picture_box.addWidget(note)
             return
@@ -553,6 +657,11 @@ class ScheduleEditView(QWidget):
             )
         elif self._loaded.next_run_at is not None:
             lines.append(f"Next run {clock.format_local(self._loaded.next_run_at)}")
+        follows = following(
+            [self._sets[sid].name for sid in self.ticked_set_ids() if sid in self._sets]
+        )
+        if follows:
+            lines.append(follows)
         found = schedule_violations(self.app, rule, groups, wordings, history=False)
         warnings = [v.message for v in found]
         still = frozenset(v.rule for v in found) & self._loaded.overrides
@@ -578,7 +687,7 @@ class ScheduleEditView(QWidget):
         wordings = self.wordings()
         if not wordings and self._pictures:
             self.notify(
-                "A repeating post needs some text as well as pictures, because each run "
+                "A repeating post needs some text as well as pictures or videos, because each run "
                 "gives every group a wording it has not had yet.",
                 "error",
             )
@@ -624,6 +733,7 @@ class ScheduleEditView(QWidget):
                 name=self.name_entry.text().strip(),
                 bodies=wordings,
                 group_ids=self.group_ids_to_save(),
+                set_ids=self.set_ids_to_save(),
                 times=list(rule.times),
                 days=list(rule.days),
                 media_paths=self._pictures,

@@ -12,6 +12,11 @@ group comes back from the removed groups under the list.
 The ticks themselves live on the window (`App.selected_groups`), because
 Compose opens a wording tab per chosen group and Publish sends to them; three
 screens reading one set is the only way they cannot disagree.
+
+Group sets are picked here too, each as one item (`App.selected_sets`); they
+are made on their own screen. A group a picked set brings shows ticked and
+greyed with the set's name beside it, and cannot be unticked on its own: the
+user's choice (2026-10-15) was that a set is picked whole or not at all.
 """
 
 from __future__ import annotations
@@ -20,6 +25,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -34,7 +40,7 @@ from fbposter.connection import ConnectionState
 from fbposter.text import strip_invisible
 
 from .. import theme
-from ..widgets import card, clear
+from ..widgets import card, clear, row
 
 # What a row says while its group's name is being fetched. It used to show the
 # group's number instead, which is meaningless to the person who pasted a link.
@@ -49,6 +55,18 @@ IMPORTING_LABEL = "Getting your groups…"
 SEARCH_PLACEHOLDER = "Search your groups"
 SHOW_REMOVED = "Show removed groups ({count})"
 HIDE_REMOVED = "Hide removed groups"
+# Group sets offered per line above the list.
+SET_COLUMNS = 3
+
+
+def set_label(group_set) -> str:
+    """A set as it is offered for picking: its name and how many groups."""
+    return f"{group_set.name} ({len(group_set.group_ids)})"
+
+
+def in_sets(names) -> str:
+    """Beside a group a picked set brings: which set it comes from."""
+    return "in " + ", ".join(names)
 
 
 def matches(group, query: str) -> bool:
@@ -86,9 +104,12 @@ class GroupRow(QFrame):
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802 - Qt's name
         # Only a release still over the card, as for any button: dragging off
-        # it is how a person takes a click back.
+        # it is how a person takes a click back. `toggle()` ignores a box being
+        # disabled, so that is checked here: a group a picked set brings is
+        # not ticked or unticked on its own.
         if event.button() == Qt.LeftButton and self.rect().contains(event.position().toPoint()):
-            self.box.toggle()
+            if self.box.isEnabled():
+                self.box.toggle()
             event.accept()
         else:
             super().mouseReleaseEvent(event)
@@ -125,6 +146,13 @@ class GroupsView(QWidget):
         self.empty_note: QLabel | None = None
         # True while the groups are being read off Facebook.
         self._importing = False
+        # The group set boxes, and the sets they were drawn from. Picking one
+        # does not rebuild them (the box clicked would be destroyed under the
+        # click); only a set being made, renamed, refilled or deleted does.
+        self._set_boxes: dict[int, QCheckBox] = {}
+        self._sets_shown = None
+        # Each group a picked set brings, with the sets' names.
+        self._covered: dict[int, list[str]] = {}
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -156,6 +184,24 @@ class GroupsView(QWidget):
         top.addWidget(self.import_button)
         outer.addLayout(top)
         outer.addSpacing(theme.PAD_M)
+
+        # Group sets, each picked as one item. They are made on the Group sets
+        # screen, so this is hidden until one exists.
+        self.sets_section = row()
+        sets_column = QVBoxLayout(self.sets_section)
+        sets_column.setContentsMargins(0, 0, 0, theme.PAD_M)
+        sets_column.setSpacing(theme.PAD_XS)
+        sets_heading = QLabel("Group sets")
+        sets_heading.setObjectName("SectionHeading")
+        sets_column.addWidget(sets_heading)
+        sets_card = card()
+        self.set_grid = QGridLayout(sets_card)
+        self.set_grid.setContentsMargins(theme.PAD_M, theme.PAD_S, theme.PAD_M, theme.PAD_S)
+        self.set_grid.setHorizontalSpacing(theme.PAD_L)
+        self.set_grid.setVerticalSpacing(theme.PAD_XS)
+        sets_column.addWidget(sets_card)
+        self.sets_section.setVisible(False)
+        outer.addWidget(self.sets_section)
 
         tools = QHBoxLayout()
         self.count_label = QLabel("")
@@ -221,16 +267,35 @@ class GroupsView(QWidget):
 
     def set_all(self, selected: bool) -> None:
         """Tick or clear the groups on show: only the matches while a search
-        is typed (the user's choice, 2026-10-14)."""
+        is typed (the user's choice, 2026-10-14).
+
+        Clear also unpicks every group set: they are always on show, and a
+        "Clear" that left greyed ticks behind would not look cleared.
+        """
+        if not selected and self.app.selected_sets:
+            for group_id in self.shown_group_ids():
+                self.app.set_group_selected(group_id, False)
+            self.app.selected_sets.clear()
+            # The greyed rows go back to plain ones, so they are redrawn.
+            self.refresh()
+            return
         shown = set(self.shown_group_ids())
         for group_id, box in self._checkboxes.items():
             if group_id not in shown:
                 continue
+            self.app.set_group_selected(group_id, selected)
+            if not box.isEnabled():
+                continue  # a set's group stays as the set has it
             box.blockSignals(True)
             box.setChecked(selected)
             box.blockSignals(False)
-            self.app.set_group_selected(group_id, selected)
         self.refresh_count()
+
+    def toggle_set(self, set_id: int, selected: bool) -> None:
+        """Pick or unpick a group set. Its groups' rows change, so they are
+        redrawn; the set boxes themselves are not."""
+        self.app.set_set_selected(set_id, selected)
+        self.refresh()
 
     def refresh_count(self) -> None:
         chosen = len(self.selected_group_ids())
@@ -262,10 +327,18 @@ class GroupsView(QWidget):
             taken_from.append(
                 f"{removal.batches} queued post{'s' if removal.batches != 1 else ''}"
             )
+        if removal.sets:
+            taken_from.append(
+                f"{removal.sets} group set{'s' if removal.sets != 1 else ''}"
+            )
         if taken_from:
+            listed = (
+                f"{', '.join(taken_from[:-1])} and {taken_from[-1]}"
+                if len(taken_from) > 1 else taken_from[0]
+            )
             # Said here because bringing the group back does not undo it.
             self.app.toast(
-                f"Group removed, and taken out of {' and '.join(taken_from)}. It can "
+                f"Group removed, and taken out of {listed}. It can "
                 "be brought back from the removed groups under the list.",
                 "info",
                 undo=undo,
@@ -478,8 +551,13 @@ class GroupsView(QWidget):
         The search is not in it: typing hides and shows rows that are already
         drawn (`apply_search`), it never rebuilds them."""
         selected = self.app.selected_groups
+        covered = self._covered
         return (
-            tuple((g.id, self._label(g), g.members, g.id in selected) for g in groups),
+            tuple(
+                (g.id, self._label(g), g.members, g.id in selected,
+                 tuple(covered.get(g.id, ())))
+                for g in groups
+            ),
             tuple((g.id, g.display_name) for g in removed) if self._show_removed else (),
             len(removed),
             self._show_removed,
@@ -490,9 +568,48 @@ class GroupsView(QWidget):
             return LOOKING_UP
         return group.display_name
 
+    def refresh_sets(self, sets) -> None:
+        """The group set boxes: rebuilt only when the sets themselves change.
+
+        Whether each one is picked is restated every time, outside the guard,
+        because a click changes it without changing anything the guard is
+        keyed on, and Clear changes it without a click.
+        """
+        names = {g.id: g.display_name for g in self._groups.values()}
+        # The tooltip names the groups, so their names are in it too.
+        tips = {
+            s.id: ", ".join(names.get(gid, "") for gid in s.group_ids) for s in sets
+        }
+        shown = tuple((s.id, set_label(s), tips[s.id]) for s in sets)
+        if shown != self._sets_shown:
+            self._sets_shown = shown
+            clear(self.set_grid)
+            self._set_boxes = {}
+            for index, group_set in enumerate(sets):
+                box = QCheckBox(set_label(group_set))
+                box.setToolTip(tips[group_set.id])
+                box.toggled.connect(lambda on, sid=group_set.id: self.toggle_set(sid, on))
+                self.set_grid.addWidget(box, index // SET_COLUMNS, index % SET_COLUMNS)
+                self._set_boxes[group_set.id] = box
+            self.sets_section.setVisible(bool(sets))
+        for set_id, box in self._set_boxes.items():
+            box.blockSignals(True)
+            box.setChecked(set_id in self.app.selected_sets)
+            box.blockSignals(False)
+
     def refresh(self, force: bool = False) -> None:
         groups = self.app.group_repo.list()
         removed = self.app.group_repo.removed()
+        sets = self.app.group_set_repo.list()
+        # A set deleted while picked is no longer picked.
+        self.app.selected_sets &= {s.id for s in sets}
+        self._covered = {}
+        for group_set in sets:
+            if group_set.id in self.app.selected_sets:
+                for group_id in group_set.group_ids:
+                    self._covered.setdefault(group_id, []).append(group_set.name)
+        self._groups = {group.id: group for group in groups}
+        self.refresh_sets(sets)
         snapshot = self._snapshot(groups, removed)
         if not force and snapshot == self._snapshot_shown:
             # The count still gets restated: it is one setText, and it also
@@ -504,7 +621,6 @@ class GroupsView(QWidget):
         clear(self.rows)
         self._checkboxes = {}
         self._rows = {}
-        self._groups = {group.id: group for group in groups}
         self._removed_rows = {}
         self._removed_groups = {group.id: group for group in removed}
         self.removed_heading = None
@@ -568,8 +684,9 @@ class GroupsView(QWidget):
 
     def _row(self, group) -> QWidget:
         label = self._label(group)
+        covered = self._covered.get(group.id)
         box = QCheckBox(label)
-        box.setChecked(group.id in self.app.selected_groups)
+        box.setChecked(group.id in self.app.selected_groups or bool(covered))
         box.setStyleSheet(
             f"color: {theme.C['TEXT_MUTED']};" if label == LOOKING_UP
             else "font-weight: 600;"
@@ -581,6 +698,16 @@ class GroupsView(QWidget):
         layout = QHBoxLayout(holder)
         layout.setContentsMargins(theme.PAD_M, theme.PAD_S, theme.PAD_S, theme.PAD_S)
         layout.addWidget(box, 1)
+
+        if covered:
+            # The set picks it, so the set is what unpicks it.
+            box.setEnabled(False)
+            holder.setCursor(Qt.ArrowCursor)
+            source = QLabel(in_sets(covered))
+            source.setObjectName("Muted")
+            layout.addWidget(source)
+            # Apart from the member count, or the two read as one phrase.
+            layout.addSpacing(theme.PAD_M)
 
         # As Facebook writes it, in the account's language: "12K members".
         if group.members:

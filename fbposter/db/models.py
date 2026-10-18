@@ -284,9 +284,16 @@ class Schedule:
     last_run_at: datetime | None = None
     created_at: datetime | None = None
     # Filled in by the repository from schedule_targets, in position order.
+    # The groups ticked one by one, never the ones a set brings.
     group_ids: list[int] = field(default_factory=list)
     # "Post anyway" for a repeating post: copied onto every batch it fires.
     overrides: frozenset[str] = frozenset()
+    # The group sets it follows, from schedule_sets, in position order.
+    set_ids: list[int] = field(default_factory=list)
+    # Every group a run goes to, worked out by the repository: the plain
+    # groups, then each set's groups as they are now, each group once, removed
+    # groups left out. The order rotates the wordings, so it is fixed.
+    recipient_ids: list[int] = field(default_factory=list)
 
     @property
     def active(self) -> bool:
@@ -297,7 +304,13 @@ class Schedule:
         return self.name or f"Schedule {self.id}"
 
     @classmethod
-    def from_row(cls, row: Mapping[str, Any], group_ids: Sequence[int] = ()) -> "Schedule":
+    def from_row(
+        cls,
+        row: Mapping[str, Any],
+        group_ids: Sequence[int] = (),
+        set_ids: Sequence[int] = (),
+        recipient_ids: Sequence[int] | None = None,
+    ) -> "Schedule":
         return cls(
             id=row["id"],
             name=row["name"] or "",
@@ -312,4 +325,31 @@ class Schedule:
             created_at=from_iso(row["created_at"]),
             group_ids=list(group_ids),
             overrides=_overrides_from_row(row),
+            set_ids=list(set_ids),
+            recipient_ids=list(group_ids if recipient_ids is None else recipient_ids),
+        )
+
+
+@dataclass(frozen=True)
+class GroupSet:
+    """A named collection of groups, picked as one item ("Tel Aviv").
+
+    A repeating post linked to a set follows it: each run posts to the set's
+    groups as they are at that run.
+    """
+
+    id: int
+    name: str
+    # In the order they were put in the set. A removed group leaves every set,
+    # so these are all on the list.
+    group_ids: list[int] = field(default_factory=list)
+    created_at: datetime | None = None
+
+    @classmethod
+    def from_row(cls, row: Mapping[str, Any], group_ids: Sequence[int] = ()) -> "GroupSet":
+        return cls(
+            id=row["id"],
+            name=row["name"],
+            group_ids=list(group_ids),
+            created_at=from_iso(row["created_at"]),
         )

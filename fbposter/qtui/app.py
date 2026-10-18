@@ -31,12 +31,20 @@ from ..automation.groupfinder import LiveGroupFinder
 from ..automation.groupinfo import LiveGroupNamer
 from ..db import Database
 from ..db.models import SCHEDULE_ACTIVE
-from ..db.repo import GroupRepo, ScheduleRepo, SettingsRepo, TaskRepo, TemplateRepo
+from ..db.repo import (
+    GroupRepo,
+    GroupSetRepo,
+    ScheduleRepo,
+    SettingsRepo,
+    TaskRepo,
+    TemplateRepo,
+)
 from ..connection import ConnectionResult, ConnectionState, check_connection
 from ..worker import PostingWorker
 from . import icons, theme
 from .views.compose import ComposeView
 from .views.dashboard import DashboardView
+from .views.group_sets import GroupSetsView
 from .views.groups import IMPORT_PENDING_KEY, GroupsView
 from .views.publish import PublishView
 from .views.schedule_edit import ScheduleEditView
@@ -71,12 +79,14 @@ CHECK_DEADLINE_MS = keepalive.CHECK_DEADLINE_S * 1000
 # item has an icon (icons.py); the first three used to be numbered "1." to
 # "3.", which the user replaced with the icons on 2026-10-12. Settings is not
 # part of the flow at all, so it sits at the foot of the sidebar, away from
-# the steps.
+# the steps. Group sets is not a step either: it is where sets are made, and
+# they are picked on Groups (its own item, the user's choice, 2026-10-15).
 NAV_ITEMS = (
     ("compose", "Compose", ComposeView),
     ("groups", "Groups", GroupsView),
     ("publish", "Publish", PublishView),
     ("dashboard", "Dashboard", DashboardView),
+    ("group_sets", "Group sets", GroupSetsView),
     ("settings", "Settings", SettingsView),
 )
 
@@ -97,6 +107,7 @@ NAV_HINTS = {
     "groups": "Choose the groups",
     "publish": "Choose when",
     "dashboard": "See how the posting is going",
+    "group_sets": "Keep groups together, to pick as one",
     "settings": "Pause posting, and the cooldown between posts",
 }
 
@@ -149,6 +160,7 @@ class App(QMainWindow):
         self.task_repo = TaskRepo(self.db)
         self.settings_repo = SettingsRepo(self.db)
         self.schedule_repo = ScheduleRepo(self.db)
+        self.group_set_repo = GroupSetRepo(self.db)
         self.connection_state = ConnectionState.UNKNOWN
         # The full result, which the setup wizard needs -- the pill only
         # ever needed the state.
@@ -198,6 +210,10 @@ class App(QMainWindow):
         # ticks them, Compose opens a wording tab per group, and Publish sends
         # to them. Held as ids, so a group deleted underneath simply drops out.
         self.selected_groups: set[int] = set()
+        # The group sets picked on Groups, each as one item. Their groups go
+        # with the post on top of the ones ticked; a repeating post follows
+        # the sets themselves.
+        self.selected_sets: set[int] = set()
 
         self.setWindowTitle(APP_TITLE)
         self.resize(*theme.WINDOW_DEFAULT)
@@ -392,19 +408,55 @@ class App(QMainWindow):
 
     # -- the shared group selection ----------------------------------------
     def selected_group_ids(self) -> list[int]:
-        """The chosen groups, in the order the Groups screen lists them.
+        """The chosen groups, in the order the Groups screen lists them: the
+        ones ticked, and every group in a picked set.
 
         Derived from the live group list rather than kept as an ordered field,
         so a group removed while it was ticked disappears from here too instead
-        of surviving as an id that no longer resolves.
+        of surviving as an id that no longer resolves. Compose, Now and Once
+        read this, so a set reaches them as the groups it holds right now.
         """
-        return [g.id for g in self.group_repo.list() if g.id in self.selected_groups]
+        chosen = self.selected_groups | set(self.covered_by_sets())
+        return [g.id for g in self.group_repo.list() if g.id in chosen]
+
+    def selected_set_ids(self) -> list[int]:
+        """The picked group sets, in the order they are offered. A set deleted
+        while picked drops out, as a removed group does."""
+        return [s.id for s in self.group_set_repo.list() if s.id in self.selected_sets]
+
+    def covered_by_sets(self) -> dict[int, list[str]]:
+        """Each group a picked set brings, with the names of those sets."""
+        covered: dict[int, list[str]] = {}
+        for group_set in self.group_set_repo.list():
+            if group_set.id in self.selected_sets:
+                for group_id in group_set.group_ids:
+                    covered.setdefault(group_id, []).append(group_set.name)
+        return covered
+
+    def plain_group_ids(self) -> list[int]:
+        """The ticked groups no picked set brings.
+
+        What a repeating post keeps as its own groups, beside the sets it
+        follows. A group that is both ticked and in a picked set is the set's:
+        it is shown that way, and leaves the post if it leaves the set.
+        """
+        covered = self.covered_by_sets()
+        return [
+            g.id for g in self.group_repo.list()
+            if g.id in self.selected_groups and g.id not in covered
+        ]
 
     def set_group_selected(self, group_id: int, selected: bool) -> None:
         if selected:
             self.selected_groups.add(group_id)
         else:
             self.selected_groups.discard(group_id)
+
+    def set_set_selected(self, set_id: int, selected: bool) -> None:
+        if selected:
+            self.selected_sets.add(set_id)
+        else:
+            self.selected_sets.discard(set_id)
 
     # -- navigation --------------------------------------------------------
     def show_view(self, key: str) -> None:

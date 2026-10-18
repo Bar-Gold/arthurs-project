@@ -176,12 +176,12 @@ def cmd_probe(args: argparse.Namespace) -> int:
 def cmd_dry_run(args: argparse.Namespace) -> int:
     """Full rehearsal against a real group that never clicks Post."""
     _require_chrome()
-    media = tuple(Path(p) for p in (args.image or []))
+    media = tuple(Path(p) for p in (args.image or []) + (args.video or []))
     for path in media:
         if not path.is_file():
-            raise FBPosterError(f"No such image: {path}")
+            raise FBPosterError(f"No such file: {path}")
     if not args.text.strip() and not media:
-        raise FBPosterError("Nothing to rehearse: give --text, --image, or both.")
+        raise FBPosterError("Nothing to rehearse: give --text, --image, --video, or a mix.")
 
     print(
         f"Dry run against {args.group_url}\n"
@@ -235,10 +235,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     dry_run.add_argument("group_url", help="a Facebook group URL")
     dry_run.add_argument(
-        "--text", default="", help="the post body to rehearse; leave out for pictures only"
+        "--text", default="", help="the post body to rehearse; leave out for media only"
     )
     dry_run.add_argument(
         "--image", action="append", help="image to attach; repeat for several"
+    )
+    # Waits for the upload to finish, as a real post does, then discards it.
+    dry_run.add_argument(
+        "--video", action="append", help="video to attach; repeat for several"
     )
     dry_run.set_defaults(func=cmd_dry_run)
 

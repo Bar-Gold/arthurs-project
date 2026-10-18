@@ -674,4 +674,10 @@ def stylesheet() -> str:
         background: {c["ACCENT_PRESSED"]};
         border-color: {c["ACCENT_PRESSED"]};
     }}
+    /* Ticked by a group set, not by hand: greyed, because it is not this
+       box's to untick. Unpicking the set is. After :hover, so it wins. */
+    QCheckBox::indicator:checked:disabled {{
+        background: {c["TEXT_MUTED"]};
+        border-color: {c["TEXT_MUTED"]};
+    }}
     """

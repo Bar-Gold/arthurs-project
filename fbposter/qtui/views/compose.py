@@ -15,8 +15,15 @@ from __future__ import annotations
 from datetime import timedelta
 from pathlib import Path
 
-from PySide6.QtCore import QSize, Qt
-from PySide6.QtGui import QColor, QImageIOHandler, QImageReader, QPainter, QPixmap
+from PySide6.QtCore import QPointF, QSize, Qt
+from PySide6.QtGui import (
+    QColor,
+    QImageIOHandler,
+    QImageReader,
+    QPainter,
+    QPixmap,
+    QPolygonF,
+)
 from PySide6.QtWidgets import (
     QButtonGroup,
     QComboBox,
@@ -35,7 +42,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from fbposter import clock
+from fbposter import clock, media
 from fbposter.text import strip_invisible
 from fbposter.db.models import utcnow
 from fbposter.guards import OVERRIDABLE, PlannedTarget, evaluate_batch, rule_labels
@@ -43,7 +50,15 @@ from fbposter.guards import OVERRIDABLE, PlannedTarget, evaluate_batch, rule_lab
 from .. import theme
 from ..widgets import card, clear, row, segmented
 
-IMAGE_FILTER = "Images (*.jpg *.jpeg *.png *.gif *.webp);;All files (*.*)"
+# Pictures and videos together (video since 2026-10-15). The video suffixes
+# are the ones the group composer itself accepts, read live (media.py).
+MEDIA_FILTER = (
+    "Pictures and videos ("
+    + " ".join(f"*{s}" for s in sorted(media.PICTURE_SUFFIXES | media.VIDEO_SUFFIXES))
+    + ");;All files (*.*)"
+)
+ATTACH_LABEL = "Attach pictures or videos"
+NO_ATTACHMENTS = "No pictures or videos attached."
 RIGHT_COLUMN_WIDTH = 330
 TAB_LABEL_CHARS = 16
 
@@ -66,12 +81,54 @@ QUAD_HEIGHT = 200
 MIN_SINGLE_HEIGHT = 180
 MAX_SINGLE_HEIGHT = 560
 
-NO_TEXT = "(No text. The post would be pictures only.)"
+NO_TEXT = "(No text. The post would be pictures or videos only.)"
 
 
-def pictures_only(count: int) -> str:
-    """How a post with pictures and no words is named on Publish and Queue."""
-    return f"Pictures only ({count} picture{'s' if count != 1 else ''}, no text)"
+def check_attachments(names, already) -> tuple[list[Path], str, str]:
+    """Which picked files to attach, and what to tell the user.
+
+    Shared by Compose and the repeating-post edit screen. A video over
+    Facebook's own limit is refused here rather than after an hour of
+    uploading. A big one is attached with a note, because the batch waits for
+    it to upload before the post goes out, and the posts behind it wait too.
+    """
+    accepted: list[Path] = []
+    refused: list[str] = []
+    slow = False
+    for name in names:
+        path = Path(name)
+        if path in already or path in accepted:
+            continue
+        if media.too_large(path):
+            refused.append(path.name)
+            continue
+        accepted.append(path)
+        slow = slow or media.slow_to_upload(path)
+    if refused:
+        return (
+            accepted,
+            f"Not attached: {', '.join(refused)}. Facebook takes videos of up to "
+            "10 GB.",
+            "error",
+        )
+    if not accepted:
+        return accepted, "", "info"
+    message = f"Attached {len(accepted)} file{'s' if len(accepted) != 1 else ''}."
+    if slow:
+        return (
+            accepted,
+            message + " A large video takes a while to upload, and the post waits "
+            "for it before it goes out.",
+            "info",
+        )
+    return accepted, message, "success"
+
+
+def media_only(paths) -> str:
+    """How a post with pictures or videos and no words is named on Publish
+    and the Dashboard: "Pictures only (2 pictures, no text)"."""
+    paths = list(paths)
+    return f"{media.kind(paths)} only ({media.describe(paths)}, no text)"
 
 # Below this, a picture-less post is set large, the way a feed does it.
 BIG_TEXT_CHARS = 85
@@ -83,7 +140,7 @@ SHARED_WORDING = "Just now · the shared wording"
 
 class ComposeView(QWidget):
     title = "Compose"
-    subtitle = "Write the post and attach images. Groups and timing come next."
+    subtitle = "Write the post and attach pictures or videos. Groups and timing come next."
 
     def __init__(self, app) -> None:
         super().__init__()
@@ -205,7 +262,7 @@ class ComposeView(QWidget):
         # Not #Primary: the accent on this screen belongs to "Next: pick
         # groups", and two filled buttons in one column read as two main
         # actions.
-        button = QPushButton("Attach images")
+        button = QPushButton(ATTACH_LABEL)
         button.clicked.connect(self._pick_files)
         attach.addWidget(button)
         attach.addStretch(1)
@@ -546,17 +603,19 @@ class ComposeView(QWidget):
         """The one modal dialog the app allows: the user asked for it, and it
         cannot appear while a batch is running."""
         chosen, _filter = QFileDialog.getOpenFileNames(
-            self, "Attach images", "", IMAGE_FILTER
+            self, ATTACH_LABEL, "", MEDIA_FILTER
         )
-        added = 0
-        for name in chosen:
-            path = Path(name)
-            if path not in self.attachments:
-                self.attachments.append(path)
-                added += 1
-        if added:
+        self.add_files(chosen)
+
+    def add_files(self, names) -> int:
+        """Attach files as the picker would. Returns how many were added."""
+        accepted, message, level = check_attachments(names, self.attachments)
+        self.attachments.extend(accepted)
+        if accepted:
             self._render_attachments()
-            self.notify(f"Attached {added} file{'s' if added != 1 else ''}.", "success")
+        if message:
+            self.notify(message, level)
+        return len(accepted)
 
     def _remove_attachment(self, path: Path) -> None:
         if path in self.attachments:
@@ -567,7 +626,7 @@ class ComposeView(QWidget):
         clear(self.attachment_box)
         self.refresh_preview()
         if not self.attachments:
-            note = QLabel("No images attached.")
+            note = QLabel(NO_ATTACHMENTS)
             note.setObjectName("Muted")
             self.attachment_box.addWidget(note)
             return
@@ -604,7 +663,7 @@ class ComposeView(QWidget):
         # Pictures go to every group in the batch, so with any attached a group
         # left without words still has something to post: a pictures-only post.
         if not self.attachments and any(not self.body_for(gid).strip() for gid in selected):
-            self.notify("Every selected group needs some text or a picture.", "error")
+            self.notify("Every selected group needs some text or a picture or video.", "error")
             return False
 
         now = utcnow()
@@ -817,6 +876,46 @@ def avatar(letter: str, size: int = AVATAR_SIZE) -> QPixmap:
     return pixmap
 
 
+def video_tile(name: str, width: int, height: int) -> QPixmap:
+    """A video in the preview: dark, a play button, and the file's name.
+
+    Its colours are fixed, like a video player's, in both themes.
+    """
+    pixmap = QPixmap(width, height)
+    pixmap.fill(QColor("#18191A"))
+    painter = QPainter(pixmap)
+    try:
+        painter.setRenderHint(QPainter.Antialiasing)
+        radius = max(14, min(width, height) // 8)
+        centre_x, centre_y = width // 2, height // 2
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(255, 255, 255, 60))
+        painter.drawEllipse(centre_x - radius, centre_y - radius, radius * 2, radius * 2)
+        painter.setBrush(QColor("#FFFFFF"))
+        side = radius * 0.9
+        painter.drawPolygon(
+            QPolygonF(
+                [
+                    QPointF(centre_x - side * 0.35, centre_y - side * 0.5),
+                    QPointF(centre_x - side * 0.35, centre_y + side * 0.5),
+                    QPointF(centre_x + side * 0.55, centre_y),
+                ]
+            )
+        )
+        painter.setPen(QColor("#E4E6EB"))
+        font = painter.font()
+        font.setPixelSize(theme.SIZE_SMALL)
+        painter.setFont(font)
+        painter.drawText(
+            pixmap.rect().adjusted(theme.PAD_S, 0, -theme.PAD_S, -theme.PAD_S),
+            Qt.AlignBottom | Qt.AlignHCenter,
+            painter.fontMetrics().elidedText(name, Qt.ElideMiddle, width - 2 * theme.PAD_S),
+        )
+    finally:
+        painter.end()
+    return pixmap
+
+
 class MediaTile(QLabel):
     """One picture in the collage, cropped to fill its slot.
 
@@ -830,6 +929,18 @@ class MediaTile(QLabel):
         self.path = Path(path)
         self.setFixedSize(width, height)
         self.setAlignment(Qt.AlignCenter)
+        self.is_video = media.is_video(self.path)
+
+        if self.is_video:
+            # Never decoded: Qt's image readers cannot open a video, and
+            # QtMultimedia is not in the packaged build. A player-shaped tile
+            # with the file's name says what will be uploaded.
+            self.readable = True
+            shown = video_tile(self.path.name, width, height)
+            if extra > 0:
+                shown = self._with_overlay(shown, f"+{extra}")
+            self.setPixmap(shown)
+            return
 
         pixmap = load_tile(self.path, width, height)
         self.readable = not pixmap.isNull()
@@ -1066,7 +1177,10 @@ class PostPreview(QWidget):
         A single photo is shown at its natural aspect ratio -- cropping the
         only picture in a post to a fixed box would misrepresent it -- but a
         very tall one is capped so it does not push everything else off screen.
+        A video is never opened to ask: it is drawn widescreen.
         """
+        if media.is_video(path):
+            return max(MIN_SINGLE_HEIGHT, min(MAX_SINGLE_HEIGHT, width * 9 // 16))
         size = image_size(path)
         if size is None:
             return PAIR_HEIGHT

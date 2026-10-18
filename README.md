@@ -58,7 +58,7 @@ The **connection indicator lives in the sidebar**, not in a screen of its own: i
 *   **Compose**
     *   Spacious free-text input with a live character count.
     *   **Per-group wording.** Tabs above the editor ("All groups" plus one per selected group) switch the editor between the shared base text and a version written for that group. This is what makes the content-variation rule in §7 actionable rather than a warning with no remedy. Editing the base text resets the per-group versions, and says so.
-    *   Attach images.
+    *   Attach pictures and videos, in any mix. A video is uploaded before Post is clicked, however long that takes, and the post stops (nothing posted) if the upload stops moving for 5 minutes. Facebook's own 10 GB video limit is checked when the file is attached.
     *   **Preview.** A `Write | Preview` toggle above the editor shows the post laid out the way the group will see it: avatar, name, text, and the pictures as a 1/2/3/4/+N collage running full-bleed to the card edges, with a Like/Comment/Share row. Deliberately no invented like counts. A single picture keeps its own aspect ratio; the rest crop to fill their tile, which is what stops a row of mixed shapes looking ragged. It shows the post as the group will receive it. The wording of the active tab, wrapped as it will wrap, with the attached images scaled down. Deliberately generic: no imitation of Facebook's chrome and no profile picture, because the question it answers is whether the text and the image look right. It matters most alongside per-group wording, where each group gets different words and reading one back is the only way to check it. An image that cannot be read is drawn as a named tile rather than dropped. It is still going to be uploaded.
     *   "Save as Template" storing text + media paths for reuse.
     *   Templates are a starting point, not a lock. The user edits before sending.
@@ -69,6 +69,11 @@ The **connection indicator lives in the sidebar**, not in a screen of its own: i
     *   A search box narrows the list by name; "Select all" / "Clear" then act on the matches only.
     *   There is no box for adding a group by its link (removed 2026-10-14): every group comes off Facebook.
     *   A removed group can be brought back from "Show removed groups" under the list, with its posting history. It starts ticked.
+    *   **Group sets** sit above the list, one box each. Picking a set adds its groups to the ticked ones; they show greyed with the set's name, and are unticked by unpicking the set, never one by one. "Clear" unpicks the sets too.
+*   **Group sets**: its own item in the sidebar, below the Dashboard. Make, edit and delete sets: a name and the groups in it.
+    *   A repeating post picked with a set follows it: a group added to the set later gets the next run. Now and Once take the set's groups as they are when the button is pressed.
+    *   Saving a set never waits for confirmation; if a repeating post that follows it now breaks a posting rule, the message says which.
+    *   Deleting a set (with Undo) leaves its groups in the repeating posts that used it, as ordinary groups. Removing a group from the app takes it out of every set.
     *   Group addresses are reduced to a canonical group identifier, so the same group cannot be added (or posted to) twice.
     *   Per-group record of the last successful post time, so the UI can warn about posting to the same group too soon.
     *   Cooldown defaults to **8 hours** (lowered from 24, so two or three posts a day to one group is possible).
@@ -90,7 +95,7 @@ The **connection indicator lives in the sidebar**, not in a screen of its own: i
     *   **All time never shrinks.** What the storage retention below deletes is counted first, so the totals stay.
     *   **Retention (storage).** Finished batches are deleted for good after `history_retention_days` (90 by default; 0 disables), once a day, so the database does not grow without bound. It never deletes anything unfinished, and never the newest 20 posted bodies per group. Those are what stop the same wording going to a group twice (§7), so they are kept for ever. `VACUUM` returns the freed space to disk.
 
-**Post-v1 (see §10):** "Groups of Groups" tags, video attachments, and pause/skip-a-single-group mid-batch. They are listed here only so the shape of the finished app is clear; do not build them into v1. Recurring schedules were also cut from v1 and have since been built, at the user's request.
+**Post-v1 (see §10):** skipping a single group mid-batch. It is listed here only so the shape of the finished app is clear. Recurring schedules, pausing, "Groups of Groups" (built as **group sets**) and video attachments were also cut from v1 and have since been built, at the user's request.
 
 ## 7. Account Protection (CRITICAL)
 The user posts as an ordinary group member, not an admin, so everything happens through the normal UI. Avoiding automated-behavior signals is the top priority.
@@ -140,7 +145,7 @@ Stored at `C:\FBAutomation\fbposter.db`, beside the Chrome profile (or under `%L
 
 Two columns carry most of the safety weight. **`UNIQUE(task_id, group_id)`** means the database itself refuses to let one batch target the same group twice. A duplicate post is the worst failure mode here, so it is not left to application code. **`task_targets.body`** is per-group rather than per-batch, which is what makes content variation expressible at all.
 
-`tags`, `group_tags` and `run_log` from the original sketch were cut (see §10).
+`tags`, `group_tags` and `run_log` from the original sketch were cut (see §10). Group sets came later in their place, as three tables: `group_sets` (a unique name), `group_set_members` (its groups, in order) and `schedule_sets` (the sets a repeating post follows).
 
 ### Safety settings (confirmed)
 *   **Daily cap: 25** individual group posts: just above the realistic ceiling of 3 posts x 7 groups, so it catches a runaway rather than normal use.
@@ -156,9 +161,9 @@ The workload in §2 is small. A few posts a day to a handful of groups. Several 
 | Cut | Why |
 | --- | --- |
 | ~~Recurring / cron scheduling~~: **built after v1** | Cut originally because next-run computation, DST and catch-up-on-missed-runs are a meaningful chunk of work, and the user was choosing content each time anyway. Reinstated at the user's request: daily, at up to three times of day. The content problem is what made it more than a date calculation (see §7, identical text is never sent to the same group twice), so a schedule holds *several* wordings and rotates them. |
-| "Groups of Groups" tags | Tagging pays off at 50+ groups. With ~5-15 total, a checkbox multi-select list does the same job and removes two tables plus a management screen. |
+| ~~"Groups of Groups" tags~~: **built after v1, as group sets** | Cut originally because tagging pays off at 50+ groups, and with ~5-15 a checkbox list did the same job. Reinstated at the user's request (2026-10-15) once the groups were read off Facebook and the list could be long. A set is a named collection of groups, made on its own screen and picked whole. Now and Once take its groups as they are; a repeating post follows the set, so a group added to it later gets the next run. |
 | `run_log` table | `task_targets` already stores per-group status, timestamp, and error. A second history table is redundant. |
-| Video upload | Uploads are slow and progress/completion detection is flaky. Images only in v1; video is a clean addition later. |
+| ~~Video upload~~: **built after v1** | Cut originally because uploads are slow and their end is hard to detect. Built at the user's request (2026-10-15) after watching it live: Facebook enables Post long before a video has uploaded, so the app waits for the upload's own progress bar to go, and Facebook confirms a video post with a different reply, because it publishes it only once the video is processed. |
 | Pause / skip mid-batch | Cancel-the-batch is genuinely needed. Pause and per-group skip are polish. |
 
 **Kept, because they are cheap or essential:** templates (one table, save/load), daily cap (a counter), the idempotent SQLite queue, halt-on-anomaly, and the content-variation warning.
@@ -178,7 +183,7 @@ This makes v1 roughly: *compose → pick groups from a list → post now or at o
 
 **Packaged for a client.** `packaging\build.ps1` produces `FacebookAutoPoster-Setup-x.y.z.exe`: a one-folder PyInstaller build wrapped in an Inno Setup installer, with a first-run wizard that walks a non-technical user through installing Chrome, starting it, and logging into Facebook by hand. The installer optionally registers the logon task and the always-on power plan from §5 (awake plugged in with the lid shut; on battery, awake only while the lid is open), and the uninstaller reverts both while deliberately leaving the database, the Chrome profile and therefore the Facebook login in place. The build refuses to run from a failing test suite. The Settings screen is where a client changes which Facebook account the app posts as. The wizard then ends the session and offers the login form, and because nothing in the database is tied to an account, the groups, templates, repeating posts and posting history all survive the switch.
 
-Post-v1, in likely order of value: a variation-suggestion helper (generate light rewordings rather than typing each by hand), video, per-group skip, tags.
+Post-v1, in likely order of value: a variation-suggestion helper (generate light rewordings rather than typing each by hand), per-group skip. Tags were built, as group sets, and video too.
 
 
 ## 12. Open Questions

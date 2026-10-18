@@ -109,6 +109,55 @@ class FakeLocator:
     def set_input_files(self, files: Any) -> None:
         self.page.calls.append(("set_input_files", self.description, tuple(files)))
 
+    def get_attribute(self, name: str) -> str | None:
+        # The Post button is disabled for a moment after files are set, live.
+        is_post = any(
+            self.description.endswith(f"role=button:{label}") for label in strings.POST_BUTTONS
+        )
+        if is_post and name == "aria-disabled" and self.page.post_disabled_polls > 0:
+            self.page.post_disabled_polls -= 1
+            return "true"
+        return None
+
+
+class FakeProgressBars:
+    """The upload bars in the post window: one look per `count()`.
+
+    `page.uploads` lists what each look finds, as percentages; past its end
+    there are none, unless `page.upload_stuck_at` holds one at that value for
+    ever -- an upload that has stalled.
+    """
+
+    def __init__(self, page: "FakePage") -> None:
+        self.page = page
+
+    def count(self) -> int:
+        page = self.page
+        if page._upload_look < len(page.uploads):
+            state = list(page.uploads[page._upload_look])
+        elif page.upload_stuck_at is not None:
+            state = [page.upload_stuck_at]
+        else:
+            state = []
+        page._upload_look += 1
+        page._bars_now = state
+        page.calls.append(("progress", tuple(state)))
+        return len(state)
+
+    def nth(self, index: int) -> "FakeBar":
+        return FakeBar(self.page, index)
+
+
+class FakeBar:
+    def __init__(self, page: "FakePage", index: int) -> None:
+        self.page = page
+        self.index = index
+
+    def get_attribute(self, name: str) -> str | None:
+        if name != "aria-valuenow":
+            return None
+        return str(self.page._bars_now[self.index])
+
 
 class FakeKeyboard:
     def __init__(self, page: "FakePage") -> None:
@@ -153,13 +202,22 @@ class FakePage:
     # What Facebook replies when Post is clicked; "" sends no reply at all.
     created_reply: str = ""
     listeners: dict[str, list] = field(default_factory=dict)
+    # Upload bars per look (see FakeProgressBars); none by default.
+    uploads: list = field(default_factory=list)
+    upload_stuck_at: float | None = None
+    # Looks for which the Post button reads aria-disabled="true".
+    post_disabled_polls: int = 0
 
     def __post_init__(self) -> None:
         self.keyboard = FakeKeyboard(self)
         self.mouse = FakeMouse(self)
+        self._upload_look = 0
+        self._bars_now: list = []
 
     # -- helpers -----------------------------------------------------------
-    def _resolve(self, description: str) -> FakeLocator:
+    def _resolve(self, description: str):
+        if description.endswith("role=progressbar:None"):
+            return FakeProgressBars(self)
         absent = any(token and token in description for token in self.missing)
         return FakeLocator(
             self,

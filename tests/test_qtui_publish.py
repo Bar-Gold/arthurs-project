@@ -427,7 +427,7 @@ class TestTheWindowItself:
         # So is "schedule_edit", reached from a repeating post's card.
         assert set(qt_app.views) == {
             "compose", "publish", "groups", "dashboard", "settings", "welcome",
-            "schedule_edit",
+            "schedule_edit", "group_sets",
         }
 
     def test_the_wizard_is_not_a_sidebar_step(self, qt_app):

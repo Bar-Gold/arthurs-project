@@ -15,6 +15,7 @@ from typing import Any, Iterable, NamedTuple, Sequence
 from .. import clock
 from ..errors import DuplicateGroup, InvalidGroupURL
 from ..groups import parse_group_url
+from ..text import strip_invisible
 from .connection import Database
 from .models import (
     SCHEDULE_ACTIVE,
@@ -30,6 +31,7 @@ from .models import (
     TASK_PENDING,
     TASK_RUNNING,
     Group,
+    GroupSet,
     PostRecord,
     Schedule,
     Task,
@@ -82,6 +84,22 @@ class Removal(NamedTuple):
     skipped_targets: tuple = ()
     # (task_id, state before, state after) of batches left with nothing to do.
     finished: tuple = ()
+    # (set_id, position) of every group set it was taken out of.
+    set_rows: tuple = ()
+
+    @property
+    def sets(self) -> int:
+        return len(self.set_rows)
+
+
+class SetDeletion(NamedTuple):
+    """What deleting a group set changed, so Undo can put exactly that back."""
+
+    group_set: GroupSet
+    # (schedule_id, position) of every repeating post that followed the set.
+    links: tuple = ()
+    # (schedule_id, group_id) of the plain groups the delete gave those posts.
+    added: tuple = ()
 
 
 class SettingsRepo:
@@ -284,7 +302,9 @@ class GroupRepo:
         It also takes the group out of every repeating post and every queued
         post still to go out, and adding it back puts it in neither: the user's
         choice (2026-09-30 and 2026-10-01). A removed group used to stay in both
-        and be posted to again the moment it was re-added.
+        and be posted to again the moment it was re-added. Group sets are the
+        same: a repeating post follows its sets, so a removed group left in
+        one would be posted to again by "Bring back" alone.
 
         In a queued post only a *pending* turn is taken: one already running is
         mid-post and cannot be taken back. The turn is marked skipped rather
@@ -306,6 +326,14 @@ class GroupRepo:
             schedules = connection.execute(
                 "DELETE FROM schedule_targets WHERE group_id = ?", (group_id,)
             ).rowcount
+            set_rows = tuple(
+                (row["set_id"], row["position"])
+                for row in connection.execute(
+                    "SELECT set_id, position FROM group_set_members WHERE group_id = ?",
+                    (group_id,),
+                )
+            )
+            connection.execute("DELETE FROM group_set_members WHERE group_id = ?", (group_id,))
 
             in_unfinished = "task_id IN (SELECT id FROM tasks WHERE state IN (?, ?))"
             batches = [
@@ -357,6 +385,7 @@ class GroupRepo:
             schedule_rows=schedule_rows,
             skipped_targets=skipped_targets,
             finished=tuple(finished),
+            set_rows=set_rows,
         )
 
     def restore(self, group_id: int, removal: Removal) -> bool:
@@ -380,6 +409,12 @@ class GroupRepo:
                     "INSERT OR IGNORE INTO schedule_targets (schedule_id, group_id, position) "
                     "SELECT ?, ?, ? WHERE EXISTS (SELECT 1 FROM schedules WHERE id = ?)",
                     (schedule_id, group_id, position, schedule_id),
+                )
+            for set_id, position in removal.set_rows:
+                connection.execute(
+                    "INSERT OR IGNORE INTO group_set_members (set_id, group_id, position) "
+                    "SELECT ?, ?, ? WHERE EXISTS (SELECT 1 FROM group_sets WHERE id = ?)",
+                    (set_id, group_id, position, set_id),
                 )
             for target_id in removal.skipped_targets:
                 connection.execute(
@@ -406,7 +441,8 @@ class GroupRepo:
         The Removed list's "Bring back", which replaced pasting the link again
         when the paste box went (2026-10-14). Same rule as that was: the
         history comes back, so the repeat guard still knows what the group was
-        sent, but its place in repeating and queued posts does not. Only Undo,
+        sent, but its place in repeating posts, queued posts and group sets
+        does not. Only Undo,
         straight after removing, puts those back (`restore`). None if the
         group is gone or already back.
         """
@@ -1146,8 +1182,50 @@ class ScheduleRepo:
             )
         ]
 
+    def _set_ids(self, schedule_id: int) -> list[int]:
+        return [
+            row["set_id"]
+            for row in self.db.query(
+                "SELECT set_id FROM schedule_sets WHERE schedule_id = ? ORDER BY position",
+                (schedule_id,),
+            )
+        ]
+
+    def _recipient_ids(self, schedule_id: int) -> list[int]:
+        """Every group a run goes to, read now: a set is followed, not copied.
+
+        The plain groups first, in their order, then each set's groups in the
+        set's order. A group in two places goes once. The order is part of
+        which wording each group gets (`run_count + position`), so it must not
+        depend on anything but what is stored.
+        """
+        plain = self.db.query(
+            "SELECT st.group_id FROM schedule_targets st "
+            "JOIN groups g ON g.id = st.group_id "
+            "WHERE st.schedule_id = ? AND g.archived = 0 ORDER BY st.position",
+            (schedule_id,),
+        )
+        from_sets = self.db.query(
+            "SELECT m.group_id FROM schedule_sets ss "
+            "JOIN group_set_members m ON m.set_id = ss.set_id "
+            "JOIN groups g ON g.id = m.group_id "
+            "WHERE ss.schedule_id = ? AND g.archived = 0 "
+            "ORDER BY ss.position, m.position",
+            (schedule_id,),
+        )
+        return list(dict.fromkeys(row["group_id"] for row in (*plain, *from_sets)))
+
+    def _from_row(self, row: Any) -> Schedule:
+        schedule_id = row["id"]
+        return Schedule.from_row(
+            row,
+            self._group_ids(schedule_id),
+            self._set_ids(schedule_id),
+            self._recipient_ids(schedule_id),
+        )
+
     def _hydrate(self, rows: Sequence[Any]) -> list[Schedule]:
-        return [Schedule.from_row(row, self._group_ids(row["id"])) for row in rows]
+        return [self._from_row(row) for row in rows]
 
     def list(self) -> list[Schedule]:
         return self._hydrate(self.db.query("SELECT * FROM schedules ORDER BY id"))
@@ -1156,7 +1234,7 @@ class ScheduleRepo:
         row = self.db.query_one("SELECT * FROM schedules WHERE id = ?", (schedule_id,))
         if row is None:
             return None
-        return Schedule.from_row(row, self._group_ids(schedule_id))
+        return self._from_row(row)
 
     def create(
         self,
@@ -1169,17 +1247,19 @@ class ScheduleRepo:
         media_paths: Sequence[str] = (),
         next_run_at: datetime | None = None,
         overrides: Iterable[str] = (),
+        set_ids: Sequence[int] = (),
     ) -> Schedule:
         """Write a schedule and its groups in one transaction.
 
         A schedule with no groups, or groups with no schedule, would sit in the
         database doing nothing visible -- so, as with tasks, both halves land
-        together or neither does.
+        together or neither does. `set_ids` are group sets it follows, on top
+        of the groups ticked one by one.
         """
         cleaned = [b for b in bodies if b.strip()]
         if not cleaned:
             raise ValueError("A repeating post needs at least one wording.")
-        if not group_ids:
+        if not group_ids and not set_ids:
             raise ValueError("A repeating post needs at least one group.")
         if not times:
             raise ValueError("A repeating post needs at least one time of day.")
@@ -1210,6 +1290,7 @@ class ScheduleRepo:
                     for position, group_id in enumerate(dict.fromkeys(group_ids))
                 ],
             )
+            _write_schedule_sets(connection, schedule_id, set_ids)
 
         stored = self.get(schedule_id)
         assert stored is not None
@@ -1227,6 +1308,7 @@ class ScheduleRepo:
         media_paths: Sequence[str] = (),
         overrides: Iterable[str] = (),
         next_run_at: datetime | None | object = KEEP,
+        set_ids: Sequence[int] = (),
     ) -> Schedule:
         """Rewrite what a schedule posts, where, and when, in one transaction.
 
@@ -1241,7 +1323,7 @@ class ScheduleRepo:
         cleaned = [b for b in bodies if b.strip()]
         if not cleaned:
             raise ValueError("A repeating post needs at least one wording.")
-        if not group_ids:
+        if not group_ids and not set_ids:
             raise ValueError("A repeating post needs at least one group.")
         if not times:
             raise ValueError("A repeating post needs at least one time of day.")
@@ -1279,6 +1361,8 @@ class ScheduleRepo:
                     for position, group_id in enumerate(dict.fromkeys(group_ids))
                 ],
             )
+            connection.execute("DELETE FROM schedule_sets WHERE schedule_id = ?", (schedule_id,))
+            _write_schedule_sets(connection, schedule_id, set_ids)
 
         stored = self.get(schedule_id)
         assert stored is not None
@@ -1363,6 +1447,7 @@ class ScheduleRepo:
                     "(SELECT 1 FROM groups WHERE id = ? AND archived = 0)",
                     (schedule.id, group_id, position, group_id),
                 )
+            _write_schedule_sets(connection, schedule.id, schedule.set_ids)
         return True
 
     def due(self, now: datetime) -> list[Schedule]:
@@ -1374,3 +1459,242 @@ class ScheduleRepo:
             (SCHEDULE_ACTIVE, to_iso(now)),
         )
         return self._hydrate(rows)
+
+
+def _write_schedule_sets(connection, schedule_id: int, set_ids: Sequence[int]) -> None:
+    """Link a repeating post to its group sets, in order.
+
+    A set deleted since the screen was drawn is left out rather than linked
+    to nothing.
+    """
+    for position, set_id in enumerate(dict.fromkeys(set_ids)):
+        connection.execute(
+            "INSERT INTO schedule_sets (schedule_id, set_id, position) "
+            "SELECT ?, ?, ? WHERE EXISTS (SELECT 1 FROM group_sets WHERE id = ?)",
+            (schedule_id, set_id, position, set_id),
+        )
+
+
+class GroupSetRepo:
+    """Group sets: named collections of groups, picked as one item.
+
+    A set is not a way of posting. Now and Once copy its groups into an
+    ordinary batch when the button is pressed, and a repeating post follows it
+    through `schedule_sets`: `ScheduleRepo` reads the set's groups afresh for
+    every run. So the worker, the guards and the queue never see a set at all.
+    """
+
+    def __init__(self, db: Database) -> None:
+        self.db = db
+
+    def _members(self) -> dict[int, list[int]]:
+        """Every set's groups in one query, removed groups left out."""
+        members: dict[int, list[int]] = {}
+        for row in self.db.query(
+            "SELECT m.set_id, m.group_id FROM group_set_members m "
+            "JOIN groups g ON g.id = m.group_id "
+            "WHERE g.archived = 0 ORDER BY m.set_id, m.position"
+        ):
+            members.setdefault(row["set_id"], []).append(row["group_id"])
+        return members
+
+    def list(self) -> list[GroupSet]:
+        """Every set, by name: the order they are offered in."""
+        members = self._members()
+        rows = self.db.query("SELECT * FROM group_sets ORDER BY name COLLATE NOCASE, id")
+        return [GroupSet.from_row(row, members.get(row["id"], ())) for row in rows]
+
+    def get(self, set_id: int) -> GroupSet | None:
+        row = self.db.query_one("SELECT * FROM group_sets WHERE id = ?", (set_id,))
+        if row is None:
+            return None
+        return GroupSet.from_row(row, self._members().get(set_id, ()))
+
+    def create(self, name: str, group_ids: Sequence[int]) -> GroupSet:
+        name, wanted = _check_set(name, group_ids)
+        with self.db.transaction() as connection:
+            _refuse_taken(connection, name)
+            try:
+                set_id = connection.execute(
+                    "INSERT INTO group_sets (name, created_at) VALUES (?, ?)",
+                    (name, to_iso(utcnow())),
+                ).lastrowid
+            except sqlite3.IntegrityError as exc:  # lost a race for the name
+                raise ValueError(_taken(name)) from exc
+            _write_members(connection, set_id, wanted)
+        stored = self.get(set_id)
+        assert stored is not None
+        return stored
+
+    def update(self, set_id: int, name: str, group_ids: Sequence[int]) -> GroupSet:
+        """Rename a set and change its groups, in one transaction.
+
+        Groups already in it keep their place and new ones go after them, so
+        adding a group does not move the others: their place is part of which
+        wording each one gets from a repeating post that follows the set.
+        """
+        name, wanted = _check_set(name, group_ids)
+        with self.db.transaction() as connection:
+            if connection.execute(
+                "SELECT 1 FROM group_sets WHERE id = ?", (set_id,)
+            ).fetchone() is None:
+                raise ValueError("That group set no longer exists.")
+            _refuse_taken(connection, name, set_id)
+            connection.execute("UPDATE group_sets SET name = ? WHERE id = ?", (name, set_id))
+            before = [
+                row["group_id"]
+                for row in connection.execute(
+                    "SELECT group_id FROM group_set_members WHERE set_id = ? ORDER BY position",
+                    (set_id,),
+                )
+            ]
+            ordered = [g for g in before if g in wanted] + [g for g in wanted if g not in before]
+            connection.execute("DELETE FROM group_set_members WHERE set_id = ?", (set_id,))
+            _write_members(connection, set_id, ordered)
+        stored = self.get(set_id)
+        assert stored is not None
+        return stored
+
+    def used_by(self, set_id: int) -> list[int]:
+        """The repeating posts that follow this set."""
+        return [
+            row["schedule_id"]
+            for row in self.db.query(
+                "SELECT schedule_id FROM schedule_sets WHERE set_id = ? ORDER BY schedule_id",
+                (set_id,),
+            )
+        ]
+
+    def delete(self, set_id: int) -> SetDeletion | None:
+        """Delete a set. The repeating posts that followed it keep its groups.
+
+        The user's choice (2026-10-15): nothing stops posting by surprise. In
+        the same transaction, each of those posts gets the set's groups as
+        ordinary groups, after the ones it already had. None if it is gone.
+        """
+        with self.db.transaction() as connection:
+            row = connection.execute(
+                "SELECT * FROM group_sets WHERE id = ?", (set_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            members = [
+                member["group_id"]
+                for member in connection.execute(
+                    "SELECT m.group_id FROM group_set_members m "
+                    "JOIN groups g ON g.id = m.group_id "
+                    "WHERE m.set_id = ? AND g.archived = 0 ORDER BY m.position",
+                    (set_id,),
+                )
+            ]
+            group_set = GroupSet.from_row(row, members)
+            links = tuple(
+                (link["schedule_id"], link["position"])
+                for link in connection.execute(
+                    "SELECT schedule_id, position FROM schedule_sets "
+                    "WHERE set_id = ? ORDER BY schedule_id",
+                    (set_id,),
+                )
+            )
+            added = []
+            for schedule_id, _position in links:
+                plain = {
+                    target["group_id"]
+                    for target in connection.execute(
+                        "SELECT group_id FROM schedule_targets WHERE schedule_id = ?",
+                        (schedule_id,),
+                    )
+                }
+                position = connection.execute(
+                    "SELECT COALESCE(MAX(position) + 1, 0) FROM schedule_targets "
+                    "WHERE schedule_id = ?",
+                    (schedule_id,),
+                ).fetchone()[0]
+                for group_id in members:
+                    if group_id in plain:
+                        continue
+                    connection.execute(
+                        "INSERT INTO schedule_targets (schedule_id, group_id, position) "
+                        "VALUES (?, ?, ?)",
+                        (schedule_id, group_id, position),
+                    )
+                    added.append((schedule_id, group_id))
+                    position += 1
+            # The members and the links go with it (ON DELETE CASCADE).
+            connection.execute("DELETE FROM group_sets WHERE id = ?", (set_id,))
+        return SetDeletion(group_set=group_set, links=links, added=tuple(added))
+
+    def restore(self, deletion: SetDeletion) -> bool:
+        """Undo a delete, straight after it. False if it can no longer be.
+
+        The set comes back under its own id, with its groups and its place in
+        the repeating posts that followed it, and those posts lose the plain
+        groups the delete gave them. Only what is still there is put back: a
+        group removed since, or a post deleted since, stays gone.
+        """
+        group_set = deletion.group_set
+        with self.db.transaction() as connection:
+            if connection.execute(
+                "SELECT 1 FROM group_sets WHERE id = ? OR name = ?",
+                (group_set.id, group_set.name),
+            ).fetchone():
+                return False
+            connection.execute(
+                "INSERT INTO group_sets (id, name, created_at) VALUES (?, ?, ?)",
+                (group_set.id, group_set.name, to_iso(group_set.created_at or utcnow())),
+            )
+            _write_members(connection, group_set.id, group_set.group_ids, require=False)
+            for schedule_id, position in deletion.links:
+                connection.execute(
+                    "INSERT OR IGNORE INTO schedule_sets (schedule_id, set_id, position) "
+                    "SELECT ?, ?, ? WHERE EXISTS (SELECT 1 FROM schedules WHERE id = ?)",
+                    (schedule_id, group_set.id, position, schedule_id),
+                )
+            for schedule_id, group_id in deletion.added:
+                connection.execute(
+                    "DELETE FROM schedule_targets WHERE schedule_id = ? AND group_id = ?",
+                    (schedule_id, group_id),
+                )
+        return True
+
+
+def _taken(name: str) -> str:
+    return f"There is already a group set called \"{name}\"."
+
+
+def _check_set(name: str, group_ids: Sequence[int]) -> tuple[str, list[int]]:
+    """The name as it will be stored, and the groups, or ValueError.
+
+    Invisible marks are stripped: the name is compared with the others, and a
+    pasted direction mark would make two names that look the same different.
+    """
+    cleaned = " ".join(strip_invisible(name).split())
+    if not cleaned:
+        raise ValueError("A group set needs a name.")
+    wanted = list(dict.fromkeys(group_ids))
+    if not wanted:
+        raise ValueError("A group set needs at least one group.")
+    return cleaned, wanted
+
+
+def _refuse_taken(connection, name: str, set_id: int = 0) -> None:
+    # The column is COLLATE NOCASE, so this comparison ignores case too.
+    if connection.execute(
+        "SELECT 1 FROM group_sets WHERE name = ? AND id != ?", (name, set_id)
+    ).fetchone():
+        raise ValueError(_taken(name))
+
+
+def _write_members(
+    connection, set_id: int, group_ids: Sequence[int], require: bool = True
+) -> None:
+    """A set's groups, in order. Only groups still on the list go in."""
+    written = 0
+    for position, group_id in enumerate(group_ids):
+        written += connection.execute(
+            "INSERT INTO group_set_members (set_id, group_id, position) "
+            "SELECT ?, ?, ? WHERE EXISTS (SELECT 1 FROM groups WHERE id = ? AND archived = 0)",
+            (set_id, group_id, position, group_id),
+        ).rowcount
+    if require and not written:
+        raise ValueError("A group set needs at least one group.")

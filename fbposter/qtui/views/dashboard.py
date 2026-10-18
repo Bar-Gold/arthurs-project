@@ -52,7 +52,7 @@ from fbposter.db.models import (
 
 from .. import theme
 from ..widgets import badge, card, clear, row
-from .compose import pictures_only
+from .compose import media_only
 
 # Every label answers "did it post?" in plain words. The stored states are
 # the worker's vocabulary -- "halted", "skipped" -- and showing them as they
@@ -160,7 +160,7 @@ def snippet_of(task) -> str:
     flat = " ".join(task.body.split())
     text = flat[:SNIPPET_CHARS] + ("…" if len(flat) > SNIPPET_CHARS else "")
     if not text and task.media_paths:
-        text = pictures_only(len(task.media_paths))
+        text = media_only(task.media_paths)
     return text
 
 

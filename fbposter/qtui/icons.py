@@ -44,6 +44,13 @@ SHAPES = {
         '<path d="M3.5 20.5h17"/>'
         '<path d="M7 17v-5M12 17V6M17 17v-8"/>'
     ),
+    # Three dots in a box: groups kept together as one set.
+    "group_sets": (
+        '<rect x="3" y="3" width="18" height="18" rx="4"/>'
+        '<circle cx="8.5" cy="9.5" r="2"/>'
+        '<circle cx="15.5" cy="9.5" r="2"/>'
+        '<circle cx="12" cy="15.5" r="2"/>'
+    ),
     # Sliders: the rules it posts by.
     "settings": (
         '<path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/>'

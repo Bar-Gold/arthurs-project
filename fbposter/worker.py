@@ -34,7 +34,7 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
-from . import clock, recurrence, session, tabs
+from . import clock, media, recurrence, session, tabs
 from .automation import GroupPoster
 from .automation.humanize import Humanizer
 from .automation.poster import PostOutcome, PostRequest
@@ -95,6 +95,12 @@ KEEP_AWAKE_HORIZON = timedelta(minutes=30)
 # the queue looking alive.
 CONNECTION_RETRY = timedelta(minutes=5)
 CONNECTION_GIVE_UP = timedelta(hours=2)
+
+# Facebook publishes a video post only once it has processed the video, a
+# minute or two after Post (seen live, 2026-10-15). Until then the post is in
+# neither the feed nor the pending list, so crash recovery leaves a video
+# post this long after its click before it looks at all.
+VIDEO_SETTLE = timedelta(minutes=10)
 
 # How often the finished-batch history is pruned. Housekeeping, not a deadline.
 PRUNE_EVERY = timedelta(days=1)
@@ -708,7 +714,10 @@ class PostingWorker:
 
         targets: list[tuple[int, str]] = []
         stale: list[str] = []
-        for position, group_id in enumerate(schedule.group_ids):
+        # recipient_ids, not group_ids: it adds the groups of every set the
+        # post follows, read now, so a group put in a set since the post was
+        # made goes out from this run on.
+        for position, group_id in enumerate(schedule.recipient_ids):
             group = self.groups.active(group_id)
             if group is None:
                 # Removing a group takes it out of its schedules, so this is a
@@ -742,15 +751,16 @@ class PostingWorker:
         if not targets:
             if not stale:
                 # Every group has been removed, and removing a group takes it
-                # out of the schedule, so none are left. Left active it would
-                # come round two or three times a day for ever, post nothing
-                # and say nothing -- so it is paused, like an unusable repeat
-                # rule.
+                # out of the schedule and out of every set, so none are left.
+                # Left active it would come round two or three times a day for
+                # ever, post nothing and say nothing -- so it is paused, like
+                # an unusable repeat rule.
                 self.schedules.set_state(schedule.id, SCHEDULE_PAUSED)
                 self.emit(
                     "schedule_error",
                     f"{schedule.display_name} has no groups left: every group it "
-                    "posted to has been removed. It has been paused.",
+                    "posted to has been removed, from the list or from its group "
+                    "sets. It has been paused.",
                 )
             return
 
@@ -1152,6 +1162,16 @@ class PostingWorker:
             self._recovery_trouble = self._now()
         return self._now() - self._recovery_trouble > CONNECTION_GIVE_UP
 
+    def _video_still_processing(self, target: TaskTarget) -> bool:
+        """A video post clicked too recently for Facebook to show it yet."""
+        task = self.tasks.get(target.task_id)
+        if task is None or not any(media.is_video(p) for p in task.media_paths):
+            return False
+        return (
+            target.attempted_at is not None
+            and self._now() - target.attempted_at < VIDEO_SETTLE
+        )
+
     def _defer_recovery(self, reason: str) -> None:
         """Come back to it later, still claimed. Nothing is decided here."""
         self._recovery_deferred = True
@@ -1217,7 +1237,7 @@ class PostingWorker:
                 # pending list "unknown", for two hours, holding the machine
                 # awake to learn nothing. Straight to the user instead.
                 self._escalate_unchecked(
-                    target, "a post with only pictures has no words to look for"
+                    target, "a post with only pictures or videos has no words to look for"
                 )
                 continue
 
@@ -1231,6 +1251,13 @@ class PostingWorker:
                     "it there would not prove this one went out",
                 )
                 continue
+
+            if self._video_still_processing(target):
+                # Looking now would find the post neither in the feed nor in
+                # the pending list -- the "declined" answer, which requeues,
+                # and a requeued video that did go out is a duplicate.
+                self._defer_recovery("a video post takes a few minutes to appear")
+                return
 
             try:
                 already_posted = self.poster.verify(group.url, target.body)

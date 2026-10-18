@@ -384,6 +384,50 @@ def _migration_013(connection: sqlite3.Connection) -> None:
     )
 
 
+_MIGRATION_014 = """
+CREATE TABLE group_sets (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    -- Two sets called "Tel Aviv" and "tel aviv" would be one set to the user.
+    name        TEXT    NOT NULL UNIQUE COLLATE NOCASE,
+    created_at  TEXT    NOT NULL
+);
+
+CREATE TABLE group_set_members (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    set_id    INTEGER NOT NULL REFERENCES group_sets(id) ON DELETE CASCADE,
+    group_id  INTEGER NOT NULL REFERENCES groups(id)     ON DELETE CASCADE,
+    position  INTEGER NOT NULL,
+    UNIQUE (set_id, group_id)
+);
+
+-- A repeating post linked to a whole set: each run posts to the set's groups
+-- as they are at that run, not as they were when the post was made.
+CREATE TABLE schedule_sets (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    schedule_id  INTEGER NOT NULL REFERENCES schedules(id)  ON DELETE CASCADE,
+    set_id       INTEGER NOT NULL REFERENCES group_sets(id) ON DELETE CASCADE,
+    position     INTEGER NOT NULL,
+    UNIQUE (schedule_id, set_id)
+);
+
+CREATE INDEX idx_set_members   ON group_set_members(set_id);
+CREATE INDEX idx_set_groups    ON group_set_members(group_id);
+CREATE INDEX idx_schedule_sets ON schedule_sets(schedule_id);
+"""
+
+
+def _migration_014(connection: sqlite3.Connection) -> None:
+    """Group sets: named collections of groups (the user's request, 2026-10-15).
+
+    Cut from v1 as "group tags", built now that the Groups list is read off
+    Facebook and can be long. A set is picked as one item. A repeating post
+    linked to one follows it, so a group added to the set later is posted to
+    from the next run; Now and Once take the set's groups as they are when the
+    button is pressed. Adds tables only: nothing already stored changes.
+    """
+    _run_script(connection, _MIGRATION_014)
+
+
 # Index i applies when user_version == i, and bumps it to i + 1.
 MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _migration_001,
@@ -399,6 +443,7 @@ MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _migration_011,
     _migration_012,
     _migration_013,
+    _migration_014,
 ]
 
 LATEST_VERSION = len(MIGRATIONS)
