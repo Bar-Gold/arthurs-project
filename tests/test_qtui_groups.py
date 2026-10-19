@@ -359,9 +359,10 @@ class TestTheFlowBetweenScreens:
         from fbposter.qtui.app import NAV_ITEMS
 
         assert [key for key, _label, _cls in NAV_ITEMS] == [
-            "compose",
-            "groups",
-            "publish",
+            # Where the app opens (2026-10-19).
+            "home",
+            # The three steps, as one road (2026-10-19).
+            "create",
             "dashboard",
             # Not a step: where sets are made (the user's choice, 2026-10-15).
             "group_sets",

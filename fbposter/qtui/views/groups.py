@@ -158,9 +158,10 @@ class GroupsView(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(theme.PAD_XS)
 
-        heading = QLabel(self.title)
-        heading.setObjectName("Title")
-        outer.addWidget(heading)
+        # Hidden inside Create a post, which has one title for all three steps.
+        self.heading = QLabel(self.title)
+        self.heading.setObjectName("Title")
+        outer.addWidget(self.heading)
         sub = QLabel(self.subtitle)
         sub.setObjectName("Subtitle")
         sub.setWordWrap(True)
@@ -239,11 +240,11 @@ class GroupsView(QWidget):
         outer.addLayout(removed_line)
 
         footer = QHBoxLayout()
-        back = QPushButton("← Back to Compose")
+        back = QPushButton("← Back: write the post")
         back.clicked.connect(lambda: self.app.show_view("compose"))
         footer.addWidget(back)
         footer.addStretch(1)
-        self.next_button = QPushButton("Next: when to send →")
+        self.next_button = QPushButton("Next: choose when →")
         self.next_button.setObjectName("Primary")
         self.next_button.clicked.connect(lambda: self.app.show_view("publish"))
         footer.addWidget(self.next_button)

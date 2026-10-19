@@ -412,7 +412,7 @@ class TestTheWindowItself:
         # So is "schedule_edit", reached from a repeating post's card.
         assert set(qt_app.views) == {
             "compose", "publish", "groups", "dashboard", "settings", "welcome",
-            "schedule_edit", "group_sets", "tips",
+            "schedule_edit", "group_sets", "tips", "home", "create",
         }
 
     def test_the_wizard_is_not_a_sidebar_step(self, qt_app):
@@ -446,8 +446,12 @@ class TestThereAreNoRules:
         assert not hasattr(publish, "post_anyway")
 
     def test_the_same_text_again_the_same_day_is_queued(self, qt_app, views):
-        _compose, publish = views
+        compose, publish = views
         assert publish.publish() is True
+        # A queued post starts a fresh one (2026-10-19), so write it again.
+        compose._show(BODY)
+        compose.capture()
+        qt_app.views["groups"].set_all(True)
         assert publish.publish() is True
         assert len(qt_app.task_repo.list_recent()) == 2
 

@@ -439,9 +439,10 @@ class PublishView(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(theme.PAD_XS)
 
-        heading = QLabel(self.title)
-        heading.setObjectName("Title")
-        outer.addWidget(heading)
+        # Hidden inside Create a post, which has one title for all three steps.
+        self.heading = QLabel(self.title)
+        self.heading.setObjectName("Title")
+        outer.addWidget(self.heading)
         sub = QLabel(self.subtitle)
         sub.setObjectName("Subtitle")
         sub.setWordWrap(True)
@@ -603,7 +604,7 @@ class PublishView(QWidget):
         elif self.compose.attachments:
             note = f"{media_only(self.compose.attachments)}."
         else:
-            note = "Nothing written yet. Start on Compose."
+            note = "Nothing written yet. Start in step 1."
         self.preview_note.setText(note)
 
         # None never equals a tuple, so the first call always draws -- including
@@ -616,7 +617,7 @@ class PublishView(QWidget):
 
         clear(self.recipient_box)
         if not selected:
-            note = QLabel("No groups picked. Choose them on the Groups screen.")
+            note = QLabel("No groups picked. Choose them in step 2.")
             note.setObjectName("Muted")
             note.setWordWrap(True)
             self.recipient_box.addWidget(note)
@@ -697,7 +698,7 @@ class PublishView(QWidget):
         self.go_button.clicked.connect(lambda: self.publish())
         column.addWidget(self.go_button)
 
-        back = QPushButton("← Back to groups")
+        back = QPushButton("← Back: choose the groups")
         back.clicked.connect(lambda: self.app.show_view("groups"))
         column.addWidget(back)
 
@@ -966,30 +967,54 @@ class PublishView(QWidget):
 
     # -- doing it ----------------------------------------------------------
     def publish(self) -> bool:
+        """The step's button. A post that went out or was queued starts a
+        fresh one and lands on Home; a refused one keeps everything."""
         self.commit_typed_times()
         if self.mode == REPEAT:
-            return self.create_schedule()
-        try:
-            when = self.scheduled_for()
-        except ValueError:
-            self.notify("That is not a valid date and time.", "error")
-            return False
-        queued = self.compose.add_to_queue(when)
-        if queued:
-            self.refresh_recipients()
-        return queued
+            done = self.create_schedule()
+        else:
+            try:
+                when = self.scheduled_for()
+            except ValueError:
+                self.notify("That is not a valid date and time.", "error")
+                return False
+            done = self.compose.add_to_queue(when)
+            if done:
+                self.refresh_recipients()
+        if done:
+            flow = self.app.views.get("create")
+            if flow is not None:
+                flow.start_over()
+        return done
+
+    def reset_form(self) -> None:
+        """Back to how the step opens: Now, one time of day, every day, no
+        alternates and no name. Part of starting a fresh post."""
+        for editor in list(self._wordings):
+            self._remove_wording(editor.parentWidget(), editor)
+        self.name_entry.clear()
+        for entry in list(self._time_rows):
+            line = entry.parentWidget()
+            self._time_rows.remove(entry)
+            self.time_box.removeWidget(line)
+            line.deleteLater()
+        self.add_time(DEFAULT_TIMES[0])
+        for box in self._day_boxes:
+            box.setChecked(True)
+        self.schedule_entry.reset()
+        self.set_mode(NOW)
 
     def create_schedule(self) -> bool:
         wordings = self.wordings()
         # Pictures or a video alone may repeat too (the user's choice,
         # 2026-10-18); only a post with nothing in it at all is refused.
         if not wordings and not self.compose.attachments:
-            self.notify("Write the post on Compose first.", "error")
+            self.notify("Write the post in step 1 first.", "error")
             return False
 
         groups = self.selected_group_ids()
         if not groups:
-            self.notify("Pick at least one group on the Groups screen.", "error")
+            self.notify("Pick at least one group in step 2.", "error")
             return False
 
         if not self.days_chosen():

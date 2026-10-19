@@ -155,9 +155,10 @@ class ComposeView(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(theme.PAD_XS)
 
-        heading = QLabel(self.title)
-        heading.setObjectName("Title")
-        outer.addWidget(heading)
+        # Hidden inside Create a post, which has one title for all three steps.
+        self.heading = QLabel(self.title)
+        self.heading.setObjectName("Title")
+        outer.addWidget(self.heading)
         sub = QLabel(self.subtitle)
         sub.setObjectName("Subtitle")
         outer.addWidget(sub)
@@ -339,7 +340,7 @@ class ComposeView(QWidget):
 
         column.addStretch(1)
 
-        self.next_button = QPushButton("Next: pick groups →")
+        self.next_button = QPushButton("Next: choose the groups →")
         self.next_button.setObjectName("Primary")
         self.next_button.clicked.connect(self.go_to_groups)
         column.addWidget(self.next_button)
@@ -347,6 +348,21 @@ class ComposeView(QWidget):
     def go_to_groups(self) -> None:
         self.capture()
         self.app.show_view("groups")
+
+    def clear_draft(self) -> None:
+        """A blank post: no text, no rewrites, no pictures, back on Write.
+
+        Called when a post has gone out or been queued (the user's choice,
+        2026-10-19), never on a refusal."""
+        self._base_body = ""
+        self._bodies.clear()
+        self._editing = None
+        self._show("")
+        self.attachments = []
+        self._render_attachments()
+        self.write_button.setChecked(True)
+        self.set_mode("write")
+        self.refresh_tabs()
 
     # -- text --------------------------------------------------------------
     def get_text(self) -> str:
@@ -538,7 +554,7 @@ class ComposeView(QWidget):
             self.recipient_summary.setText(
                 "No groups picked yet."
                 if total
-                else "No groups yet. Add one on the Groups screen."
+                else "No groups yet. Get them in step 2."
             )
         else:
             names = []
@@ -589,11 +605,7 @@ class ComposeView(QWidget):
         self.refresh_tabs()
         self.attachments = [Path(p) for p in template.media_paths]
         self._render_attachments()
-        self.notify(
-            f"Loaded “{template.name}”. Vary the wording if these groups have "
-            "had it before.",
-            "info",
-        )
+        self.notify(f"Loaded “{template.name}”.", "info")
         return True
 
     # -- attachments -------------------------------------------------------

@@ -529,7 +529,7 @@ class DashboardView(QWidget):
             return "Due now", name
         if next_up.kind == stats.NEXT_SCHEDULED:
             return stats.when_text(next_up.at, now), name
-        return "Nothing scheduled", "Set one up on Publish"
+        return "Nothing scheduled", "Set one up in Create a post"
 
     # -- by group ----------------------------------------------------------
     def _show_groups(self, rows, now, force: bool) -> None:
@@ -546,7 +546,7 @@ class DashboardView(QWidget):
         clear(self.groups_box)
         if not drawn:
             self.groups_box.addWidget(
-                self._muted("No groups yet. Get them on the Groups screen.")
+                self._muted("No groups yet. Get them in Create a post, step 2.")
             )
             return
 
@@ -674,7 +674,7 @@ class DashboardView(QWidget):
         clear(self.recent_box)
         if not drawn:
             self.recent_box.addWidget(
-                self._muted("Nothing yet. Write a post on the Compose screen.")
+                self._muted("Nothing yet. Write one in Create a post.")
             )
             return
         box = card()

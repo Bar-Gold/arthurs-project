@@ -80,7 +80,7 @@ powershell -ExecutionPolicy Bypass -File packaging\build.ps1 -SkipInstaller  # .
 
 `status` exits 0 when logged in, 1 when not, 2 on error (Chrome not running, etc.).
 
-There is no linter or formatter configured, and no pytest config file. The suite is the whole check. Baseline: **1775 tests, 75-240s**. The spread is machine load, not the suite; the Qt GUI files are much of it. A run of *five minutes or more* means something is reaching the network; see the `SilentNamer` note below.
+There is no linter or formatter configured, and no pytest config file. The suite is the whole check. Baseline: **1803 tests, 75-240s**. The spread is machine load, not the suite; the Qt GUI files are much of it. A run of *five minutes or more* means something is reaching the network; see the `SilentNamer` note below.
 
 **Do not add `playwright install`.** It is unnecessary and was verified so against Chrome 150: the app attaches to the user's real Chrome over CDP and never launches Playwright's bundled Chromium, so the driver shipped inside the pip package is all that is required.
 
@@ -112,7 +112,7 @@ Packaging: `packaging/`: `fbposter.spec` (PyInstaller), `installer.iss` (Inno Se
 
 Automation: `automation/poster.py` (`GroupPoster`: arrive → compose → type → attach → publish → verify, plus the read-only `probe`), `detect.py` (`classify` a page as OK / checkpoint / login / rate-limit / unavailable), `humanize.py` (`Humanizer`: keystroke timing, hovers, arrival scroll, the inter-group gap), `groupinfo.py` (read a group's display name off the `h1` **inside `[role="main"]`**, and its member count in the same visit; cosmetic, and must never raise into a caller), `groupfinder.py` (read every group the account is in off Facebook's "Your groups" page; see "Reading the client's groups off Facebook").
 
-UI: `qtui/app.py` (window, sidebar, connection pill, paused line, worker-event pump, background thread helper), `qtui/views/` (compose, groups, publish, dashboard: the nav order is the flow; `group_sets`, below the Dashboard, where sets are made; `tips`, below that, the Posting tips; `settings`, at the foot of the sidebar; plus `welcome`, the first-run wizard, and `schedule_edit`, which edits one repeating post from its card on Publish; neither is in the sidebar), `qtui/theme.py` (palette + one stylesheet), `qtui/widgets.py` (`card`, `row`, `clear`, `replace_at`, `badge`, `segmented`, `AppStyle`), `qtui/icons.py` (the sidebar and status icons, as SVG strings), `qtui/assets/`.
+UI: `qtui/app.py` (window, sidebar, connection pill, paused line, worker-event pump, background thread helper), `qtui/views/` (`home`, where the app opens; `create`, Create a post, which holds compose, groups and publish as the three steps of one road with a step bar; dashboard; `group_sets`, where sets are made; `tips`, the Posting tips; `settings`, at the foot of the sidebar; plus `welcome`, the first-run wizard, and `schedule_edit`, which edits one repeating post from its card in step 3; neither is in the sidebar. See `fbposter/qtui/CLAUDE.md` for the flow), `qtui/theme.py` (palette + one stylesheet), `qtui/widgets.py` (`card`, `row`, `clear`, `replace_at`, `badge`, `segmented`, `AppStyle`), `qtui/icons.py` (the sidebar and status icons, as SVG strings), `qtui/assets/`.
 
 Storage: `db/`: `connection.py` (per-thread connections), `schema.py` (migrations), `models.py`, `repo.py` (`GroupRepo`, `GroupSetRepo`, `TemplateRepo`, `TaskRepo`, `ScheduleRepo`, `SettingsRepo`).
 

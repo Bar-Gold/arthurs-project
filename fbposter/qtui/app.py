@@ -11,8 +11,8 @@ import queue
 import threading
 import time
 
-from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QFont
+from PySide6.QtCore import QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QFont, QIcon
 from PySide6.QtWidgets import (
     QButtonGroup,
     QFrame,
@@ -42,11 +42,11 @@ from ..db.repo import (
 from ..connection import ConnectionResult, ConnectionState, check_connection
 from ..worker import PostingWorker
 from . import icons, theme
-from .views.compose import ComposeView
+from .views.create import CreatePostView
 from .views.dashboard import DashboardView
 from .views.group_sets import GroupSetsView
-from .views.groups import IMPORT_PENDING_KEY, GroupsView
-from .views.publish import PublishView
+from .views.groups import IMPORT_PENDING_KEY
+from .views.home import HomeView
 from .views.schedule_edit import ScheduleEditView
 from .views.settings import SettingsView
 from .views.tips import TipsView
@@ -54,6 +54,9 @@ from .views.welcome import WelcomeView
 from .widgets import AppStyle, StatusBanner, row
 
 APP_TITLE = "Facebook Local Auto-Poster"
+# The logo at the top of the sidebar, and the room between it and the name.
+BRAND_SIZE = 24
+BRAND_GAP = 4
 
 # Set the first time the connection check comes back CONNECTED. Until then
 # the window opens on the setup wizard, because until then the app cannot
@@ -75,27 +78,26 @@ STARTUP_RECHECK_MS = 15_000
 CHROME_WATCH_MS = keepalive.WATCH_EVERY_S * 1000
 CHECK_DEADLINE_MS = keepalive.CHECK_DEADLINE_S * 1000
 
-# The order is the flow: what to say, who to say it to, when to say it, and
-# how it is going. The sidebar is the sequence, so it reads top to bottom. Each
-# item has an icon (icons.py); the first three used to be numbered "1." to
-# "3.", which the user replaced with the icons on 2026-10-12. Settings is not
-# part of the flow at all, so it sits at the foot of the sidebar, away from
-# the steps. Group sets is not a step either: it is where sets are made, and
-# they are picked on Groups (its own item, the user's choice, 2026-10-15).
-# Posting tips is advice to read, in three languages (2026-10-18).
+# Home, then the road to a post, then how it is going. Create a post holds the
+# three steps as one road (the user's request, 2026-10-19): they used to be
+# three items of their own. Each item has an icon (icons.py). Settings is
+# somewhere you go on purpose, so it sits at the foot of the sidebar. Group
+# sets is not a step: it is where sets are made, and they are picked in step 2
+# (its own item, the user's choice, 2026-10-15). Posting tips is advice to
+# read, in three languages (2026-10-18).
 NAV_ITEMS = (
-    ("compose", "Compose", ComposeView),
-    ("groups", "Groups", GroupsView),
-    ("publish", "Publish", PublishView),
+    ("home", "Home", HomeView),
+    ("create", "Create a post", CreatePostView),
     ("dashboard", "Dashboard", DashboardView),
     ("group_sets", "Group sets", GroupSetsView),
     ("tips", "Posting tips", TipsView),
     ("settings", "Settings", SettingsView),
 )
 
-# Keys that form the three-step path, in order. The Dashboard is where you
-# look afterwards, not a step, so it sits below a divider. It replaced the
-# Queue screen (2026-10-14).
+# The three steps inside Create a post, in order. Each is still a view of its
+# own in `App.views`, and `show_view` routes its key to the step. The
+# Dashboard is where you look afterwards, not a step, so it sits below a
+# divider. It replaced the Queue screen (2026-10-14).
 FLOW_STEPS = ("compose", "groups", "publish")
 
 # Screens that are not in the sidebar, and the item that stays lit while one
@@ -103,12 +105,16 @@ FLOW_STEPS = ("compose", "groups", "publish")
 # where you are. The setup wizard belongs to no step, so nothing is lit: it
 # used to leave whichever item was clicked last lit, often Settings, which
 # answered "where am I?" wrongly.
-NAV_PARENT = {"schedule_edit": "publish"}
+NAV_PARENT = {
+    "compose": "create",
+    "groups": "create",
+    "publish": "create",
+    "schedule_edit": "create",
+}
 
 NAV_HINTS = {
-    "compose": "Write the post",
-    "groups": "Choose the groups",
-    "publish": "Choose when",
+    "home": "Where to start",
+    "create": "Write the post, choose the groups, then choose when",
     "dashboard": "See how the posting is going",
     "group_sets": "Keep groups together, to pick as one",
     "tips": "Advice for posting safely, in Hebrew, English or Russian",
@@ -251,7 +257,7 @@ class App(QMainWindow):
         self.show_view(self._opening_view())
 
     def _opening_view(self) -> str:
-        """The setup wizard until the app has connected once, then Compose.
+        """The setup wizard until the app has connected once, then Home.
 
         Reading a stored setting rather than checking Chrome: the check is slow
         enough to be visible, and this runs before the window is on screen.
@@ -269,17 +275,19 @@ class App(QMainWindow):
         column.setContentsMargins(theme.PAD_M, theme.PAD_L, theme.PAD_M, theme.PAD_M)
         column.setSpacing(theme.PAD_XS)
 
-        # The app's own icon beside its name, the one on the taskbar.
-        brand_row = QHBoxLayout()
-        brand_row.setContentsMargins(theme.PAD_XS, 0, 0, 0)
-        brand_row.setSpacing(theme.PAD_S)
-        mark = QLabel()
-        mark.setPixmap(icons.brand(24))
-        brand_row.addWidget(mark)
-        brand = QLabel("Auto-Poster")
-        brand.setObjectName("Brand")
-        brand_row.addWidget(brand, 1)
-        column.addLayout(brand_row)
+        # The app's own icon beside its name, the one on the taskbar. It leads
+        # Home, the way a website's logo does (the user's request,
+        # 2026-10-19). The mark is drawn wider than tall to give the name the
+        # same gap it had as two labels: Qt fixes a button's at 4px.
+        self.brand_button = QPushButton("Auto-Poster")
+        self.brand_button.setObjectName("Brand")
+        self.brand_button.setIcon(QIcon(icons.brand(BRAND_SIZE, BRAND_SIZE + BRAND_GAP)))
+        self.brand_button.setIconSize(QSize(BRAND_SIZE + BRAND_GAP, BRAND_SIZE))
+        self.brand_button.setCursor(Qt.PointingHandCursor)
+        self.brand_button.setToolTip("Home")
+        self.brand_button.setAccessibleName("Auto-Poster: Home")
+        self.brand_button.clicked.connect(lambda: self.show_view("home"))
+        column.addWidget(self.brand_button)
         column.addSpacing(theme.PAD_L)
 
         group = QButtonGroup(self)
@@ -464,9 +472,26 @@ class App(QMainWindow):
 
     # -- navigation --------------------------------------------------------
     def show_view(self, key: str) -> None:
+        if key == "create":
+            # The sidebar item: back to whichever step the post was at.
+            key = self.views["create"].current_key
+        if key in FLOW_STEPS:
+            # A step lives inside Create a post, not in the window's stack.
+            flow = self.views["create"]
+            self.stack.setCurrentWidget(flow)
+            self.current_view = key
+            self._light(key)
+            flow.go_to(key)
+            return
         view = self.views[key]
         self.stack.setCurrentWidget(view)
         self.current_view = key
+        self._light(key)
+        on_show = getattr(view, "on_show", None)
+        if on_show is not None:
+            on_show()
+
+    def _light(self, key: str) -> None:
         lit = NAV_PARENT.get(key, key)
         # An exclusive group refuses to leave nothing checked, which is what
         # kept the last item lit on a screen that is in no step at all.
@@ -474,9 +499,6 @@ class App(QMainWindow):
         for name, button in self.nav_buttons.items():
             button.setChecked(name == lit)
         self._nav_group.setExclusive(True)
-        on_show = getattr(view, "on_show", None)
-        if on_show is not None:
-            on_show()
 
     # -- toast -------------------------------------------------------------
     def toast(self, message: str, level: str = "info", undo=None) -> None:

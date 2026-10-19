@@ -91,7 +91,8 @@ class TestTheSidebar:
 
         keys = [key for key, _label, _cls in NAV_ITEMS]
         assert "queue" not in keys
-        assert keys.index("dashboard") == keys.index("publish") + 1
+        # Below the road to a post, which holds the three steps (2026-10-19).
+        assert keys.index("dashboard") == keys.index("create") + 1
         assert qt_app.nav_buttons["dashboard"].text() == "Dashboard"
 
 
@@ -263,7 +264,7 @@ class TestRecentActivity:
 
     def test_a_turn_that_never_came_is_not_activity(self, qt_app, groups, view):
         qt_app.task_repo.create(BODY, [(groups[0].id, BODY)])
-        assert "Nothing yet. Write a post on the Compose screen." in recent_texts(view)
+        assert "Nothing yet. Write one in Create a post." in recent_texts(view)
 
     def test_no_label_uses_the_worker_s_own_words(self, qt_app, groups, view):
         post(qt_app, groups[0], state=TARGET_SKIPPED, error="Cooldown.")

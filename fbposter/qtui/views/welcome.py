@@ -227,7 +227,7 @@ class WelcomeView(QWidget):
         if self._busy:
             return
         if self.step is SetupStep.READY:
-            self.app.show_view("compose")
+            self.app.show_view("home")
             return
         if self.step is SetupStep.ERROR:
             self.recheck()

@@ -215,11 +215,11 @@ class TestNavigationReadsAsAFlow:
 
 
 class TestTheRenderedSidebar:
-    def test_the_steps_come_first_in_order(self, qt_app):
-        """The icons replaced "1." to "3." (the user's choice, 2026-10-12), so
-        the order on screen is what says they are walked in turn."""
+    def test_home_then_the_road_to_a_post_come_first(self, qt_app):
+        """The three steps are one item now, in order inside it (2026-10-19)."""
         keys = list(qt_app.nav_buttons)
-        assert keys[: len(FLOW_STEPS)] == list(FLOW_STEPS)
+        assert keys[:2] == ["home", "create"]
+        assert not set(FLOW_STEPS) & set(keys)
 
     def test_every_item_is_its_bare_name_with_an_icon(self, qt_app):
         for key, label, _view in NAV_ITEMS:
@@ -232,8 +232,8 @@ class TestTheRenderedSidebar:
         with the label. Both states have to exist for that."""
         from PySide6.QtGui import QIcon
 
-        icon = qt_app.nav_buttons["compose"].icon()
-        size = qt_app.nav_buttons["compose"].iconSize()
+        icon = qt_app.nav_buttons["create"].icon()
+        size = qt_app.nav_buttons["create"].iconSize()
         on = icon.pixmap(size, QIcon.Normal, QIcon.On).toImage()
         off = icon.pixmap(size, QIcon.Normal, QIcon.Off).toImage()
         assert on != off

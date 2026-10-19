@@ -56,15 +56,15 @@ class TestWhereAmI:
         qt_app.show_view("welcome")
         assert lit(qt_app) == []
 
-    def test_editing_a_repeating_post_lights_publish(self, qt_app):
+    def test_editing_a_repeating_post_lights_create_a_post(self, qt_app):
         qt_app.show_view("settings")
         qt_app.show_view("schedule_edit")
-        assert lit(qt_app) == ["publish"]
+        assert lit(qt_app) == ["create"]
 
     def test_coming_back_lights_one_again(self, qt_app):
         qt_app.show_view("welcome")
         qt_app.show_view("compose")
-        assert lit(qt_app) == ["compose"]
+        assert lit(qt_app) == ["create"]
 
 
 class TestHowLongAMessageStays:

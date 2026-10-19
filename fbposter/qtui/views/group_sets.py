@@ -51,8 +51,8 @@ def name_list(names: list[str], shown: int = NAMES_SHOWN) -> str:
 class GroupSetsView(QWidget):
     title = "Group sets"
     subtitle = (
-        "Keep groups that go together as one set, then pick the whole set on "
-        "the Groups screen. A repeating post that uses a set follows it: a "
+        "Keep groups that go together as one set, then pick the whole set in "
+        "Create a post, step 2. A repeating post that uses a set follows it: a "
         "group added here gets that post from its next run."
     )
 
@@ -307,7 +307,7 @@ class GroupSetsView(QWidget):
         self._editor_rows = {}
         groups = self.app.group_repo.list()
         self._editor_groups = {group.id: group for group in groups}
-        self.empty_note = QLabel("No groups yet. Get them on the Groups screen.")
+        self.empty_note = QLabel("No groups yet. Get them in Create a post, step 2.")
         self.empty_note.setObjectName("Muted")
         self.empty_note.setWordWrap(True)
         self.editor_rows.addWidget(self.empty_note)
@@ -368,7 +368,7 @@ class GroupSetsView(QWidget):
             holder.setVisible(visible)
             shown += visible
         if not self._editor_rows:
-            self.empty_note.setText("No groups yet. Get them on the Groups screen.")
+            self.empty_note.setText("No groups yet. Get them in Create a post, step 2.")
         elif not shown:
             self.empty_note.setText(f"No group matches \"{query.strip()}\".")
         self.empty_note.setVisible(not shown)

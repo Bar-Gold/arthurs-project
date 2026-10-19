@@ -38,6 +38,8 @@ SIZE_HEADING = 17
 SIZE_BODY = 15
 SIZE_SMALL = 13
 SIZE_STAT = 28
+# The Home page's one headline, the largest type in the window.
+SIZE_HOME = 30
 
 PAD_XS = 4
 PAD_S = 8
@@ -251,6 +253,8 @@ def stylesheet() -> str:
        up from the setting names inside it, which are body text. */
     QLabel#CardTitle {{ font-size: {SIZE_HEADING}px; font-weight: 600; }}
     QLabel#Brand {{ font-size: {SIZE_HEADING}px; font-weight: 600; }}
+    QLabel#HomeTitle {{ font-size: {SIZE_HOME}px; font-weight: 600; }}
+    QLabel#HomeLine {{ color: {c["TEXT_MUTED"]}; font-size: {SIZE_BODY}px; }}
     /* A Dashboard number, and a Dashboard tile that holds words instead. */
     QLabel#StatValue {{ font-size: {SIZE_STAT}px; font-weight: 600; }}
     QLabel#StatText {{ font-size: {SIZE_HEADING}px; font-weight: 600; }}
@@ -327,6 +331,18 @@ def stylesheet() -> str:
         font-weight: 600;
     }}
     QPushButton#PausedNotice:hover {{ background: {c["HOVER_BG"]}; }}
+    /* The logo at the top of the sidebar leads Home, the way a website's
+       does. Drawn like the label it replaced: no border, no fill at rest. */
+    QPushButton#Brand {{
+        background: transparent;
+        border: none;
+        text-align: left;
+        padding: 4px;
+        color: {c["TEXT"]};
+        font-size: {SIZE_HEADING}px;
+        font-weight: 600;
+    }}
+    QPushButton#Brand:hover {{ background: {c["HOVER_BG"]}; }}
     /* The wording tabs on Compose, one per group. The chosen one is tinted
        and outlined in the accent rather than filled with it: a filled one
        stood beside the screen's filled "Next" button as a second call to
@@ -339,6 +355,15 @@ def stylesheet() -> str:
         font-weight: 600;
     }}
     QPushButton#Tab:checked:hover {{ border-color: {c["ACCENT_HOVER"]}; }}
+    /* The step bar of Create a post. Drawn like a tab, but the step you are
+       on is not set bold: bold is wider than the width the button was sized
+       for, and cut "Choose the groups" short. */
+    QPushButton#Step {{ padding: 6px 12px; }}
+    QPushButton#Step:checked {{
+        background: {c["NAV_ACTIVE_BG"]};
+        border-color: {c["ACCENT"]};
+        color: {c["ACCENT_TEXT"]};
+    }}
 
     /* A joined toggle (widgets.segmented): one choice out of two or three,
        drawn as one control the way phones and Windows draw it. The chosen
@@ -412,15 +437,20 @@ def stylesheet() -> str:
         border: 2px solid {c["ACCENT"]};
         padding: 9px 11px;
     }}
+    QPushButton#Brand:focus {{ border: 2px solid {c["ACCENT"]}; padding: 2px; }}
+    /* Home's one call to action, a size up from every other Primary. */
+    QPushButton#Primary[hero="true"] {{ font-size: {SIZE_HEADING}px; padding: 14px 40px; }}
+    QPushButton#Primary[hero="true"]:focus {{ padding: 13px 39px; }}
     QCheckBox:focus {{ color: {c["ACCENT_TEXT"]}; font-weight: 600; }}
 
     QPushButton:pressed {{ background: {c["PRESSED_BG"]}; border-color: {c["BORDER_STRONG"]}; }}
     QPushButton#Primary:pressed {{ background: {c["ACCENT_PRESSED"]}; }}
     QPushButton#Nav:pressed {{ background: {c["PRESSED_BG"]}; }}
+    QPushButton#Brand:pressed {{ background: {c["PRESSED_BG"]}; }}
     /* The warning colour is under 4.5:1 on the pressed grey, so for the
        moment of the press the text goes plain. */
     QPushButton#PausedNotice:pressed {{ background: {c["PRESSED_BG"]}; color: {c["TEXT"]}; }}
-    QPushButton#Tab:checked:pressed {{
+    QPushButton#Step:checked:pressed, QPushButton#Tab:checked:pressed {{
         background: {c["PRESSED_BG"]};
         border-color: {c["ACCENT_PRESSED"]};
     }}

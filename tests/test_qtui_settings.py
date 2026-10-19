@@ -114,7 +114,7 @@ class TestItIsNotOnTheMainPath:
     def test_the_sidebar_has_no_pause_button(self, qt_app):
         from PySide6.QtWidgets import QPushButton
 
-        sidebar = qt_app.nav_buttons["compose"].parent()
+        sidebar = qt_app.nav_buttons["home"].parent()
         labels = [b.text() for b in sidebar.findChildren(QPushButton)]
         assert not any("Pause" in text or "Resume" in text for text in labels), labels
 

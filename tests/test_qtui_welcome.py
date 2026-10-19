@@ -45,10 +45,10 @@ class TestTheWindowOpensWhereTheUserActuallyIs:
         finally:
             app.close()
 
-    def test_once_it_has_worked_it_opens_on_compose(self, qt_application, tmp_path):
+    def test_once_it_has_worked_it_opens_on_home(self, qt_application, tmp_path):
         app = build_app(tmp_path, setup_complete=True)
         try:
-            assert app.current_view == "compose"
+            assert app.current_view == "home"
         finally:
             app.close()
 
@@ -139,7 +139,7 @@ class TestTheWizardItself:
         view.refresh(force=True)
         assert view.step is SetupStep.READY
         view.do_action()
-        assert qt_app.current_view == "compose"
+        assert qt_app.current_view == "home"
 
     def test_the_slow_work_never_runs_on_the_drawing_thread(self, qt_app, monkeypatch):
         """Launching Chrome and loading Facebook both block for seconds. On the

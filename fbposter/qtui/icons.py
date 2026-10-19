@@ -22,6 +22,18 @@ from . import theme
 # Inner SVG for each icon. `stroke` takes the colour; a shape that is filled
 # says so itself.
 SHAPES = {
+    # A house: the page the app opens on.
+    "home": (
+        '<path d="M3.5 11 12 4l8.5 7"/>'
+        '<path d="M5.5 9.5V20h13V9.5"/>'
+        '<path d="M10 20v-5.5h4V20"/>'
+    ),
+    # A pen with a plus: making a new post, from the first word to the time.
+    "create": (
+        '<path d="M12 20h8"/>'
+        '<path d="M16.4 3.6a2 2 0 0 1 2.9 2.9L7.5 18.3 3.5 19.5l1.2-4z"/>'
+        '<path d="M6 3v5M3.5 5.5h5"/>'
+    ),
     # A pen over a line: writing the post.
     "compose": (
         '<path d="M12 20h8"/>'
@@ -130,16 +142,19 @@ def pixmap(name: str, colour: str, size: int, width: int | None = None) -> QPixm
     return _render(lambda px, wide: svg(name, colour, px, wide), size, width)
 
 
-def brand(size: int = 24) -> QPixmap:
+def brand(size: int = 24, width: int | None = None) -> QPixmap:
+    """The app's mark. `width`, when wider than `size`, leaves empty room to
+    its right: the sidebar's logo button uses it for the gap before its name,
+    which Qt otherwise fixes at 4px (see NAV_ICON_GAP)."""
     accent = theme.C["ACCENT"]
 
-    def document(px: int, _width: int) -> bytes:
+    def document(px: int, wide: int) -> bytes:
         return (
-            f'<svg xmlns="http://www.w3.org/2000/svg" width="{px}" height="{px}" '
-            f'viewBox="0 0 24 24">{BRAND.replace("{accent}", accent)}</svg>'
+            f'<svg xmlns="http://www.w3.org/2000/svg" width="{wide}" height="{px}" '
+            f'viewBox="0 0 {24 * wide / px:g} 24">{BRAND.replace("{accent}", accent)}</svg>'
         ).encode()
 
-    return _render(document, size)
+    return _render(document, size, width)
 
 
 def nav_icon(name: str) -> QIcon:

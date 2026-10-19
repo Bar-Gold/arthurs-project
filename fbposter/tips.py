@@ -61,8 +61,8 @@ PAGES = {
                 "Meta's spam policy says an account can be restricted even when it "
                 "posts rarely, if its posts repeat. Write every listing at least 3 "
                 "different ways: a different opening line, a different order, a "
-                "different closing sentence. Add them as wordings on the Publish "
-                "screen, and the app shares them out across the groups.",
+                "different closing sentence. Add them as wordings in Create a post, "
+                "step 3, under Repeat, and the app shares them out across the groups.",
             ),
             Tip(
                 "An active account can post more",
@@ -127,9 +127,11 @@ PAGES = {
             ),
         ),
         sources=(
-            "Based on Meta's spam policy (transparency.meta.com) and guides by "
-            "people who post to many groups. The numbers are estimates, not "
-            "Facebook's."
+            "Based on Meta's spam and account-restriction policies "
+            "(transparency.meta.com) and on guides by people who post to many "
+            "groups: lilachbullock.com, pilotposter.com and multiplegroupposter.com. "
+            "The Israeli hours are from thetabber.com. The numbers are estimates, "
+            "not Facebook's."
         ),
     ),
     "he": Page(
@@ -146,7 +148,8 @@ PAGES = {
                 "לפי מדיניות הספאם של Meta, פייסבוק עלולה להגביל חשבון גם כשהוא "
                 "מפרסם מעט, אם הפוסטים שלו חוזרים על עצמם. כדאי לכתוב כל מודעה "
                 "ב-3 נוסחים שונים לפחות: פתיחה אחרת, סדר אחר, משפט סיום אחר. את "
-                "הנוסחים מוסיפים במסך Publish, והתוכנה מחלקת אותם בין הקבוצות.",
+                "הנוסחים מוסיפים ב-Create a post, בשלב 3 תחת Repeat, והתוכנה מחלקת "
+                "אותם בין הקבוצות.",
             ),
             Tip(
                 "חשבון פעיל יכול לפרסם יותר",
@@ -208,9 +211,11 @@ PAGES = {
             ),
         ),
         sources=(
-            "מבוסס על מדיניות הספאם של Meta (transparency.meta.com) ועל מדריכים "
-            "של אנשים שמפרסמים בקבוצות רבות. המספרים הם הערכות, לא נתונים של "
-            "פייסבוק."
+            "מבוסס על מדיניות הספאם ומדיניות הגבלת החשבונות של Meta "
+            "(transparency.meta.com), ועל מדריכים של אנשים שמפרסמים בקבוצות "
+            "רבות: lilachbullock.com, pilotposter.com ו-multiplegroupposter.com. "
+            "שעות הפעילות בישראל מבוססות על thetabber.com. המספרים הם הערכות, לא "
+            "נתונים של פייסבוק."
         ),
     ),
     "ru": Page(
@@ -228,8 +233,8 @@ PAGES = {
                 "редких публикациях, если посты повторяются. Напишите каждое "
                 "объявление как минимум в 3 разных вариантах: другое начало, другой "
                 "порядок, другая заключительная фраза. Добавьте их как варианты "
-                "текста на экране «Publish», и программа распределит их между "
-                "группами.",
+                "текста в «Create a post», на шаге 3 в режиме «Repeat», и программа "
+                "распределит их между группами.",
             ),
             Tip(
                 "Активный аккаунт может публиковать больше",
@@ -299,9 +304,11 @@ PAGES = {
             ),
         ),
         sources=(
-            "Основано на правилах Meta о спаме (transparency.meta.com) и на "
-            "руководствах людей, которые публикуют во многих группах. Цифры "
-            "приблизительные, это не данные Facebook."
+            "Основано на правилах Meta о спаме и об ограничении аккаунтов "
+            "(transparency.meta.com) и на руководствах людей, которые публикуют "
+            "во многих группах: lilachbullock.com, pilotposter.com и "
+            "multiplegroupposter.com. Данные о часах активности в Израиле взяты с "
+            "сайта thetabber.com. Цифры приблизительные, это не данные Facebook."
         ),
     ),
 }

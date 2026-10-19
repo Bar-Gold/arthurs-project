@@ -314,7 +314,7 @@ class ScheduleEditView(QWidget):
                 self._group_boxes[group.id] = box
                 self._group_notes[group.id] = note
             if not active:
-                note = QLabel("No groups yet. Add them on the Groups screen.")
+                note = QLabel("No groups yet. Get them in Create a post, step 2.")
                 note.setObjectName("Muted")
                 self.group_box.addWidget(note)
             self.refresh_covered()

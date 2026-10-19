@@ -51,18 +51,18 @@ Requirements:
 *   **Sleep handling:** hold off system sleep while a batch is in flight (`SetThreadExecutionState` with `ES_CONTINUOUS | ES_SYSTEM_REQUIRED`; the display may still turn off). Schedules are stored as absolute timestamps and recomputed on wake, so suspend/resume never drifts. A slot missed while the machine was asleep is surfaced to the user, not fired late in a burst.
 
 ## 6. Core Features & UI Requirements
-A left sidebar navigates between four screens, in the order the work happens: **Compose (what) → Groups (where) → Publish (when) → Dashboard (how it is going)**; appearance follows the Windows theme. The UI stays uncluttered and readable, and never opens a modal dialog to tell the user something. Status goes to a passive in-window toast.
+A left sidebar opens on **Home**, a calm page with one button: **Create a post**. That item walks the work in order as three steps of one road, with a step bar on top: **Write the post (what) → Choose the groups (where) → Choose when (when)**. An earlier step can be clicked to go back; forward is only by each step's Next button. A post that goes out or is queued clears the draft and returns to Home. Below them sit the **Dashboard** (how it is going), Group sets, Posting tips and Settings; the logo at the top of the sidebar also leads Home. Appearance follows the Windows theme. The UI stays uncluttered and readable, and never opens a modal dialog to tell the user something. Status goes to a passive in-window toast.
 
 The **connection indicator lives in the sidebar**, not in a screen of its own: it is the "Check connection" action from §4, and nothing else in the app works without it, so it is visible from everywhere.
 
-*   **Compose**
+*   **Step 1, Write the post** (was the Compose screen)
     *   Spacious free-text input with a live character count.
     *   **Per-group wording.** Tabs above the editor ("All groups" plus one per selected group) switch the editor between the shared base text and a version written for that group. This is what makes the content-variation rule in §7 actionable rather than a warning with no remedy. Editing the base text resets the per-group versions, and says so.
     *   Attach pictures and videos, in any mix. A video is uploaded before Post is clicked, however long that takes, and the post stops (nothing posted) if the upload stops moving for 5 minutes. Facebook's own 10 GB video limit is checked when the file is attached.
     *   **Preview.** A `Write | Preview` toggle above the editor shows the post laid out the way the group will see it: avatar, name, text, and the pictures as a 1/2/3/4/+N collage running full-bleed to the card edges, with a Like/Comment/Share row. Deliberately no invented like counts. A single picture keeps its own aspect ratio; the rest crop to fill their tile, which is what stops a row of mixed shapes looking ragged. It shows the post as the group will receive it. The wording of the active tab, wrapped as it will wrap, with the attached images scaled down. Deliberately generic: no imitation of Facebook's chrome and no profile picture, because the question it answers is whether the text and the image look right. It matters most alongside per-group wording, where each group gets different words and reading one back is the only way to check it. An image that cannot be read is drawn as a named tile rather than dropped. It is still going to be uploaded.
     *   "Save as Template" storing text + media paths for reuse.
     *   Templates are a starting point, not a lock. The user edits before sending.
-*   **Groups**: both the recipient picker for this post and the list itself, deliberately one screen.
+*   **Step 2, Choose the groups**: both the recipient picker for this post and the list itself, deliberately one screen.
     *   Tick the groups this post goes to, by clicking anywhere on a group's row; "Select all" / "Clear"; the count is always visible.
     *   Each group shows its member count as Facebook writes it ("12K members"), read off the group's page once, in the same visit as its name.
     *   The client's groups are read off Facebook by themselves after the first login, and with "Get my groups from Facebook" later; they start ticked, and a removed group is never added back.
@@ -77,7 +77,7 @@ The **connection indicator lives in the sidebar**, not in a screen of its own: i
     *   Group addresses are reduced to a canonical group identifier, so the same group cannot be added (or posted to) twice.
     *   Per-group record of the last successful post time, so the UI can warn about posting to the same group too soon.
     *   Cooldown defaults to **8 hours** (lowered from 24, so two or three posts a day to one group is possible).
-*   **Publish**: the one place that decides *when*. Compose owns the text and the groups and carries no timing controls at all.
+*   **Step 3, Choose when**: the one place that decides *when*. Compose owns the text and the groups and carries no timing controls at all.
     *   **Now**: straight onto the queue.
     *   **Once**: at a single chosen moment, up to a year ahead. Defaults to the current time; the field ignores the mouse wheel and starts on the minutes, so a stray scroll cannot move a post into a different year.
     *   **Repeat**: daily, or on chosen days of the week, at as many times of day as wanted (Israel local, DST-safe).

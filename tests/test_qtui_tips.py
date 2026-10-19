@@ -96,10 +96,15 @@ class TestWhatItShows:
 
     def test_the_screens_it_names_are_real(self, qt_app):
         """It tells the client to press Pause posting on Settings and to add
-        wordings on Publish, so those had better be what the window says."""
+        wordings in Create a post, step 3, under Repeat, so those had better
+        be what the window says."""
+        from fbposter.qtui.views.publish import REPEAT
+
         assert qt_app.nav_buttons["settings"].text() == "Settings"
-        assert qt_app.nav_buttons["publish"].text() == "Publish"
+        assert qt_app.nav_buttons["create"].text() == "Create a post"
+        assert qt_app.views["publish"].mode_buttons[REPEAT].text() == "Repeat"
         assert qt_app.views["settings"].pause_button.text() == "Pause posting"
         for page in tips.PAGES.values():
             text = " ".join(tip.body for tip in page.tips)
-            assert "Pause posting" in text and "Settings" in text and "Publish" in text
+            for name in ("Pause posting", "Settings", "Create a post", "Repeat"):
+                assert name in text
