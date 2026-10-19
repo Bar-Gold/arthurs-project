@@ -80,7 +80,7 @@ powershell -ExecutionPolicy Bypass -File packaging\build.ps1 -SkipInstaller  # .
 
 `status` exits 0 when logged in, 1 when not, 2 on error (Chrome not running, etc.).
 
-There is no linter or formatter configured, and no pytest config file. The suite is the whole check. Baseline: **1837 tests, 75-240s**. The spread is machine load, not the suite; the Qt GUI files are much of it. A run of *five minutes or more* means something is reaching the network; see the `SilentNamer` note below.
+There is no linter or formatter configured, and no pytest config file. The suite is the whole check. Baseline: **1849 tests, 75-240s**. The spread is machine load, not the suite; the Qt GUI files are much of it. A run of *five minutes or more* means something is reaching the network; see the `SilentNamer` note below.
 
 **Do not add `playwright install`.** It is unnecessary and was verified so against Chrome 150: the app attaches to the user's real Chrome over CDP and never launches Playwright's bundled Chromium, so the driver shipped inside the pip package is all that is required.
 
@@ -108,7 +108,7 @@ Core: `config.py` (paths, port, Chrome flags), `chrome.py` (find/launch Chrome, 
 
 Scripts: `scripts/setup_always_on.ps1`: the laptop power plan and the logon task. See the Power section.
 
-Packaging: `packaging/`: `fbposter.spec` (PyInstaller), `installer.iss` (Inno Setup), `build.ps1` (both, plus the suite), `entry.py`. Its rules are in `packaging/CLAUDE.md`.
+Packaging: `packaging/`: `fbposter.spec` (PyInstaller), `installer.iss` (Inno Setup), `build.ps1` (both, plus the suite), `entry.py`, `policy.txt` (the account blocking policy the installer asks the client to accept; `make_policy.py` turns it into `policy.rtf`). Its rules are in `packaging/CLAUDE.md`.
 
 Automation: `automation/poster.py` (`GroupPoster`: arrive → compose → type → attach → publish → verify, plus the read-only `probe`), `detect.py` (`classify` a page as OK / checkpoint / login / rate-limit / unavailable), `humanize.py` (`Humanizer`: keystroke timing, hovers, arrival scroll, the inter-group gap), `groupinfo.py` (read a group's display name off the `h1` **inside `[role="main"]`**, and its member count in the same visit; cosmetic, and must never raise into a caller), `groupfinder.py` (read every group the account is in off Facebook's "Your groups" page; see "Reading the client's groups off Facebook").
 

@@ -1,0 +1,133 @@
+# מדיניות חסימת חשבונות והגבלת אחריות
+
+תוכנת Facebook Auto-Poster. גרסה 1, בתוקף מיום 19/10/2026.
+
+English version below.
+
+## 1. כללי
+
+1.1. מסמך זה חל על השימוש בתוכנה Facebook Auto-Poster ("התוכנה"), המסופקת על ידי בר גולדשטיין ("המפתח"), ועל כל שירות התקנה, הדרכה או תמיכה הקשור בה.
+
+1.2. התקנת התוכנה או השימוש בה מהווים הסכמה מלאה לכל האמור במסמך זה. מי שאינו מסכים לאמור בו אינו רשאי להתקין את התוכנה או להשתמש בה.
+
+1.3. המסמך מנוסח בלשון זכר מטעמי נוחות בלבד, והוא מתייחס לכל המגדרים.
+
+## 2. פרסום אוטומטי ומדיניות פייסבוק
+
+2.1. התוכנה מפרסמת פוסטים בקבוצות פייסבוק באופן אוטומטי, באמצעות חשבון הפייסבוק של הלקוח. תנאי השימוש של חברת Meta, המפעילה את פייסבוק, אינם מתירים פרסום אוטומטי.
+
+2.2. חברת Meta רשאית, לפי שיקול דעתה הבלעדי ובלי הודעה מוקדמת, להגביל, להשעות, לחסום או למחוק את חשבון הלקוח, וכן להסיר את הפוסטים שלו או את חברותו בקבוצות, באופן זמני או לצמיתות.
+
+2.3. למפתח אין שליטה על ההחלטות של Meta, ואין ביכולתו למנוע אותן, לבטל אותן או לשחזר חשבון שנחסם.
+
+2.4. הלקוח מצהיר כי הוא מבין סיכון זה ומקבל אותו על עצמו, וכי הוא בוחר להשתמש בתוכנה על אחריותו הבלעדית.
+
+## 3. אחריות הלקוח
+
+3.1. הלקוח בלבד מחליט מה לפרסם, באילו קבוצות, מתי ובאיזו תדירות, והוא האחראי הבלעדי לתוכן הפוסטים ולעמידה בכללי הקבוצות ובהוראות כל דין.
+
+3.2. התוכנה כוללת טיפים לפרסום בטוח יותר. הטיפים הם המלצות בלבד: התוכנה אינה אוכפת אותם, ופעולה לפיהם מקטינה את הסיכון לחסימה אך אינה מבטלת אותו.
+
+3.3. הלקוח ישפה את המפתח בגין כל תביעה או דרישה של צד שלישי הנובעת מתוכן שפרסם הלקוח או מהשימוש שעשה בתוכנה.
+
+## 4. אין התחייבות לתוצאות
+
+4.1. התוכנה מסופקת כמות שהיא, בלי אחריות מכל סוג. המפתח אינו מתחייב שהפוסטים יתפרסמו, שחברי הקבוצות יראו אותם, שיניבו פניות או עסקאות, או שחשבון הלקוח לא יוגבל או ייחסם.
+
+4.2. פייסבוק משנה את האתר שלה מעת לעת. שינוי כזה עלול לגרום לתוכנה להפסיק לפעול, כולה או חלקה, ואין בכך הפרה של התחייבות כלשהי של המפתח.
+
+## 5. אין החזר כספי בשל חסימה
+
+5.1. הגבלה, השעיה, חסימה או מחיקה של חשבון הפייסבוק של הלקוח, או של כל חשבון אחר שבו נעשה שימוש בתוכנה, אינן מזכות את הלקוח בהחזר כספי כלשהו, לא של דמי ההקמה ולא של דמי מנוי חודשיים ששולמו.
+
+5.2. האמור בסעיף 5.1 חל גם על אובדן קבוצות, פוסטים, אנשי קשר, פניות או הכנסות שנגרם בעקבות חסימה.
+
+5.3. ביטול המנוי, מכל סיבה שהיא, אינו מזכה בהחזר בגין תקופה ששולמה מראש.
+
+## 6. הגבלת אחריות
+
+6.1. ככל שהדין מתיר, המפתח לא יישא באחריות לנזק כלשהו, ישיר או עקיף, שייגרם ללקוח או לצד שלישי בקשר לתוכנה, לשימוש בה או לאי יכולת להשתמש בה, לרבות חסימת חשבון, אובדן מידע, אובדן לקוחות, אובדן רווחים ופגיעה במוניטין.
+
+6.2. הלקוח מוותר בזאת על כל טענה, דרישה או תביעה כלפי המפתח בשל הגבלה, השעיה, חסימה או מחיקה של חשבון פייסבוק כלשהו.
+
+6.3. אם ייקבע, על אף האמור, כי המפתח אחראי לנזק כלשהו, אחריותו הכוללת לא תעלה על הסכום ששילם הלקוח למפתח בשלושת החודשים שקדמו לאירוע שגרם לנזק.
+
+## 7. שונות
+
+7.1. על מסמך זה יחולו דיני מדינת ישראל, וסמכות השיפוט הבלעדית בכל עניין הנוגע לו נתונה לבתי המשפט המוסמכים בישראל.
+
+7.2. אם הוראה כלשהי במסמך זה תימצא בלתי תקפה או בלתי אכיפה, אין בכך כדי לפגוע בתוקפן של יתר ההוראות.
+
+7.3. המפתח רשאי לעדכן מסמך זה מעת לעת. הנוסח המחייב הוא הנוסח שהלקוח אישר בהתקנה האחרונה של התוכנה.
+
+7.4. במקרה של סתירה בין הנוסח העברי לנוסח האנגלי, הנוסח העברי יגבר.
+
+## 8. הסכמה
+
+בסימון האפשרות "I accept this policy" הלקוח מאשר כי קרא את המסמך, הבין אותו ומסכים לכל האמור בו, לרבות הסיכון שחשבון הפייסבוק שלו ייחסם.
+
+---
+
+# Account Blocking and Liability Policy
+
+Facebook Auto-Poster. Version 1, in force from 19/10/2026.
+
+## 1. General
+
+1.1. This policy applies to the use of the Facebook Auto-Poster software ("the Software"), provided by Bar Goldstein ("the Developer"), and to any installation, training or support service connected with it.
+
+1.2. Installing or using the Software means full acceptance of everything in this policy. Anyone who does not accept it may not install or use the Software.
+
+## 2. Automatic posting and Facebook's policy
+
+2.1. The Software publishes posts to Facebook groups automatically, through the client's own Facebook account. The terms of use of Meta, which operates Facebook, do not permit automated posting.
+
+2.2. Meta may, at its sole discretion and without notice, restrict, suspend, block or delete the client's account, and remove the client's posts or group memberships, temporarily or permanently.
+
+2.3. The Developer has no control over Meta's decisions and cannot prevent them, reverse them or restore a blocked account.
+
+2.4. The client declares that they understand and accept this risk, and that they choose to use the Software entirely at their own risk.
+
+## 3. The client's responsibility
+
+3.1. The client alone decides what to post, in which groups, when and how often, and is solely responsible for the content of the posts and for complying with the rules of each group and with the law.
+
+3.2. The Software includes tips for posting more safely. They are recommendations only: the Software does not enforce them, and following them lowers the risk of a block but does not remove it.
+
+3.3. The client will indemnify the Developer against any claim or demand by a third party arising from content the client posted or from the client's use of the Software.
+
+## 4. No promise of results
+
+4.1. The Software is provided as is, without warranty of any kind. The Developer does not promise that posts will be published, that group members will see them, that they will bring enquiries or deals, or that the client's account will not be restricted or blocked.
+
+4.2. Facebook changes its website from time to time. Such a change may stop the Software working, wholly or partly, and this is not a breach of any obligation of the Developer.
+
+## 5. No refund because of a block
+
+5.1. A restriction, suspension, block or deletion of the client's Facebook account, or of any other account used with the Software, does not entitle the client to any refund: neither of the setup fee nor of monthly subscription fees already paid.
+
+5.2. Section 5.1 also applies to any loss of groups, posts, contacts, enquiries or income caused by a block.
+
+5.3. Cancelling the subscription, for any reason, does not entitle the client to a refund for a period already paid.
+
+## 6. Limitation of liability
+
+6.1. To the fullest extent permitted by law, the Developer is not liable for any damage, direct or indirect, caused to the client or to any third party in connection with the Software, its use or the inability to use it, including a blocked account, loss of data, loss of customers, loss of profit and harm to reputation.
+
+6.2. The client hereby waives any claim, demand or action against the Developer arising from the restriction, suspension, block or deletion of any Facebook account.
+
+6.3. If, despite the above, the Developer is found liable for any damage, the Developer's total liability will not exceed the amount the client paid the Developer in the three months before the event that caused the damage.
+
+## 7. General provisions
+
+7.1. This policy is governed by the laws of the State of Israel, and the competent courts in Israel have exclusive jurisdiction over any matter relating to it.
+
+7.2. If any provision of this policy is found invalid or unenforceable, the other provisions remain in force.
+
+7.3. The Developer may update this policy from time to time. The binding version is the one the client accepted when last installing the Software.
+
+7.4. If the Hebrew and English versions differ, the Hebrew version prevails.
+
+## 8. Acceptance
+
+By choosing "I accept this policy", the client confirms that they have read and understood this policy and agree to all of it, including the risk that their Facebook account may be blocked.

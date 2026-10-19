@@ -24,6 +24,9 @@ DisableProgramGroupPage=yes
 OutputDir=..\dist
 OutputBaseFilename=FacebookAutoPoster-Setup-{#AppVersion}
 SetupIconFile=app.ico
+; The account blocking policy: the client cannot install without accepting it
+; (the user's request, 2026-10-19). Built from policy.txt by make_policy.py.
+LicenseFile=policy.rtf
 UninstallDisplayIcon={app}\{#AppExe}
 Compression=lzma2/max
 SolidCompression=yes
@@ -38,6 +41,14 @@ ArchitecturesAllowed=x64compatible
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Messages]
+; The licence page holds the blocking policy, so it is named for it. The
+; policy quotes LicenseAccepted word for word, and tests/test_policy.py keeps
+; the two the same.
+WizardLicense=Account blocking policy
+LicenseLabel=Please read this before installing.
+LicenseLabel3=Please read this policy (in Hebrew, with English below). You need to accept it to install.
+LicenseAccepted=I &accept this policy
+LicenseNotAccepted=I &do not accept this policy
 ; There is no setup guide to read. The app's own Welcome screen walks the
 ; client through Chrome and the Facebook login one step at a time, so the
 ; last page of the installer just says so.

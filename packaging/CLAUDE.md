@@ -1,8 +1,9 @@
 # CLAUDE.md: packaging and the installer
 
 The root `CLAUDE.md` applies here too. This file covers building the client's
-installer: `fbposter.spec` (PyInstaller), `installer.iss` (Inno Setup), `build.ps1`
-and `entry.py`. The app side of handing it over (the first-run wizard, re-login and
+installer: `fbposter.spec` (PyInstaller), `installer.iss` (Inno Setup), `build.ps1`,
+`entry.py`, and the policy the installer asks the client to accept (`policy.txt`,
+`make_policy.py`, `policy.rtf`). The app side of handing it over (the first-run wizard, re-login and
 changing account) is app code and stays in the root file under "Handing this to a
 non-technical user".
 
@@ -30,6 +31,12 @@ The app is shipped to a client as `dist\FacebookAutoPoster-Setup-x.y.z.exe`, bui
 
 - **It must not create `C:\FBAutomation\`.** The installer runs elevated; a directory it creates at the drive root may not be writable by a standard user afterwards, and `config.resolve_profile_dir()` returns an *existing* directory in preference to the `LOCALAPPDATA` fallback, so it would pick the unwritable one and stay there. Let the app create it on first run, as the user.
 - **There is no console, so `print()` goes nowhere.** CPython no-ops when `sys.stdout` is `None`, so nothing crashes. It just says nothing. The single-instance refusal was a `print`, which meant double-clicking the shortcut twice made the second copy vanish without a word. It is a `QMessageBox` now, and `QApplication` is constructed *before* the lock is taken so there is something to parent it to. That dialog is the **third** permitted modal, and it earns it the same way the other two do: it can only appear because the user just double-clicked.
+
+**The installer will not install until the account blocking policy is accepted** (the user's request, 2026-10-19: a client whose Facebook account is blocked should have no claim and no refund). It is the licence page (`LicenseFile=policy.rtf`), renamed through `[Messages]`, in Hebrew with English below; the Hebrew wins where they differ. The seller is Bar Goldstein, and the client pays a setup fee and then monthly.
+
+- **Edit `policy.txt`, then run `make_policy.py`**, which writes `policy.rtf`. Never edit the RTF by hand. Plain text cannot run a paragraph right to left, so Hebrew came out aligned left with its full stops on the wrong side; the RTF gives each paragraph its direction from its first letter. `tests/test_policy.py` fails while the RTF is out of date, and checks that both languages quote the accept button (`LicenseAccepted`) word for word and have the same numbered clauses.
+- **It is a draft, not checked by a lawyer.** Under the standard contracts law a court can strike a clause that removes all liability, which is why it says "to the extent the law permits" and has a fallback cap (6.3: what the client paid in the last three months). Do not change what it promises without asking the user.
+- **Changing the wording means a new version number and date** at the top of both halves (7.3: the binding version is the one accepted at the last install).
 
 **No setup guide is shipped** (the user's choice, 2026-10-19). A text guide used to open in Notepad at the end of the install, which looked unprofessional, and it repeated the Welcome screen while going out of date. The installer's last page says instead that the app walks them through it (`FinishedLabel` in `[Messages]`), and `[InstallDelete]` removes the old guide and its Start Menu shortcut on an update. Do not bring back a readme: what the client needs to know belongs in the app.
 
