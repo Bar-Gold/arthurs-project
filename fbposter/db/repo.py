@@ -1,8 +1,8 @@
 """Query layer.
 
 One repository per table group. Repositories return model objects and never
-make policy decisions -- the safety rules live in fbposter/guards.py as pure
-functions, so they can be tested without a database.
+make policy decisions. There are no posting rules (the user's choice,
+2026-10-18), and the Dashboard's numbers are worked out in fbposter/stats.py.
 """
 
 from __future__ import annotations
@@ -43,15 +43,16 @@ from .models import (
 )
 
 
-# How far back the repeated-text guard looks, per group. The history prune
-# keeps at least this many posted bodies per group for ever -- the two numbers
-# must be the same one, or pruning quietly weakens the guard.
+# How far back `recent_bodies` looks, per group: what tells the worker these
+# words were sent to a group before (`PostRequest.sent_before`). The history
+# prune keeps at least this many posted bodies per group for ever -- the two
+# numbers must be the same one, or pruning quietly weakens that check.
 RECENT_BODIES_LIMIT = 20
 
 # Every state meaning the words reached the group, or may have: posted,
-# waiting for an admin, or stopped after Post was clicked. All three count for
-# the repeated-text rule, the cooldown and the daily limit (the user's choice
-# for the last, 2026-10-07).
+# waiting for an admin, or stopped after Post was clicked. All three count as
+# sent on the Dashboard and for `sent_before` (the user's choice for the last,
+# 2026-10-07).
 SENT_STATES = (TARGET_DONE, TARGET_AWAITING_APPROVAL, TARGET_UNCONFIRMED)
 
 # "Leave this column as it is", where None already means "clear it".
@@ -125,69 +126,6 @@ class SettingsRepo:
 
     def all(self) -> dict[str, str]:
         return {row["key"]: row["value"] for row in self.db.query("SELECT key, value FROM settings")}
-
-    def set_default_cooldown(self, hours: int) -> None:
-        """Change the one cooldown rule, on every group, in one transaction."""
-        _check_cooldown(hours)
-        with self.db.transaction() as connection:
-            _write_cooldown(connection, hours)
-
-    def set_posting_rules(
-        self, *, start_hour: int, end_hour: int, daily_cap: int, cooldown_hours: int
-    ) -> None:
-        """Save the posting hours, the daily limit and the cooldown together.
-
-        All three are checked before anything is written, and written in one
-        transaction, so the Settings screen can never leave half of what the
-        user pressed Save on in force.
-
-        Start and end may not be the same hour: `clock.inside_window` reads
-        that as "no posting hours at all", which would let a batch post at 4am.
-        A window that crosses midnight (22 to 6) is allowed; the clock handles
-        it. The daily limit may not be nought, which `check_daily_cap` reads as
-        "no limit".
-        """
-        for name, hour in (("start", start_hour), ("end", end_hour)):
-            if not 0 <= hour <= 23:
-                raise ValueError(f"{name} hour must be 0-23, not {hour}")
-        if start_hour == end_hour:
-            raise ValueError("the posting hours cannot start and end at the same hour")
-        if daily_cap < 1:
-            raise ValueError(f"the daily limit must be at least 1, not {daily_cap}")
-        _check_cooldown(cooldown_hours)
-        with self.db.transaction() as connection:
-            for key, value in (
-                ("posting_window_start_hour", start_hour),
-                ("posting_window_end_hour", end_hour),
-                ("daily_cap", daily_cap),
-            ):
-                connection.execute(
-                    "INSERT INTO settings (key, value) VALUES (?, ?) "
-                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                    (key, str(value)),
-                )
-            _write_cooldown(connection, cooldown_hours)
-
-
-def _check_cooldown(hours: int) -> None:
-    if hours < 1:
-        raise ValueError(f"cooldown must be at least 1 hour, not {hours}")
-
-
-def _write_cooldown(connection, hours: int) -> None:
-    """The setting and every group's own copy of it.
-
-    The setting alone is not enough: the worker and Compose read each group's
-    own `cooldown_hours`, and migration 009 only copied the value across once.
-    Archived groups are included, so pasting one back in brings it back on the
-    current rule rather than an old one.
-    """
-    connection.execute(
-        "INSERT INTO settings (key, value) VALUES ('default_cooldown_hours', ?) "
-        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        (str(hours),),
-    )
-    connection.execute("UPDATE groups SET cooldown_hours = ?", (hours,))
 
 
 class GroupRepo:
@@ -288,12 +226,11 @@ class GroupRepo:
 
         This was a DELETE, and `task_targets.group_id` is ON DELETE CASCADE --
         so removing a group took every post ever made to it along with it, and
-        that is exactly the window `recent_bodies` reads for
-        `guards.check_repeat_text`. Remove a group and add it back (to correct
-        a name, say) and the guard went blank: the advert that group had
-        already been sent could go to it again, which is the ban vector this
-        whole app is built around. Two clicks in the UI, no warning, nothing
-        on screen to show it had happened.
+        that is exactly the window `recent_bodies` reads. It then blocked the
+        same advert going to a group twice; now it tells the worker the words
+        are already in that group's feed (`sent_before`), and the Dashboard
+        counts them. Two clicks in the UI, no warning, nothing on screen to
+        show it had gone.
 
         Archiving hides the row and keeps the history. `list()` already
         excludes archived groups, so the screens need no change; `bring_back`
@@ -500,9 +437,6 @@ class GroupRepo:
             (members, to_iso(when or utcnow()), group_id),
         )
 
-    def set_cooldown(self, group_id: int, hours: int) -> None:
-        self.db.write("UPDATE groups SET cooldown_hours = ? WHERE id = ?", (hours, group_id))
-
     def mark_posted(self, group_id: int, when: datetime | None = None) -> None:
         self.db.write(
             "UPDATE groups SET last_posted_at = ? WHERE id = ?",
@@ -589,12 +523,8 @@ class TaskRepo:
         media_paths: Sequence[str] = (),
         scheduled_for: datetime | None = None,
         schedule_id: int | None = None,
-        overrides: Iterable[str] = (),
     ) -> Task:
         """Create a batch and its per-group targets atomically.
-
-        `overrides` are the rules the user chose "Post anyway" over; see
-        `guards.OVERRIDABLE`.
 
         `targets` is (group_id, body-for-that-group). A half-written batch --
         a task row with no targets, or targets without a task -- would leave the
@@ -614,8 +544,8 @@ class TaskRepo:
         with self.db.transaction() as connection:
             cursor = connection.execute(
                 "INSERT INTO tasks "
-                "(body, media_paths, scheduled_for, state, created_at, schedule_id, "
-                "overrides) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "(body, media_paths, scheduled_for, state, created_at, schedule_id) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
                 (
                     body,
                     json.dumps([str(p) for p in media_paths]),
@@ -623,7 +553,6 @@ class TaskRepo:
                     TASK_PENDING,
                     to_iso(utcnow()),
                     schedule_id,
-                    json.dumps(sorted(overrides)),
                 ),
             )
             task_id = cursor.lastrowid
@@ -1246,7 +1175,6 @@ class ScheduleRepo:
         days: Sequence[int] = (),
         media_paths: Sequence[str] = (),
         next_run_at: datetime | None = None,
-        overrides: Iterable[str] = (),
         set_ids: Sequence[int] = (),
     ) -> Schedule:
         """Write a schedule and its groups in one transaction.
@@ -1254,11 +1182,12 @@ class ScheduleRepo:
         A schedule with no groups, or groups with no schedule, would sit in the
         database doing nothing visible -- so, as with tasks, both halves land
         together or neither does. `set_ids` are group sets it follows, on top
-        of the groups ticked one by one.
+        of the groups ticked one by one. Pictures or a video alone need no
+        wording (the user's choice, 2026-10-18).
         """
         cleaned = [b for b in bodies if b.strip()]
-        if not cleaned:
-            raise ValueError("A repeating post needs at least one wording.")
+        if not cleaned and not media_paths:
+            raise ValueError("A repeating post needs some text or a picture or video.")
         if not group_ids and not set_ids:
             raise ValueError("A repeating post needs at least one group.")
         if not times:
@@ -1267,8 +1196,8 @@ class ScheduleRepo:
         with self.db.transaction() as connection:
             cursor = connection.execute(
                 "INSERT INTO schedules "
-                "(name, bodies, media_paths, times, days, state, next_run_at, created_at, "
-                "overrides) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "(name, bodies, media_paths, times, days, state, next_run_at, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     name,
                     json.dumps(list(cleaned)),
@@ -1278,7 +1207,6 @@ class ScheduleRepo:
                     SCHEDULE_ACTIVE,
                     to_iso(next_run_at),
                     to_iso(utcnow()),
-                    json.dumps(sorted(overrides)),
                 ),
             )
             schedule_id = cursor.lastrowid
@@ -1306,7 +1234,6 @@ class ScheduleRepo:
         times: Sequence[str],
         days: Sequence[int] = (),
         media_paths: Sequence[str] = (),
-        overrides: Iterable[str] = (),
         next_run_at: datetime | None | object = KEEP,
         set_ids: Sequence[int] = (),
     ) -> Schedule:
@@ -1321,23 +1248,20 @@ class ScheduleRepo:
         and groups, so they go out as they were; only later runs see this.
         """
         cleaned = [b for b in bodies if b.strip()]
-        if not cleaned:
-            raise ValueError("A repeating post needs at least one wording.")
+        if not cleaned and not media_paths:
+            raise ValueError("A repeating post needs some text or a picture or video.")
         if not group_ids and not set_ids:
             raise ValueError("A repeating post needs at least one group.")
         if not times:
             raise ValueError("A repeating post needs at least one time of day.")
 
-        columns = (
-            "name = ?, bodies = ?, media_paths = ?, times = ?, days = ?, overrides = ?"
-        )
+        columns = "name = ?, bodies = ?, media_paths = ?, times = ?, days = ?"
         values: list[Any] = [
             name,
             json.dumps(list(cleaned)),
             json.dumps([str(p) for p in media_paths]),
             json.dumps(list(times)),
             json.dumps([int(d) for d in days]),
-            json.dumps(sorted(overrides)),
         ]
         if next_run_at is not KEEP:
             columns += ", next_run_at = ?"
@@ -1423,8 +1347,8 @@ class ScheduleRepo:
                 return False
             connection.execute(
                 "INSERT INTO schedules (id, name, bodies, media_paths, times, days, "
-                "state, run_count, next_run_at, last_run_at, created_at, overrides) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "state, run_count, next_run_at, last_run_at, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     schedule.id,
                     schedule.name,
@@ -1437,7 +1361,6 @@ class ScheduleRepo:
                     to_iso(schedule.next_run_at),
                     to_iso(schedule.last_run_at),
                     to_iso(schedule.created_at or utcnow()),
-                    json.dumps(sorted(schedule.overrides)),
                 ),
             )
             for position, group_id in enumerate(schedule.group_ids):
@@ -1481,7 +1404,7 @@ class GroupSetRepo:
     A set is not a way of posting. Now and Once copy its groups into an
     ordinary batch when the button is pressed, and a repeating post follows it
     through `schedule_sets`: `ScheduleRepo` reads the set's groups afresh for
-    every run. So the worker, the guards and the queue never see a set at all.
+    every run. So the worker and the queue never see a set at all.
     """
 
     def __init__(self, db: Database) -> None:

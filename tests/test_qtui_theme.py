@@ -207,10 +207,11 @@ class TestNavigationReadsAsAFlow:
         for key, _label, _view in NAV_ITEMS:
             assert NAV_HINTS.get(key), f"{key} has no hint"
 
-    def test_no_more_than_six_nav_items(self):
+    def test_no_more_than_seven_nav_items(self):
         """Many more and a sidebar stops being scannable. It was five until
-        the user chose an item of its own for group sets (2026-10-15)."""
-        assert len(NAV_ITEMS) <= 6
+        the user chose an item of its own for group sets (2026-10-15), and
+        six until Posting tips (2026-10-18)."""
+        assert len(NAV_ITEMS) <= 7
 
 
 class TestTheRenderedSidebar:

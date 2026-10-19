@@ -62,17 +62,8 @@ from .db.models import (
 )
 from .db.repo import GROUP_REMOVED, GroupRepo, ScheduleRepo, SettingsRepo, TaskRepo
 from .errors import AutomationHalted, ConnectionFailed, FBPosterError, PostNotVerified
-from .guards import (
-    COOLDOWN,
-    DAILY_CAP,
-    POSTING_WINDOW,
-    REPEAT_TEXT,
-    check_cooldown,
-    check_repeat_text,
-    normalise,
-    rule_labels,
-)
 from .power import SleepBlocker
+from .text import normalise
 
 # A scheduled slot older than this was almost certainly missed while the
 # machine was asleep. Firing a burst of late posts is exactly the behaviour the
@@ -82,9 +73,9 @@ MISSED_GRACE = timedelta(hours=2)
 TICK_SECONDS = 5.0
 
 # How far ahead a batch has to be doing something for the machine to be held
-# awake for it. Comfortably past the longest inter-group gap (25 minutes), so
-# every real gap is covered -- but a batch deferred to tomorrow morning because
-# the window closed is not, and the machine is free to sleep through the night.
+# awake for it. Comfortably past the longest gap between groups (4 minutes)
+# and the wait for Chrome to come back (5), so every real wait is covered --
+# but a batch with nothing to do for longer than that does not hold it awake.
 KEEP_AWAKE_HORIZON = timedelta(minutes=30)
 
 # Chrome is not reachable over CDP. Nothing has been typed when this happens,
@@ -407,6 +398,7 @@ class PostingWorker:
         self._retry_recovery(now)
         self._maybe_prune(now)
         self._follow_up_pending(now)
+        self._note_due(now)
         if self._materialise_schedules(now):
             return True
 
@@ -441,6 +433,27 @@ class PostingWorker:
             return self._attempt(fresh, target, now)
         return False
 
+    def _note_due(self, now) -> None:
+        """Stamp each scheduled batch that comes due while the worker runs.
+
+        One listing to 80 groups takes hours, and a batch set for a time in
+        the middle of that waits its turn behind it. Without this it counted
+        as missed two hours in, as if the computer had been asleep, and was
+        thrown away. A batch seen on time gets `resume_at` set to its own
+        time, which `_is_missed` reads as waiting on purpose. One first seen
+        more than MISSED_GRACE late is left alone: the machine was asleep or
+        off, or posting was paused, and it is reported rather than posted late.
+        """
+        for task in self.tasks.claimable(now):
+            if (
+                task.state == TASK_PENDING
+                and task.started_at is None
+                and task.scheduled_for is not None
+                and task.resume_at is None
+                and now - task.scheduled_for <= MISSED_GRACE
+            ):
+                self.tasks.set_resume_at(task.id, task.scheduled_for)
+
     def _is_missed(self, task: Task, now) -> bool:
         # Only a batch that never started can be missed; one already in
         # progress simply carries on.
@@ -448,11 +461,10 @@ class PostingWorker:
             return False
         if task.scheduled_for is None:
             return False
-        # A batch the worker deliberately deferred -- the window had closed, or
-        # the daily cap was full -- is waiting on purpose, not because the
-        # machine was asleep. Without this, a 23:30 slot deferred to 08:00 came
-        # back nine hours "late" and was thrown away at the moment it was
-        # finally allowed to run.
+        # A batch the worker saw come due (`_note_due`), or deferred itself
+        # (Chrome away), is waiting on purpose, not because the machine was
+        # asleep. Without this, a listing set for 10:00 behind another still
+        # going out to 80 groups was thrown away at 12:00.
         if task.resume_at is not None:
             return False
         return now - task.scheduled_for > MISSED_GRACE
@@ -519,8 +531,9 @@ class PostingWorker:
         The alternative was asking the user, which is not something this app
         should need. Runs on its own slow clock and only when there is
         something to check, so a user with no moderated groups never pays for
-        it -- and never outside the posting window, because a group page being
-        opened at 4am is the same signal as a post at 4am.
+        it -- and only inside the stored posting hours (08:00-23:00), because a
+        group page opened at 4am looks like a bot. Those hours once held posts
+        back too; now they decide only this.
 
         Wrapped the same way as the pruner, and for the same reason: this runs
         at the top of every tick, and optional work must never be able to take
@@ -568,9 +581,9 @@ class PostingWorker:
                 # from here, and every check is a real page load in a browser --
                 # so it is dropped from the rotation rather than chased twice a
                 # day for thirty days. The target row stays exactly as it is:
-                # awaiting_approval counts as sent, so the cooldown and the
-                # day's repeated-text rule hold whether or not anyone ever
-                # finds out what an admin did with it.
+                # awaiting_approval counts as sent, on the Dashboard and for
+                # `sent_before`, whether or not anyone ever finds out what an
+                # admin did with it.
                 continue
 
             if checked:
@@ -660,8 +673,8 @@ class PostingWorker:
         """Turn any schedule that has come due into an ordinary batch.
 
         Deliberately the only thing schedules do. Everything after this point --
-        the serial queue, the 10-25 minute gap, the guards re-checked at posting
-        time, crash recovery -- is the existing path, untouched, because a
+        the serial queue, the 2-4 minute gap, crash recovery -- is the
+        existing path, untouched, because a
         second posting path would have to re-earn all of it.
         """
         for schedule in self.schedules.due(now):
@@ -713,7 +726,6 @@ class PostingWorker:
             return
 
         targets: list[tuple[int, str]] = []
-        stale: list[str] = []
         # recipient_ids, not group_ids: it adds the groups of every set the
         # post follows, read now, so a group put in a set since the post was
         # made goes out from this run on.
@@ -724,55 +736,36 @@ class PostingWorker:
                 # second line, not the rule: never post to a removed group.
                 continue
             # Rotating by run_count as well as position is what stops one
-            # wording going to every group at once, run after run.
+            # wording going to every group at once, run after run. Pictures
+            # or videos alone have no wording, and go out as they are.
             body = recurrence.pick_body(
                 schedule.bodies,
                 schedule.run_count + position,
                 self.groups.sent_on_day(group.id, now),
-                allow_repeats=REPEAT_TEXT in schedule.overrides,
             )
-            if body is None:
-                stale.append(group.display_name)
-                continue
             targets.append((group.id, body.strip()))
 
-        if stale:
-            # The way on is a wording the group has not had, which the post's
-            # own Edit screen can add.
-            many = len(stale) != 1
-            self.emit(
-                "skipped",
-                f"{schedule.display_name}: {', '.join(stale)} "
-                f"{'have' if many else 'has'} already been sent every wording today, "
-                f"so {'they were' if many else 'it was'} left out of this run. To "
-                "post there more than once a day, edit this repeating post and add "
-                "another wording.",
-            )
         if not targets:
-            if not stale:
-                # Every group has been removed, and removing a group takes it
-                # out of the schedule and out of every set, so none are left.
-                # Left active it would come round two or three times a day for
-                # ever, post nothing and say nothing -- so it is paused, like
-                # an unusable repeat rule.
-                self.schedules.set_state(schedule.id, SCHEDULE_PAUSED)
-                self.emit(
-                    "schedule_error",
-                    f"{schedule.display_name} has no groups left: every group it "
-                    "posted to has been removed, from the list or from its group "
-                    "sets. It has been paused.",
-                )
+            # Every group has been removed, and removing a group takes it
+            # out of the schedule and out of every set, so none are left.
+            # Left active it would come round every day for ever, post
+            # nothing and say nothing -- so it is paused, like an unusable
+            # repeat rule.
+            self.schedules.set_state(schedule.id, SCHEDULE_PAUSED)
+            self.emit(
+                "schedule_error",
+                f"{schedule.display_name} has no groups left: every group it "
+                "posted to has been removed, from the list or from its group "
+                "sets. It has been paused.",
+            )
             return
 
         task = self.tasks.create(
-            schedule.bodies[0],
+            schedule.bodies[0] if schedule.bodies else "",
             targets,
             media_paths=schedule.media_paths,
             scheduled_for=schedule.next_run_at,
             schedule_id=schedule.id,
-            # "Post anyway" on the schedule is "Post anyway" on every batch it
-            # fires; _attempt reads it off the task.
-            overrides=schedule.overrides,
         )
         self.emit(
             "scheduled",
@@ -781,16 +774,16 @@ class PostingWorker:
             task.id,
         )
 
-    # -- guards, re-checked at the moment of posting -----------------------
+    # -- the moment of posting ---------------------------------------------
     def _attempt(self, task: Task, target: TaskTarget, now) -> bool:
         # The pacing between posts is global, and this is where that is
         # enforced. `tasks.resume_at` spaces the groups within one batch, which
         # is not the same thing: a second batch stayed claimable throughout the
         # first one's wait -- `claimable()` filters the waiting task out and
         # hands back the next one -- so two posts went out seconds apart from
-        # one account. That is the exact pattern the 10-25 minute gap exists to
-        # avoid. Nothing is marked or deferred here; the batch simply waits, as
-        # it already does between its own groups.
+        # one account. That is the exact pattern the gap between posts exists
+        # to avoid. Nothing is marked or deferred here; the batch simply waits,
+        # as it already does between its own groups.
         due = from_iso(self.settings.get("next_post_after", ""))
         if due is not None and now < due:
             return False
@@ -806,91 +799,10 @@ class PostingWorker:
             )
             return True
 
-        start_hour = self.settings.get_int("posting_window_start_hour", 8)
-        end_hour = self.settings.get_int("posting_window_end_hour", 23)
-        cap = self.settings.get_int("daily_cap", 25)
-
-        # The world moved since this was queued, so the rules are checked again
-        # here rather than trusted from enqueue time -- except the ones the user
-        # chose "Post anyway" over for this batch, which are skipped exactly.
-        # Without that, the worker would skip or defer the very post they had
-        # just insisted on, and "Post anyway" would mean "don't post".
-        allowed = task.overrides
-        posted_today = self.tasks.posted_count_since(clock.start_of_local_day(now))
-        if DAILY_CAP not in allowed and posted_today + 1 > cap:
-            resume = clock.next_window_open(
-                now + timedelta(days=1), start_hour, end_hour
-            )
-            message = self._not_covered(
-                task,
-                f"Waiting: the daily limit of {cap} posts was reached. The rest of "
-                f"this batch goes out from {clock.format_local(resume)}.",
-            )
-            self.tasks.set_resume_at(task.id, resume, note=message)
-            self.emit("deferred", message, task.id)
-            return True
-
-        window_open = clock.next_window_open(now, start_hour, end_hour)
-        if POSTING_WINDOW not in allowed and window_open > now:
-            message = self._not_covered(
-                task,
-                f"Waiting: it is outside the posting hours ({start_hour:02d}:00-"
-                f"{end_hour:02d}:00). The batch goes on at "
-                f"{clock.format_local(window_open)}.",
-            )
-            self.tasks.set_resume_at(task.id, window_open, note=message)
-            self.emit("deferred", message, task.id)
-            return True
-
-        cooldown = None if COOLDOWN in allowed else check_cooldown(
-            group.last_posted_at, now, group.cooldown_hours, group.display_name
-        )
-        if cooldown is not None:
-            # Skip this one group rather than stalling the whole batch behind it.
-            message = self._not_covered(task, cooldown.message)
-            self.tasks.mark_target(
-                target.id, TARGET_SKIPPED, error=message, attempted=True
-            )
-            self.emit("skipped", message, task.id, target.id)
-            return True
-
-        repeat = None if REPEAT_TEXT in allowed else check_repeat_text(
-            target.body, self.groups.sent_on_day(group.id, now), group.display_name
-        )
-        if repeat is not None:
-            # Checked at the door as well, but that answer goes stale: queue a
-            # post now and schedule the same wording for tomorrow, and both
-            # passed the door before either went out. The cooldown hides the
-            # near case and nothing covered the far one -- so the same words
-            # reached the same group twice, which is the actual ban vector.
-            #
-            # Skipped like a cooldown: one group, loudly, and the batch carries
-            # on. Halting a whole batch over a wording that can simply be
-            # reworded would cost the user posts they are entitled to make.
-            message = self._not_covered(task, repeat.message)
-            self.tasks.mark_target(
-                target.id, TARGET_SKIPPED, error=message, attempted=True
-            )
-            self.emit("skipped", message, task.id, target.id)
-            return True
-
+        # Nothing else is checked. There are no posting rules (the user's
+        # choice, 2026-10-18): how often, how many, when and with what words
+        # are the user's to decide, and the Posting tips screen advises.
         return self._post(task, target, group)
-
-    @staticmethod
-    def _not_covered(task: Task, message: str) -> str:
-        """Say so when the user chose "Post anyway" and this rule was not in it.
-
-        Otherwise a batch marked "Post anyway" shows a group not posted, or a
-        batch waiting, and it reads as if the choice had been ignored. It was
-        honoured exactly: it covers the rules that were broken when the post
-        was set up, and this one was not among them.
-        """
-        if not task.overrides:
-            return message
-        return (
-            f"{message} “Post anyway” was chosen for the "
-            f"{rule_labels(task.overrides)} only, not for this rule."
-        )
 
     # -- the actual post ---------------------------------------------------
     def _post(self, task: Task, target: TaskTarget, group) -> bool:
@@ -975,10 +887,9 @@ class PostingWorker:
         self._forget_connection_trouble(task.id)
 
         if outcome.pending:
-            # Treated as posted for every safety purpose: the cooldown starts
-            # and the wording is remembered, because it has been submitted and
-            # will appear the moment an admin approves. Recording it as failed
-            # would leave the guard blind and invite the same text being sent
+            # Treated as posted: it has been submitted and will appear the
+            # moment an admin approves. Recording it as failed would tell the
+            # user it did not go out and invite the same text being sent
             # again -- two live posts once both are approved.
             self._record_sent(target, TARGET_AWAITING_APPROVAL, error=outcome.detail)
             self.emit(
@@ -990,9 +901,8 @@ class PostingWorker:
             )
         elif not outcome.posted:
             # A dry-run poster reaches here having published nothing. Recording
-            # it as done would falsely start the group's cooldown and count
-            # against the daily cap, so the outcome is believed rather than
-            # assumed from the absence of an exception.
+            # it as done would count a post that never happened, so the outcome
+            # is believed rather than assumed from the absence of an exception.
             self.tasks.mark_target(
                 target.id, TARGET_SKIPPED, error=outcome.detail, attempted=True
             )
@@ -1039,8 +949,8 @@ class PostingWorker:
     def _sent_before(self, group_id: int, body: str, *, besides: int = 0) -> bool:
         """Have these exact words gone to this group before?
 
-        The same text may go to a group once a day, so an older post with it
-        can be in the feed, and any check that finds a post by its words can
+        The same text may go to a group any number of times, so an older post
+        with it can be in the feed, and any check that finds a post by its words can
         be fooled by it. `besides` discounts the post being asked about when
         it is already in the history itself -- one awaiting an admin is.
         """
@@ -1063,11 +973,10 @@ class PostingWorker:
     ) -> None:
         """Record a post that went out, waits for an admin, or may have gone out.
 
-        All three count as sent: the cooldown starts, and the post takes a
-        place in the daily limit and in the day's repeated-text rule. Stamped
-        with the worker's own clock, because the day it falls on decides that
-        rule; and the cooldown only ever moves forward, so a post found late
-        after a crash cannot shorten one started since.
+        All three count as sent, on the Dashboard and for `sent_before`.
+        Stamped with the worker's own clock, because that decides the day the
+        Dashboard counts it on; and a group's last post only ever moves
+        forward, so a post found late after a crash cannot move it back.
         """
         at = at or self._now()
         self.tasks.mark_target(
@@ -1144,10 +1053,8 @@ class PostingWorker:
         """
         self._forget_connection_trouble(task.id)
         if may_have_posted:
-            # Counted as sent: the cooldown starts and it takes a place in the
-            # daily limit and the day's repeated-text rule (the user's choice,
-            # 2026-10-07). If it did go out, the group must not get another
-            # post minutes later.
+            # Counted as sent (the user's choice, 2026-10-07): it may well be
+            # live, and the Dashboard must never call it not posted.
             self._record_sent(target, TARGET_UNCONFIRMED, error=message)
         else:
             self.tasks.mark_target(target.id, TARGET_FAILED, error=message)
@@ -1328,8 +1235,7 @@ class PostingWorker:
 
         if verdict == "pending":
             # It did post; the group is holding it. Treated exactly as a live
-            # pending post -- the cooldown starts and the wording counts,
-            # because it appears the moment an admin approves it.
+            # pending post, because it appears the moment an admin approves it.
             self._record_sent(
                 target, TARGET_AWAITING_APPROVAL, at=target.attempted_at
             )

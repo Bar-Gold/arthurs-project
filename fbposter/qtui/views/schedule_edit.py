@@ -20,10 +20,8 @@ Group sets are picked here whole, as on the Groups screen: a group a ticked
 set brings shows ticked and greyed, with the set's name beside it. The post
 stores the set, not its groups, so it follows the set from its next run.
 
-Saving judges the rules exactly as creating does (`publish.schedule_violations`),
-but only a rule the post did not already have "Post anyway" for is offered
-again. A rule it no longer breaks is dropped from the list, so the card never
-claims an exception that is not in use.
+Saving judges nothing: there are no posting rules (the user's choice,
+2026-10-18). As many times a day as wanted, and pictures or a video alone.
 """
 
 from __future__ import annotations
@@ -48,7 +46,6 @@ from PySide6.QtWidgets import (
 from fbposter import clock, recurrence
 from fbposter.db.models import utcnow
 from fbposter.db.repo import KEEP
-from fbposter.guards import rule_labels
 from fbposter.text import strip_invisible
 
 from .. import theme
@@ -56,16 +53,13 @@ from ..widgets import card, clear, row, set_note_lines
 from .compose import ATTACH_LABEL, MEDIA_FILTER, NO_ATTACHMENTS, check_attachments
 from .groups import SET_COLUMNS, in_sets, set_label
 from .publish import (
-    ANYWAY_EFFECT,
-    ANYWAY_STILL,
     DEFAULT_TIMES,
-    REPEAT,
     RIGHT_COLUMN_SCROLLBAR,
     RIGHT_COLUMN_WIDTH,
     TimePicker,
     day_boxes,
     following,
-    schedule_violations,
+    next_time,
 )
 
 
@@ -100,7 +94,6 @@ class ScheduleEditView(QWidget):
         self._sets: dict[int, object] = {}
         self._time_rows: list[TimePicker] = []
         self._day_boxes: list[QCheckBox] = []
-        self._offered: frozenset[str] = frozenset()
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -258,11 +251,9 @@ class ScheduleEditView(QWidget):
         self.summary.setWordWrap(True)
         column.addWidget(self.summary)
 
-        self._build_override(column)
-
         self.save_button = QPushButton("Save changes")
         self.save_button.setObjectName("Primary")
-        # A lambda, because clicked() would pass its `checked` flag as `allow`.
+        # A lambda, so clicked() cannot pass its `checked` flag into save().
         self.save_button.clicked.connect(lambda: self.save())
         column.addWidget(self.save_button)
 
@@ -271,60 +262,6 @@ class ScheduleEditView(QWidget):
         column.addWidget(self.back_button)
 
         column.addStretch(1)
-
-    def _build_override(self, column: QVBoxLayout) -> None:
-        """The same panel Publish shows, in place of Save, for the same reason."""
-        self.override_card = card()
-        layout = QVBoxLayout(self.override_card)
-        layout.setContentsMargins(theme.PAD_M, theme.PAD_M, theme.PAD_M, theme.PAD_M)
-        layout.setSpacing(theme.PAD_S)
-        title = QLabel("This would break the posting rules")
-        title.setObjectName("SectionHeading")
-        title.setStyleSheet(f"color: {theme.C['WARNING']};")
-        layout.addWidget(title)
-        self.override_list = QLabel("")
-        self.override_list.setWordWrap(True)
-        layout.addWidget(self.override_list)
-        self.override_effect = QLabel(ANYWAY_EFFECT[REPEAT] + ANYWAY_STILL)
-        self.override_effect.setWordWrap(True)
-        layout.addWidget(self.override_effect)
-        why = QLabel(
-            "The rules keep the account from looking automated, so break them "
-            "only on purpose. Cancel saves nothing, so you can change it instead."
-        )
-        why.setObjectName("Muted")
-        why.setWordWrap(True)
-        layout.addWidget(why)
-        buttons = QHBoxLayout()
-        self.anyway_button = QPushButton("Post anyway")
-        self.anyway_button.setObjectName("Danger")
-        self.anyway_button.clicked.connect(lambda: self.post_anyway())
-        buttons.addWidget(self.anyway_button, 1)
-        self.keep_rules_button = QPushButton("Cancel")
-        self.keep_rules_button.clicked.connect(lambda: self.dismiss_override())
-        buttons.addWidget(self.keep_rules_button, 1)
-        layout.addLayout(buttons)
-        self.override_card.hide()
-        column.addWidget(self.override_card)
-
-    def offer_override(self, violations) -> None:
-        self._offered = frozenset(v.rule for v in violations)
-        self.override_list.setText("\n".join(f"•  {v.message}" for v in violations))
-        self.override_card.show()
-        self.save_button.hide()
-        self.summary.hide()
-
-    def dismiss_override(self) -> None:
-        self._offered = frozenset()
-        self.override_card.hide()
-        self.save_button.show()
-        self.summary.show()
-
-    def post_anyway(self) -> bool:
-        """Save again, allowed to break exactly what was on the panel."""
-        allowed = self._offered
-        self.dismiss_override()
-        return self.save(allow=allowed)
 
     # -- loading -----------------------------------------------------------
     def load(self, schedule_id: int) -> bool:
@@ -336,7 +273,6 @@ class ScheduleEditView(QWidget):
         try:
             self.schedule_id = schedule_id
             self._loaded = schedule
-            self.dismiss_override()
             self.heading.setText(f"{self.title}: {schedule.display_name}")
             self.name_entry.setText(schedule.name)
 
@@ -557,15 +493,8 @@ class ScheduleEditView(QWidget):
 
     # -- times and days ----------------------------------------------------
     def add_time(self, text: str = "") -> bool:
-        if len(self._time_rows) >= recurrence.MAX_TIMES_PER_DAY:
-            self.notify(
-                f"{recurrence.MAX_TIMES_PER_DAY} times a day is the ceiling. More "
-                "than that stops looking like a person posting.",
-                "warning",
-            )
-            return False
         if not text:
-            text = DEFAULT_TIMES[min(len(self._time_rows), len(DEFAULT_TIMES) - 1)]
+            text = next_time(self.times())
         hour, minute = recurrence.parse_hhmm(text)
 
         # row(), not a bare QWidget: it sits inside a card.
@@ -625,20 +554,19 @@ class ScheduleEditView(QWidget):
     def refresh_summary(self) -> None:
         if self._loading or self._loaded is None:
             return
-        # Anything edited and the offer on screen describes a post that no
-        # longer exists; it is withdrawn, as on Publish.
-        if not self.override_card.isHidden():
-            self.dismiss_override()
 
         wordings = self.wordings()
         count = len(wordings)
-        self.rotation_note.setText(
-            f"{count} wording{'s' if count != 1 else ''} in rotation. Each run "
-            "gives every group a wording it has not had today, as long as one is left."
-            if count > 1
-            else "One wording. The same text goes to a group at most once a day, so "
-            "this is enough for one run a day. Add a wording for each extra run."
-        )
+        if count > 1:
+            note = (
+                f"{count} wordings in rotation. Each run shares them out across "
+                "the groups, a different one to each in turn."
+            )
+        elif count == 1:
+            note = "One wording: every run sends it to every group."
+        else:
+            note = "No wording: every run posts the pictures or video on their own."
+        self.rotation_note.setText(note)
 
         rule = self.rule()
         if rule is None:
@@ -662,19 +590,10 @@ class ScheduleEditView(QWidget):
         )
         if follows:
             lines.append(follows)
-        found = schedule_violations(self.app, rule, groups, wordings, history=False)
-        warnings = [v.message for v in found]
-        still = frozenset(v.rule for v in found) & self._loaded.overrides
-        if still:
-            warnings.append(f"Post anyway: allowed to break the {rule_labels(still)}.")
-        note = recurrence.variation_note(len(groups), count)
-        if note is not None:
-            warnings.append(note)
-        set_note_lines(self.summary, lines, warnings)
+        set_note_lines(self.summary, lines)
 
     # -- doing it ----------------------------------------------------------
-    def save(self, allow: frozenset[str] = frozenset()) -> bool:
-        """`allow` is set only by post_anyway(): the rules the user accepted."""
+    def save(self) -> bool:
         schedule = (
             self.app.schedule_repo.get(self.schedule_id)
             if self.schedule_id is not None else None
@@ -685,15 +604,11 @@ class ScheduleEditView(QWidget):
             return False
 
         wordings = self.wordings()
-        if not wordings and self._pictures:
+        # Pictures or a video alone may repeat (the user's choice, 2026-10-18).
+        if not wordings and not self._pictures:
             self.notify(
-                "A repeating post needs some text as well as pictures or videos, because each run "
-                "gives every group a wording it has not had yet.",
-                "error",
+                "A repeating post needs some text or a picture or video.", "error"
             )
-            return False
-        if not wordings:
-            self.notify("A repeating post needs at least one wording.", "error")
             return False
 
         ticked = self.ticked_group_ids()
@@ -709,16 +624,6 @@ class ScheduleEditView(QWidget):
         except recurrence.InvalidRecurrence as exc:
             self.notify(str(exc), "error")
             return False
-
-        # The rules creating it applied, judged again. Only what the post was
-        # not already allowed to break is asked about.
-        violations = schedule_violations(self.app, rule, ticked, wordings)
-        already = schedule.overrides | allow
-        new = [v for v in violations if v.rule not in already]
-        if new:
-            self.offer_override(new)
-            return False
-        overrides = frozenset(v.rule for v in violations)
 
         # A new time is a new slot, found the way Resume finds one. Unchanged
         # times keep the slot already set, which the worker may have moved on
@@ -737,30 +642,18 @@ class ScheduleEditView(QWidget):
                 times=list(rule.times),
                 days=list(rule.days),
                 media_paths=self._pictures,
-                overrides=overrides,
                 next_run_at=next_run,
             )
         except ValueError as exc:
             self.notify(str(exc), "error")
             return False
 
-        note = recurrence.variation_note(len(ticked), len(wordings))
-        if note is not None:
-            self.notify(f"{saved.display_name} saved. {note}", "warning")
-        elif overrides:
-            self.notify(
-                f"{saved.display_name} saved: {recurrence.describe(rule)}, posting "
-                f"anyway despite the {rule_labels(overrides)}.",
-                "warning",
-            )
-        else:
-            self.notify(
-                f"{saved.display_name} saved: {recurrence.describe(rule)}.", "success"
-            )
+        self.notify(
+            f"{saved.display_name} saved: {recurrence.describe(rule)}.", "success"
+        )
         self.leave()
         return True
 
     def leave(self) -> None:
         """Back to Publish. Nothing is written unless Save already did it."""
-        self.dismiss_override()
         self.app.show_view("publish")

@@ -38,11 +38,10 @@ class TestParsing:
         rule = recurrence.build(["18:00", "9:00", "09:00"])
         assert rule.times == ("09:00", "18:00")
 
-    def test_more_than_the_ceiling_is_refused(self):
-        too_many = ["06:00", "10:00", "14:00", "18:00"]
-        assert len(too_many) > recurrence.MAX_TIMES_PER_DAY
-        with pytest.raises(InvalidRecurrence):
-            recurrence.build(too_many)
+    def test_there_is_no_ceiling_on_times_a_day(self):
+        """Three a day was the most until 2026-10-18; now it is the user's call."""
+        many = [f"{hour:02d}:00" for hour in range(6, 23)]
+        assert recurrence.build(many).per_day == len(many)
 
     def test_three_times_a_day_is_allowed(self):
         rule = recurrence.build(["09:00", "14:00", "20:00"])
@@ -204,16 +203,20 @@ class TestPickBody:
         chosen = recurrence.pick_body(self.VARIANTS, 0, ["first wording"])
         assert chosen == "second wording"
 
-    def test_skipping_respects_the_same_folding_as_the_guard(self):
+    def test_skipping_folds_spacing_and_case(self):
         """Trailing whitespace and case are not content variation."""
         chosen = recurrence.pick_body(self.VARIANTS, 0, ["  First   Wording \n"])
         assert chosen == "second wording"
 
-    def test_none_when_every_wording_has_already_been_used(self):
-        assert recurrence.pick_body(self.VARIANTS, 0, self.VARIANTS) is None
+    def test_when_every_wording_has_been_used_the_rotation_carries_on(self):
+        """Nothing holds a repeat back any more (the user's choice, 2026-10-18)."""
+        assert recurrence.pick_body(self.VARIANTS, 0, self.VARIANTS) == "first wording"
+        assert recurrence.pick_body(self.VARIANTS, 4, self.VARIANTS) == "second wording"
 
-    def test_none_when_there_are_no_wordings(self):
-        assert recurrence.pick_body([], 0) is None
+    def test_empty_when_there_are_no_wordings(self):
+        """A post of pictures or a video alone."""
+        assert recurrence.pick_body([], 0) == ""
+        assert recurrence.pick_body(["", "  "], 3) == ""
 
     def test_blank_wordings_are_ignored(self):
         assert recurrence.pick_body(["", "   ", "real"], 0) == "real"
@@ -227,20 +230,6 @@ class TestPickBody:
         run_one = [recurrence.pick_body(self.VARIANTS, 0 + p) for p in range(3)]
         run_two = [recurrence.pick_body(self.VARIANTS, 1 + p) for p in range(3)]
         assert run_one != run_two
-
-
-class TestIdenticalReach:
-    def test_one_wording_per_group_reaches_one(self):
-        assert recurrence.identical_reach(3, 3) == 1
-
-    def test_fewer_wordings_than_groups_doubles_up(self):
-        assert recurrence.identical_reach(5, 2) == 3
-
-    def test_no_wordings_means_everything_is_the_same_text(self):
-        assert recurrence.identical_reach(4, 0) == 4
-
-    def test_no_groups_reaches_nothing(self):
-        assert recurrence.identical_reach(0, 3) == 0
 
 
 class TestDescribe:
@@ -279,59 +268,13 @@ class TestPreview:
         assert len(report.next_runs) == 3
         assert clock.format_local(report.next_runs[0]) == "2026-08-11 09:00"
 
-    def test_a_time_outside_the_posting_window_is_flagged(self):
+    def test_it_warns_about_nothing(self):
+        """A night-time run, three a day: none of it is a rule any more."""
         report = recurrence.preview(
-            recurrence.build(["03:00"]),
-            MONDAY_NOON,
-            window_start_hour=8,
-            window_end_hour=23,
+            recurrence.build(["03:00", "03:30", "04:00"]), MONDAY_NOON
         )
-        assert any("posting hours" in w for w in report.warnings)
-
-    def test_a_time_inside_the_window_is_not_flagged(self):
-        report = recurrence.preview(
-            recurrence.build(["10:00"]),
-            MONDAY_NOON,
-            window_start_hour=8,
-            window_end_hour=23,
-            cooldown_hours=0,
-        )
-        assert not any("posting hours" in w for w in report.warnings)
-
-    def test_posting_faster_than_the_cooldown_is_flagged(self):
-        """Three times a day against a 24h cooldown skips two runs in three."""
-        report = recurrence.preview(
-            recurrence.build(["09:00", "14:00", "20:00"]),
-            MONDAY_NOON,
-            cooldown_hours=24,
-        )
-        assert any("cooldown" in w for w in report.warnings)
-
-    def test_once_a_day_against_a_daily_cooldown_is_fine(self):
-        report = recurrence.preview(
-            recurrence.build(["09:00"]), MONDAY_NOON, cooldown_hours=24
-        )
-        assert not any("cooldown" in w for w in report.warnings)
-
-    def test_too_few_wordings_for_the_groups_is_flagged(self):
-        report = recurrence.preview(
-            recurrence.build(["09:00"]),
-            MONDAY_NOON,
-            group_count=6,
-            variant_count=2,
-            cooldown_hours=0,
-        )
-        assert any("Repetitive content" in w for w in report.warnings)
-
-    def test_a_wording_per_group_is_not_flagged(self):
-        report = recurrence.preview(
-            recurrence.build(["09:00"]),
-            MONDAY_NOON,
-            group_count=3,
-            variant_count=3,
-            cooldown_hours=0,
-        )
-        assert not any("Repetitive content" in w for w in report.warnings)
+        assert not hasattr(report, "warnings")
+        assert report.summary == "Every day at 03:00, 03:30 and 04:00"
 
 
 class TestRecurrenceDefaults:

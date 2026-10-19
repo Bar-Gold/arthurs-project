@@ -6,7 +6,7 @@ A lightweight, local desktop application that automates publishing text and medi
 The app runs entirely on the user's machine and drives a real, already-logged-in Chrome session. There are no cloud proxies, no automated logins, and no traffic from unfamiliar IP addresses.
 
 ## 2. Usage Profile (drives every design decision below)
-*   **Volume:** 2-3 posts per day, each going to 5-7 groups. Roughly 15-20 published posts per day at peak.
+*   **Volume:** one listing to 40-80 groups, once or twice a day. The clients are real-estate agents (2026-10-18); the original spec was 2-3 posts a day to 5-7 groups.
 *   **Content:** Varies between runs. The user is not blasting one identical block of text everywhere, though templates will be reused and lightly edited.
 *   **Operator present:** The user is at the machine during the day. The app does not need to survive unattended overnight runs, but it must survive a crash or restart without losing queue state.
 
@@ -72,7 +72,7 @@ The **connection indicator lives in the sidebar**, not in a screen of its own: i
     *   **Group sets** sit above the list, one box each. Picking a set adds its groups to the ticked ones; they show greyed with the set's name, and are unticked by unpicking the set, never one by one. "Clear" unpicks the sets too.
 *   **Group sets**: its own item in the sidebar, below the Dashboard. Make, edit and delete sets: a name and the groups in it.
     *   A repeating post picked with a set follows it: a group added to the set later gets the next run. Now and Once take the set's groups as they are when the button is pressed.
-    *   Saving a set never waits for confirmation; if a repeating post that follows it now breaks a posting rule, the message says which.
+    *   Saving a set never waits for confirmation, and judges nothing: there are no posting rules (§7).
     *   Deleting a set (with Undo) leaves its groups in the repeating posts that used it, as ordinary groups. Removing a group from the app takes it out of every set.
     *   Group addresses are reduced to a canonical group identifier, so the same group cannot be added (or posted to) twice.
     *   Per-group record of the last successful post time, so the UI can warn about posting to the same group too soon.
@@ -80,20 +80,22 @@ The **connection indicator lives in the sidebar**, not in a screen of its own: i
 *   **Publish**: the one place that decides *when*. Compose owns the text and the groups and carries no timing controls at all.
     *   **Now**: straight onto the queue.
     *   **Once**: at a single chosen moment, up to a year ahead. Defaults to the current time; the field ignores the mouse wheel and starts on the minutes, so a stray scroll cannot move a post into a different year.
-    *   **Repeat**: daily, or on chosen days of the week, at up to three times of day (Israel local, DST-safe).
-        *   Several **wordings** per schedule, rotated so no group ever sees the same text twice. Without this the rule in §7 would refuse the second run, and a repeating post would work exactly once.
+    *   **Repeat**: daily, or on chosen days of the week, at as many times of day as wanted (Israel local, DST-safe).
+        *   Several **wordings** per schedule, shared out across the groups so one run does not send the same text to all of them, and shifted every run. Nothing refuses a repeat.
+        *   Pictures or a video alone may repeat too.
         *   **Editable after it is made** (name, wordings, groups, pictures, times and days) from an Edit button on its card. Changes apply from the next run; a batch already queued goes out as it was, and saving never pauses or resumes it.
         *   The Compose text is the first wording; this screen collects alternates.
         *   Pause, resume and delete; the next run is shown before and after creating one.
-    *   Warns before creating anything that a time falls outside the posting window, that the frequency is inside the per-group cooldown, or that there are too few wordings for the number of groups.
+    *   Nothing warns about timing, frequency or wording: there are no posting rules (§7).
 *   **Dashboard** (replaced the Queue screen, 2026-10-14)
-    *   **Numbers:** posted today against the daily limit, the last 7 days against the week before, the last 30 days, all time, the success rate, the next scheduled post, active repeating posts, and how many different wordings went out in the last 7 days. Days are Israel days.
+    *   **Numbers:** posted today, the last 7 days against the week before, the last 30 days, all time, the success rate, the next scheduled post, active repeating posts, and how many different wordings went out in the last 7 days. Days are Israel days.
     *   **Charts:** posts per day for the last 14 days, and how every post of the last 30 days ended.
-    *   **By group:** today, 7 days and all time per group, its last post, and when its cooldown lets it be posted to again.
+    *   **By group:** today, 7 days and all time per group, and its last post.
     *   **Going out:** every batch still to go out, with Cancel (and Undo). Batches from a repeating post are labelled with its name.
     *   **Recent activity:** the last 15 groups the worker reached, with the result and the reason under any that did not go out.
     *   **All time never shrinks.** What the storage retention below deletes is counted first, so the totals stay.
     *   **Retention (storage).** Finished batches are deleted for good after `history_retention_days` (90 by default; 0 disables), once a day, so the database does not grow without bound. It never deletes anything unfinished, and never the newest 20 posted bodies per group. Those are what stop the same wording going to a group twice (§7), so they are kept for ever. `VACUUM` returns the freed space to disk.
+*   **Posting tips**: its own item in the sidebar, below Group sets. Ten recommendations for posting safely (wording, how much an account can post, pacing, hours, links, group rules, what to do after a block), in Hebrew, English and Russian, with a language switch. It opens in Hebrew, right to left. Read only: it changes nothing the app does.
 
 **Post-v1 (see §10):** skipping a single group mid-batch. It is listed here only so the shape of the finished app is clear. Recurring schedules, pausing, "Groups of Groups" (built as **group sets**) and video attachments were also cut from v1 and have since been built, at the user's request.
 
@@ -102,14 +104,14 @@ The user posts as an ordinary group member, not an admin, so everything happens 
 
 *   **Real session only.** No automated logins, ever. The app attaches to a session a human created.
 *   **Strictly sequential.** One group at a time, one global worker. Batches never run in parallel and never overlap. A "Post Now" while a batch is running goes to the back of the queue.
-*   **Randomized delays.** 10-25 minutes between groups. At 5-7 groups a batch takes roughly 1-3 hours; this is expected and correct, not something to optimize away.
+*   **Randomized delays.** 2-4 minutes between groups, on top of the minute and a half each post takes, so one listing to 80 groups takes about six hours. It was 10-25 minutes until 2026-10-18; under 2-3 minutes reads as automation.
 *   **Human-like interaction.** Randomized scrolling on arrival, hovering before clicking, per-keystroke typing delays with variance. No instant paste of a full text block.
 *   **Idempotent queue.** Every group's status is committed to SQLite as it completes. After a crash or restart the batch resumes and never re-posts to a group it already hit. A duplicate post is a strong spam signal.
-*   **Daily cap and cooldown.** A configurable ceiling on posts per day, and a minimum gap before the same group can be posted to again. The app refuses to exceed them.
-*   **Content variation is enforced, not optional.** This is the highest-value protection in the whole system, because Meta's Spam policy explicitly restricts accounts at *low* frequencies when repetitive content is present (see §8). The app must warn before sending byte-identical text to more than two groups in a batch, show a per-batch similarity indicator, and make editing per-group text easy rather than an afterthought. Identical text plus an identical link across many groups is the strongest spam signal available and must be actively discouraged in the UI.
-*   **Human-hours only.** Posts are scheduled within normal waking hours; no 4 AM activity.
-*   **Groups that hold posts for approval are recognised, not guessed at.** A group with post approval on accepts the post, closes the composer, and keeps it out of the feed, so verification finds nothing. Reading that as failure was wrong in both directions. It produced a confident "done" for an invisible post on one run and a halted batch on the next, purely on timing. The app reads the group's "Pending admin approval" banner, but that banner stays up while *any* of the user's posts is queued, and Facebook shows authors their own queued posts in the feed, so when the post is visible and the banner is up, the app asks the group's list of the user's pending posts which one it is. Such a post is marked awaiting approval, the batch continues to the other groups, and the wording still starts the cooldown and counts against the repeat guard and the daily cap, because it will appear the moment an admin approves, and forgetting it would invite sending the same text again.
-*   **Pending posts resolve themselves.** Every few hours, inside posting hours only, the app checks the group's "Your content" page for anything it submitted to a moderated group: still listed as pending means wait, in the feed means approved, gone from both means declined, and declined releases the wording so it can be sent again. It takes two consecutive checks to call something declined, because a page that fails to render looks exactly like an empty pending list.
+*   **No posting rules (2026-10-18).** There is no daily cap, no cooldown between posts to a group, no posting window and no repeated-text rule, and nothing warns about them. Whatever the user sets up goes out. The advice that used to be rules is on the Posting tips screen.
+*   **Content variation is advice, not a rule.** Meta's Spam policy restricts accounts at *low* frequencies when repetitive content is present (see §8), so it is the first of the Posting tips, and a repeating post rotates its wordings. The app no longer enforces it.
+*   **Human hours are advice too.** The tips say to post between about 08:00 and 23:00; the app posts when it is told to.
+*   **Groups that hold posts for approval are recognised, not guessed at.** A group with post approval on accepts the post, closes the composer, and keeps it out of the feed, so verification finds nothing. Reading that as failure was wrong in both directions. It produced a confident "done" for an invisible post on one run and a halted batch on the next, purely on timing. The app reads the group's "Pending admin approval" banner, but that banner stays up while *any* of the user's posts is queued, and Facebook shows authors their own queued posts in the feed, so when the post is visible and the banner is up, the app asks the group's list of the user's pending posts which one it is. Such a post is marked awaiting approval, the batch continues to the other groups, and it still counts as sent, because it will appear the moment an admin approves, and forgetting it would invite sending the same text again.
+*   **Pending posts resolve themselves.** Every few hours, inside posting hours only, the app checks the group's "Your content" page for anything it submitted to a moderated group: still listed as pending means wait, in the feed means approved, gone from both means declined, and declined means it no longer counts as sent. It takes two consecutive checks to call something declined, because a page that fails to render looks exactly like an empty pending list.
 *   **Stop on anomaly.** If a checkpoint, CAPTCHA, "you're posting too fast" warning, or unexpected page appears, the worker halts the entire batch and surfaces it to the user. It never retries blindly.
 
 ## 8. Known Risks & What Meta Actually Says
@@ -126,7 +128,7 @@ What the official sources do establish:
 
 **The single most important finding for this project:** Meta's Spam policy flags high-frequency posting, but adds that it "may place restrictions on accounts that are acting at **lower frequencies** when other indicators of Spam (e.g., **posting repetitive content**) or signals of inauthenticity are present."
 
-At 2-3 posts/day this project is nowhere near a frequency threshold. The realistic ban vector is **repetitive content**, not volume, which makes the varied-content usage pattern the most protective decision already made, and makes it a rule the app should enforce rather than merely allow (see §7).
+The original 2-3 posts a day was nowhere near a frequency threshold. One listing to 40-80 groups, once or twice a day, is far above what any guide calls safe, so **repetitive content and a sudden jump in volume are the realistic ban vectors**. The app no longer enforces anything about either (the user's choice, 2026-10-18); the Posting tips screen says how to keep the risk down: several wordings, an established active account, building up slowly.
 
 The delay ranges in §7 are a conservative engineering judgement, not a Meta-published figure. No such figure exists.
 
@@ -135,24 +137,20 @@ DOM selectors are a separate ongoing risk: Facebook's class names are obfuscated
 ## 9. Data Model (SQLite, as built)
 Stored at `C:\FBAutomation\fbposter.db`, beside the Chrome profile (or under `%LOCALAPPDATA%\FBAutomation\` on a machine where that path cannot be used). Migrations are keyed on `PRAGMA user_version`, so the schema can change without wiping stored groups.
 
-*   `groups`: identifier (UNIQUE), url, name, **cooldown_hours**, last_posted_at, notes, **archived**, created_at. Removing a group archives it rather than deleting it, because its posting history is what the repeat rule in §7 reads.
+*   `groups`: identifier (UNIQUE), url, name, **cooldown_hours**, last_posted_at, notes, **archived**, created_at. Removing a group archives it rather than deleting it, because its posting history is what the Dashboard counts and what tells the worker the same words went to a group before. `cooldown_hours` is no longer read.
 *   `templates`: name (UNIQUE), body, media_paths, created_at, updated_at
 *   `tasks`: body, media_paths, scheduled_for (NULL = post now), state, created_at / started_at / finished_at, error, resume_at (when a deferred batch may carry on), schedule_id (the repeating post it came from, if any)
 *   `task_targets`: task_id, group_id, position, **body**, state, attempted_at, posted_at, post_url, error, resolve_misses, **`UNIQUE(task_id, group_id)`**
 *   `schedules`: a repeating post's definition, never a queue entry: name, **bodies** (the wordings it rotates through), media_paths, times and days (Israel local), state, run_count, next_run_at, last_run_at. When one comes due, the worker creates an ordinary `tasks` row from it.
 *   `schedule_targets`: schedule_id, group_id, position, `UNIQUE(schedule_id, group_id)`
-*   `settings`: key/value: daily cap, posting window and its time zone, default cooldown, history retention (and an unused queue retention, from the old Queue screen), plus the worker's own bookkeeping (`next_post_after`, `last_prune_at`)
+*   `settings`: key/value: the old rule settings (daily cap and default cooldown, no longer read; the posting window, read only to keep follow-up checks of admin-held posts in the daytime), history retention, the Posting tips language (and an unused queue retention, from the old Queue screen), plus the worker's own bookkeeping (`next_post_after`, `last_prune_at`)
 
 Two columns carry most of the safety weight. **`UNIQUE(task_id, group_id)`** means the database itself refuses to let one batch target the same group twice. A duplicate post is the worst failure mode here, so it is not left to application code. **`task_targets.body`** is per-group rather than per-batch, which is what makes content variation expressible at all.
 
 `tags`, `group_tags` and `run_log` from the original sketch were cut (see §10). Group sets came later in their place, as three tables: `group_sets` (a unique name), `group_set_members` (its groups, in order) and `schedule_sets` (the sets a repeating post follows).
 
-### Safety settings (confirmed)
-*   **Daily cap: 25** individual group posts: just above the realistic ceiling of 3 posts x 7 groups, so it catches a runaway rather than normal use.
-*   **Posting window: 08:00-23:00.**
-*   **Cooldown: 8h** between posts to the same group, the same for every group. It was 24h, and was lowered by the user so that two or three posts a day to one group is possible at all. It is no longer editable per group.
-*   **"Post anyway".** Any of these rules can be broken for one batch or one repeating post, by choice: Publish lists what would be broken and offers "Post anyway" instead of refusing. The choice is recorded on the batch, honoured when it posts, and shown on the Dashboard while it waits to go out. Nothing is broken without that second click.
-*   **Identical text is never sent to the same group twice**, regardless of cooldown. This is the rule that does the real work: posting more often to an active group is only safe while the wording changes.
+### Posting rules: none (2026-10-18)
+There were four, with "Post anyway" to break any of them for one post: a daily cap of 25, an 08:00-23:00 posting window, an 8h cooldown per group, and the same text to a group at most once a day. The user removed all four, and every warning about them, for clients who post one listing to 40-80 groups. Their settings are still stored and seeded; `tasks.overrides` and `schedules.overrides` are still columns. Nothing reads them.
 
 ## 10. Scope Control
 
@@ -166,7 +164,7 @@ The workload in §2 is small. A few posts a day to a handful of groups. Several 
 | ~~Video upload~~: **built after v1** | Cut originally because uploads are slow and their end is hard to detect. Built at the user's request (2026-10-15) after watching it live: Facebook enables Post long before a video has uploaded, so the app waits for the upload's own progress bar to go, and Facebook confirms a video post with a different reply, because it publishes it only once the video is processed. |
 | Pause / skip mid-batch | Cancel-the-batch is genuinely needed. Pause and per-group skip are polish. |
 
-**Kept, because they are cheap or essential:** templates (one table, save/load), daily cap (a counter), the idempotent SQLite queue, halt-on-anomaly, and the content-variation warning.
+**Kept, because they are cheap or essential:** templates (one table, save/load), daily cap (a counter), the idempotent SQLite queue, halt-on-anomaly, and the content-variation warning. (The daily cap and the warning went on 2026-10-18 with the other posting rules.)
 
 This makes v1 roughly: *compose → pick groups from a list → post now or at one scheduled time → serial worker with jitter → live queue view.*
 
@@ -189,4 +187,4 @@ Post-v1, in likely order of value: a variation-suggestion helper (generate light
 ## 12. Open Questions
 *   ~~Facebook UI language~~: **English, Hebrew and Russian are all supported** (settled). Every selector string was read off the live site in each language rather than translated; see `fbposter/strings.py`.
 *   ~~Media: single or multiple?~~: **multiple images per post** (settled). `set_input_files` takes a list, so it costs nothing over single.
-*   ~~Posting window~~: **08:00-23:00 Israel time** (settled). All window and daily-cap decisions are made in `Asia/Jerusalem`, never UTC; see `fbposter/clock.py`.
+*   ~~Posting window~~: **08:00-23:00 Israel time** (settled, then removed as a rule on 2026-10-18). It is a recommendation on Posting tips, and the hours the app follows up admin-held posts in, judged in `Asia/Jerusalem`; see `fbposter/clock.py`.

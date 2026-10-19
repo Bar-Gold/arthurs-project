@@ -49,6 +49,7 @@ from .views.groups import IMPORT_PENDING_KEY, GroupsView
 from .views.publish import PublishView
 from .views.schedule_edit import ScheduleEditView
 from .views.settings import SettingsView
+from .views.tips import TipsView
 from .views.welcome import WelcomeView
 from .widgets import AppStyle, StatusBanner, row
 
@@ -81,12 +82,14 @@ CHECK_DEADLINE_MS = keepalive.CHECK_DEADLINE_S * 1000
 # part of the flow at all, so it sits at the foot of the sidebar, away from
 # the steps. Group sets is not a step either: it is where sets are made, and
 # they are picked on Groups (its own item, the user's choice, 2026-10-15).
+# Posting tips is advice to read, in three languages (2026-10-18).
 NAV_ITEMS = (
     ("compose", "Compose", ComposeView),
     ("groups", "Groups", GroupsView),
     ("publish", "Publish", PublishView),
     ("dashboard", "Dashboard", DashboardView),
     ("group_sets", "Group sets", GroupSetsView),
+    ("tips", "Posting tips", TipsView),
     ("settings", "Settings", SettingsView),
 )
 
@@ -108,7 +111,8 @@ NAV_HINTS = {
     "publish": "Choose when",
     "dashboard": "See how the posting is going",
     "group_sets": "Keep groups together, to pick as one",
-    "settings": "Pause posting, and the cooldown between posts",
+    "tips": "Advice for posting safely, in Hebrew, English or Russian",
+    "settings": "Pause posting, the Facebook account, and this PC",
 }
 
 PILL_STATES: dict[ConnectionState, tuple[str, str, str]] = {

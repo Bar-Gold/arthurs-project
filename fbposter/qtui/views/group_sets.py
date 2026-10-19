@@ -5,11 +5,8 @@ their own, and picked whole on the Groups screen and on a repeating post's edit
 screen: a set is never picked group by group.
 
 A repeating post linked to a set follows it, so saving a set changes where
-those posts go from their next run. Saving never asks first (the user chose to
-be told after): the rules are judged before and after, and anything the change
-newly breaks is named in the banner. The worker still checks every rule at the
-moment of posting, so nothing here can post past one the post was not already
-allowed to break.
+those posts go from their next run. Saving never asks first, and judges
+nothing: there are no posting rules (the user's choice, 2026-10-18).
 
 Deleting a set leaves the repeating posts that used it with its groups as
 ordinary groups, and Undo puts the set back.
@@ -29,13 +26,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from fbposter import recurrence
-from fbposter.guards import rule_labels
 
 from .. import theme
 from ..widgets import card, clear, row
 from .groups import GroupRow, matches
-from .publish import schedule_violations
 
 # How many group names a set's card spells out before "and N more".
 NAMES_SHOWN = 6
@@ -385,16 +379,10 @@ class GroupSetsView(QWidget):
         group_ids = self.ticked_group_ids()
         repo = self.app.group_set_repo
         set_id = self.editing_id
-        before_ids = []
-        if set_id is not None:
-            existing = repo.get(set_id)
-            if existing is None:
-                self.notify("That group set no longer exists.", "error")
-                self.close_editor()
-                return False
-            before_ids = existing.group_ids
-        posts = repo.used_by(set_id) if set_id is not None else []
-        before = self._judge(posts)
+        if set_id is not None and repo.get(set_id) is None:
+            self.notify("That group set no longer exists.", "error")
+            self.close_editor()
+            return False
         try:
             saved = (
                 repo.update(set_id, name, group_ids) if set_id is not None
@@ -404,59 +392,6 @@ class GroupSetsView(QWidget):
             self.notify(str(exc), "error")
             return False
 
-        added = [gid for gid in saved.group_ids if gid not in before_ids]
-        lines = self._what_changed(before, self._judge(posts), bool(added))
-        message = f"{saved.name} saved: {group_count(len(saved.group_ids))}."
-        if lines:
-            self.notify(" ".join([message, *lines]), "warning")
-        else:
-            self.notify(message, "success")
+        self.notify(f"{saved.name} saved: {group_count(len(saved.group_ids))}.", "success")
         self.close_editor()
         return True
-
-    def _judge(self, schedule_ids) -> dict[int, tuple]:
-        """Every rule each active repeating post breaks, with its groups now.
-
-        The same judgement as creating or editing one (`schedule_violations`),
-        so this screen cannot disagree with Publish about a rule.
-        """
-        judged = {}
-        for schedule_id in schedule_ids:
-            schedule = self.app.schedule_repo.get(schedule_id)
-            if schedule is None or not schedule.active:
-                continue
-            try:
-                rule = recurrence.build(schedule.times, schedule.days)
-            except recurrence.InvalidRecurrence:
-                continue
-            violations = schedule_violations(
-                self.app, rule, schedule.recipient_ids, schedule.bodies
-            )
-            judged[schedule_id] = (schedule, violations)
-        return judged
-
-    def _what_changed(self, before, after, grew: bool) -> list[str]:
-        """What the banner says about the posts that follow this set.
-
-        Only rules the change newly breaks are named, as facts. A post allowed
-        past a rule with "Post anyway" is allowed past it for the new groups
-        too, and the user is told so rather than finding out at 23:40.
-        """
-        lines = []
-        for schedule_id, (schedule, violations) in after.items():
-            was = {v.rule for v in before.get(schedule_id, (None, ()))[1]}
-            for violation in violations:
-                if violation.rule in was:
-                    continue
-                allowed = (
-                    " Allowed by Post anyway." if violation.rule in schedule.overrides
-                    else ""
-                )
-                lines.append(f"{schedule.display_name}: {violation.message}{allowed}")
-            if grew and schedule.overrides:
-                lines.append(
-                    f"{schedule.display_name} is allowed to break the "
-                    f"{rule_labels(schedule.overrides)} (Post anyway), and that "
-                    "covers the groups added to this set too."
-                )
-        return lines

@@ -5,19 +5,17 @@ It owns nothing but the moment, in three modes:
 
 * **Post now**: straight onto the queue.
 * **Schedule**: once, at a chosen moment.
-* **Repeat**: daily, or on chosen days, at up to three times of day.
+* **Repeat**: daily, or on chosen days, at as many times of day as wanted.
 
-Repeat is the mode with a wrinkle worth reading. Sending the same words to the
-same group twice is refused outright by `guards.check_repeat_text`, because
-repetitive content -- not post count -- is what gets accounts restricted. So a
-repeating post cannot live on one wording: the Compose text is the first, this
-screen collects alternates, and each run rotates them so no group ever sees the
-same text twice.
+Repeat rotates wordings: the Compose text is the first, this screen collects
+alternates, and each run hands them out across the groups, so one run never
+sends the same text to all of them. Nothing refuses a repeat (the user's
+choice, 2026-10-18): varying the wording is advice, on the Posting tips screen.
 
 Nothing here talks to a browser. Post now and Schedule hand the work to
 `ComposeView.add_to_queue`, and Repeat writes a definition the worker
-materialises into an ordinary batch when its moment arrives -- so every guard,
-the serial queue and the inter-group gap all apply unchanged.
+materialises into an ordinary batch when its moment arrives -- so the serial
+queue and the gap between posts apply unchanged.
 """
 
 from __future__ import annotations
@@ -46,7 +44,6 @@ from PySide6.QtWidgets import (
 )
 
 from fbposter import clock, recurrence
-from fbposter.guards import rule_labels
 from fbposter.text import strip_invisible
 from fbposter.db.models import SCHEDULE_ACTIVE, SCHEDULE_PAUSED, utcnow
 
@@ -71,20 +68,6 @@ BUTTON_LABELS = {
     REPEAT: "Start repeating",
 }
 
-# What pressing "Post anyway" does, said on the panel that offers it. The
-# rules listed above it are facts; this is the consequence, and it is the
-# user's to choose. The spacing is named because it is the one thing people
-# expect "anyway" to skip, and it does not.
-ANYWAY_EFFECT = {
-    NOW: "Post anyway and it goes out despite these.",
-    ONCE: "Post anyway and it goes out at the time you chose, despite these.",
-    REPEAT: "Post anyway and every run goes out despite these.",
-}
-ANYWAY_STILL = (
-    " Every other rule still applies, including the 10-25 minute gap "
-    "between groups."
-)
-
 # How far ahead a one-off post may be scheduled. Not a technical limit -- it is
 # the range in which a mis-scroll is recoverable. Without a ceiling the year
 # section took a mouse wheel notch straight to 2028, which is what happened.
@@ -99,10 +82,16 @@ TIME_LIST_WIDTH = 96
 
 
 def next_slot(moment: QDateTime) -> QDateTime:
-    """The first whole `MINUTE_STEP` at or after `moment`."""
-    moment = QDateTime(moment.date(), QTime(moment.time().hour(), moment.time().minute()))
-    late = moment.time().minute() % MINUTE_STEP
-    return moment.addSecs((MINUTE_STEP - late) * 60) if late else moment
+    """The first whole `MINUTE_STEP` at or after `moment`.
+
+    Seconds count: at 14:45:20, 14:45 is already past, so it is 15:00. Dropping
+    them offered a time in the past for the first minute of every quarter hour.
+    """
+    whole = QDateTime(moment.date(), QTime(moment.time().hour(), moment.time().minute()))
+    if whole < moment:
+        whole = whole.addSecs(60)
+    late = whole.time().minute() % MINUTE_STEP
+    return whole.addSecs((MINUTE_STEP - late) * 60) if late else whole
 
 
 def last_slot(moment: QDateTime) -> QDateTime:
@@ -141,46 +130,24 @@ def following(set_names) -> str | None:
     )
 
 
-def schedule_violations(app, rule, group_ids, wordings, history: bool = True):
-    """Every posting rule a schedule would break.
+def next_time(taken) -> str:
+    """The time a newly added row starts on.
 
-    Shared by creating a repeating post here and editing one on its own
-    screen, so the two can never judge the same schedule differently.
-
-    `history=False` skips each group's last post and past wordings -- a
-    query or two per group -- for the live summary, which runs on every
-    keystroke. The button always judges with them.
+    The next of DEFAULT_TIMES not already listed, then the first whole hour
+    after the last time that is free. There is no limit on how many times a
+    day (the user's choice, 2026-10-18), so a fourth row must not simply
+    repeat the third.
     """
-    now = utcnow()
-    # The same words may go to a group once a day, so what counts is what the
-    # group has already been sent on the day the schedule first runs.
-    first_run = recurrence.next_occurrence(rule, now)
-    targets = []
-    for group_id in group_ids:
-        group = app.group_repo.get(group_id)
-        if group is None:
-            continue
-        targets.append(
-            recurrence.ScheduleTarget(
-                name=group.display_name,
-                last_posted_at=group.last_posted_at if history else None,
-                recent_bodies=(
-                    tuple(app.group_repo.sent_on_day(group.id, first_run))
-                    if history else ()
-                ),
-            )
-        )
-    settings = app.settings_repo
-    return recurrence.check_schedule(
-        rule,
-        now,
-        targets=targets,
-        wordings=wordings if history else (),
-        cooldown_hours=settings.get_int("default_cooldown_hours", 8),
-        window_start_hour=settings.get_int("posting_window_start_hour", 8),
-        window_end_hour=settings.get_int("posting_window_end_hour", 23),
-        daily_cap=settings.get_int("daily_cap", 25),
-    )
+    taken = list(taken)
+    for text in DEFAULT_TIMES:
+        if text not in taken:
+            return text
+    hour = recurrence.parse_hhmm(taken[-1])[0] if taken else 0
+    for step in range(1, 25):
+        text = f"{(hour + step) % 24:02d}:00"
+        if text not in taken:
+            return text
+    return DEFAULT_TIMES[0]
 
 
 class TimeList(QComboBox):
@@ -467,8 +434,6 @@ class PublishView(QWidget):
         self._wordings: list[QTextEdit] = []
         self._time_rows: list[TimePicker] = []
         self._day_boxes: list[QCheckBox] = []
-        # The rules the "Post anyway" panel is currently offering to break.
-        self._offered: frozenset[str] = frozenset()
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -502,7 +467,6 @@ class PublishView(QWidget):
         # reads committed state only, so capture first or this screen would
         # publish the text from before the last edit.
         self.compose.capture()
-        self.dismiss_override()
         self.refresh_recipients()
         self.refresh_schedules()
         self.refresh_summary()
@@ -566,13 +530,11 @@ class PublishView(QWidget):
         header.addWidget(self.add_wording_button)
         extras.addLayout(header)
 
-        # The empty state carries the one thing about repeating posts that is
-        # not obvious: the same words go to a group at most once a day, so one
-        # wording is one run a day.
+        # The empty state says what a wording is for: with none added, every
+        # run sends every group the Compose text.
         self.wording_hint = QLabel(
-            "No alternates yet. The same text goes to a group at most once a "
-            "day, so the Compose text alone is enough for one run a day. Add a "
-            "wording for each extra run."
+            "No alternates yet, so every run sends the Compose text. Add other "
+            "wordings and each run shares them out across the groups."
         )
         self.wording_hint.setObjectName("Muted")
         self.wording_hint.setWordWrap(True)
@@ -681,10 +643,10 @@ class PublishView(QWidget):
         column.setSpacing(theme.PAD_S)
         holder = QWidget()
         holder.setLayout(column)
-        # Scrolls rather than squashes. Repeat mode with a long summary, or
-        # with the "Post anyway" panel open, is taller than the window, and a
-        # plain column then crushed the "When" card until its name field,
-        # times and days were drawn on top of one another.
+        # Scrolls rather than squashes. Repeat mode with many times of day is
+        # taller than the window, and a plain column then crushed the "When"
+        # card until its name field, times and days were drawn on top of one
+        # another.
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -729,12 +691,9 @@ class PublishView(QWidget):
         self.summary.setWordWrap(True)
         column.addWidget(self.summary)
 
-        self._build_override(column)
-
         self.go_button = QPushButton(BUTTON_LABELS[NOW])
         self.go_button.setObjectName("Primary")
-        # A lambda, because clicked() would otherwise pass its `checked` flag
-        # in as publish()'s `allow`.
+        # A lambda, so clicked() cannot pass its `checked` flag into publish().
         self.go_button.clicked.connect(lambda: self.publish())
         column.addWidget(self.go_button)
 
@@ -745,74 +704,6 @@ class PublishView(QWidget):
         # The slack goes below everything, so the column reads top-down and
         # grows downwards when Repeat opens.
         column.addStretch(1)
-
-    def _build_override(self, column: QVBoxLayout) -> None:
-        """What appears in place of the post button when the rules refuse.
-
-        Not a dialog -- the app opens none for this kind of thing -- and it
-        replaces the button rather than sitting beside it, so the choice in
-        front of the user is exactly two: break these rules, or not.
-        """
-        self.override_card = card()
-        layout = QVBoxLayout(self.override_card)
-        layout.setContentsMargins(theme.PAD_M, theme.PAD_M, theme.PAD_M, theme.PAD_M)
-        layout.setSpacing(theme.PAD_S)
-        title = QLabel("This would break the posting rules")
-        title.setObjectName("SectionHeading")
-        title.setStyleSheet(f"color: {theme.C['WARNING']};")
-        layout.addWidget(title)
-        self.override_list = QLabel("")
-        self.override_list.setWordWrap(True)
-        layout.addWidget(self.override_list)
-        self.override_effect = QLabel("")
-        self.override_effect.setWordWrap(True)
-        layout.addWidget(self.override_effect)
-        why = QLabel(
-            "The rules keep the account from looking automated, so break them "
-            "only on purpose. Cancel posts nothing, so you can change it instead."
-        )
-        why.setObjectName("Muted")
-        why.setWordWrap(True)
-        layout.addWidget(why)
-        buttons = QHBoxLayout()
-        self.anyway_button = QPushButton("Post anyway")
-        self.anyway_button.setObjectName("Danger")
-        self.anyway_button.clicked.connect(lambda: self.post_anyway())
-        buttons.addWidget(self.anyway_button, 1)
-        self.keep_rules_button = QPushButton("Cancel")
-        self.keep_rules_button.clicked.connect(lambda: self.dismiss_override())
-        buttons.addWidget(self.keep_rules_button, 1)
-        layout.addLayout(buttons)
-        self.override_card.hide()
-        column.addWidget(self.override_card)
-
-    def offer_override(self, violations) -> None:
-        """Show what the post would break, and offer to post anyway."""
-        self._offered = frozenset(v.rule for v in violations)
-        self.override_list.setText("\n".join(f"•  {v.message}" for v in violations))
-        self.override_effect.setText(ANYWAY_EFFECT[self.mode] + ANYWAY_STILL)
-        self.override_card.show()
-        self.go_button.hide()
-        # The summary says the same things; twice over, the column outgrew
-        # the window.
-        self.summary.hide()
-
-    def dismiss_override(self) -> None:
-        self._offered = frozenset()
-        self.override_card.hide()
-        self.go_button.show()
-        self.summary.show()
-
-    def post_anyway(self) -> bool:
-        """Publish again, allowed to break exactly what was on the panel.
-
-        Re-judged rather than trusted: if anything else would now be broken,
-        the panel comes back listing it, and nothing is posted on the strength
-        of a list the user did not see.
-        """
-        allowed = self._offered
-        self.dismiss_override()
-        return self.publish(allow=allowed)
 
     def _build_now_panel(self) -> QWidget:
         panel = row()
@@ -884,8 +775,6 @@ class PublishView(QWidget):
     def set_mode(self, mode: str) -> None:
         was = self.mode
         self.mode = mode
-        # An offer made for one mode says nothing about another.
-        self.dismiss_override()
         for key, button in self.mode_buttons.items():
             button.setChecked(key == mode)
         if mode == ONCE and was != ONCE:
@@ -958,16 +847,8 @@ class PublishView(QWidget):
 
     # -- times and days (Repeat only) --------------------------------------
     def add_time(self, text: str = "") -> bool:
-        if len(self._time_rows) >= recurrence.MAX_TIMES_PER_DAY:
-            self.notify(
-                f"{recurrence.MAX_TIMES_PER_DAY} times a day is the ceiling. More "
-                "than that stops looking like a person posting.",
-                "warning",
-            )
-            return False
-
         if not text:
-            text = DEFAULT_TIMES[min(len(self._time_rows), len(DEFAULT_TIMES) - 1)]
+            text = next_time(self.times())
         hour, minute = recurrence.parse_hhmm(text)
 
         # row(), not a bare QWidget: this sits inside the "When" card, and a
@@ -1044,12 +925,6 @@ class PublishView(QWidget):
 
     # -- what is about to happen -------------------------------------------
     def refresh_summary(self) -> None:
-        # Anything edited -- a time, a day, a wording, the date -- and the
-        # offer on screen describes a post that no longer exists. It is
-        # withdrawn, and the button comes back to be judged again.
-        card = getattr(self, "override_card", None)
-        if card is not None and not card.isHidden():
-            self.dismiss_override()
         groups = self.selected_group_ids()
         count = f"{len(groups)} group{'s' if len(groups) != 1 else ''}"
 
@@ -1072,79 +947,43 @@ class PublishView(QWidget):
         self.rotation_note.setText(
             f"{len(wordings)} wordings in rotation: "
             + ("the Compose text and " if self.base_body() else "")
-            + f"{extra} alternate{'s' if extra != 1 else ''}. Each run gives every "
-            "group a wording it has not had today, as long as one is left."
+            + f"{extra} alternate{'s' if extra != 1 else ''}. Each run shares them "
+            "out across the groups, a different one to each in turn."
         )
 
         rule = self.rule()
         if rule is None:
             set_note_lines(self.summary, [], ["Pick at least one day and one time."])
             return
-        report = self._preview(rule, len(groups), len(wordings), ahead=1)
+        report = recurrence.preview(rule, utcnow(), ahead=1)
         lines = [f"{report.summary} · {count}"]
         if report.next_runs:
             lines.append(f"First run {clock.format_local(report.next_runs[0])}")
         follows = following(self.picked_set_names())
         if follows:
             lines.append(follows)
-        # Said before the button is pressed, from the same checks it applies.
-        warnings = [
-            v.message
-            for v in self._schedule_violations(rule, groups, wordings, history=False)
-        ]
-        note = recurrence.variation_note(len(groups), len(wordings))
-        if note is not None:
-            warnings.append(note)
-        set_note_lines(self.summary, lines, warnings)
-
-    def _schedule_violations(self, rule, group_ids, wordings, history: bool = True):
-        return schedule_violations(self.app, rule, group_ids, wordings, history)
-
-    def _preview(self, rule, group_count: int, variant_count: int, ahead: int = 1):
-        settings = self.app.settings_repo
-        return recurrence.preview(
-            rule,
-            utcnow(),
-            group_count=group_count,
-            variant_count=variant_count,
-            cooldown_hours=settings.get_int("default_cooldown_hours", 8),
-            window_start_hour=settings.get_int("posting_window_start_hour", 8),
-            window_end_hour=settings.get_int("posting_window_end_hour", 23),
-            ahead=ahead,
-        )
+        set_note_lines(self.summary, lines)
 
     # -- doing it ----------------------------------------------------------
-    def publish(self, allow: frozenset[str] = frozenset()) -> bool:
-        """`allow` is set only by post_anyway(): the rules the user accepted."""
+    def publish(self) -> bool:
         self.commit_typed_times()
         if self.mode == REPEAT:
-            return self.create_schedule(allow)
+            return self.create_schedule()
         try:
             when = self.scheduled_for()
         except ValueError:
             self.notify("That is not a valid date and time.", "error")
             return False
-        queued = self.compose.add_to_queue(
-            when, allow=allow, on_blocked=self.offer_override
-        )
+        queued = self.compose.add_to_queue(when)
         if queued:
             self.refresh_recipients()
         return queued
 
-    def create_schedule(self, allow: frozenset[str] = frozenset()) -> bool:
+    def create_schedule(self) -> bool:
         wordings = self.wordings()
-        if not wordings and self.compose.attachments:
-            # The rotation of wordings is what keeps each run from being the
-            # same post to the same group; pictures or videos alone are identical every
-            # run, which is the repetition the repeat guard exists to stop.
-            self.notify(
-                "A repeating post needs some text as well as pictures or videos: "
-                "on their own they are the same post every run. They can go out "
-                "with Now or Once.",
-                "error",
-            )
-            return False
-        if not wordings:
+        # Pictures or a video alone may repeat too (the user's choice,
+        # 2026-10-18); only a post with nothing in it at all is refused.
+        if not wordings and not self.compose.attachments:
             self.notify("Write the post on Compose first.", "error")
             return False
 
@@ -1162,15 +1001,6 @@ class PublishView(QWidget):
         except recurrence.InvalidRecurrence as exc:
             self.notify(str(exc), "error")
             return False
-
-        # The same rules the worker applies each time this fires, judged now:
-        # before, a schedule that broke them was created anyway and quietly
-        # skipped or deferred run after run.
-        violations = self._schedule_violations(rule, groups, wordings)
-        if any(v.rule not in allow for v in violations):
-            self.offer_override(violations)
-            return False
-        overrides = frozenset(v.rule for v in violations)
 
         if any(self.compose.has_rewrite(group_id) for group_id in groups):
             self.notify(
@@ -1191,25 +1021,12 @@ class PublishView(QWidget):
             days=list(rule.days),
             media_paths=[str(p) for p in self.compose.attachments],
             next_run_at=first,
-            overrides=overrides,
         )
-
-        note = recurrence.variation_note(len(groups), len(wordings))
-        if note is not None:
-            self.notify(note, "warning")
-        elif overrides:
-            self.notify(
-                f"{schedule.display_name}: {recurrence.describe(rule)}, posting "
-                f"anyway despite the {rule_labels(overrides)}. First run "
-                f"{clock.format_local(first)}.",
-                "warning",
-            )
-        else:
-            self.notify(
-                f"{schedule.display_name}: {recurrence.describe(rule)}. First run "
-                f"{clock.format_local(first)}.",
-                "success",
-            )
+        self.notify(
+            f"{schedule.display_name}: {recurrence.describe(rule)}. First run "
+            f"{clock.format_local(first)}.",
+            "success",
+        )
 
         self.name_entry.clear()
         self.refresh_schedules()
@@ -1335,14 +1152,6 @@ class PublishView(QWidget):
         )
         when.setObjectName("Muted")
         layout.addWidget(when)
-
-        if schedule.overrides:
-            anyway = QLabel(
-                f"Post anyway: allowed to break the {rule_labels(schedule.overrides)}."
-            )
-            anyway.setStyleSheet(f"color: {theme.C['WARNING']};")
-            anyway.setWordWrap(True)
-            layout.addWidget(anyway)
 
         if schedule.bodies:
             flat = " ".join(schedule.bodies[0].split())

@@ -4,13 +4,13 @@ Two things are in tension here and the tests exist to hold both:
 
 * the database must not grow for ever, and
 * `GroupRepo.recent_bodies` must keep seeing what a group has already been
-  sent, because that is what `guards.check_repeat_text` reads to refuse
-  reposting the same wording, which is the app's main protection against a
-  restriction.
+  sent, because that is what tells the worker these words are already in the
+  group's feed (`sent_before`), so that finding them there is not taken as
+  proof that a new post went out.
 
 So the prune deletes old batches but keeps the newest `RECENT_BODIES_LIMIT`
 posted bodies per group for ever. The test that matters most is
-TestTheGuardsSurvive::test_a_wording_from_years_ago_is_still_refused.
+TestTheGuardsSurvive::test_a_wording_from_years_ago_is_still_known.
 """
 
 from __future__ import annotations
@@ -21,7 +21,8 @@ from datetime import timedelta
 
 import pytest
 
-from fbposter import clock, guards
+from fbposter import clock
+from fbposter.text import normalise
 from fbposter.automation.humanize import HumanProfile, Humanizer
 from fbposter.automation.poster import PostOutcome, PostRequest
 from fbposter.db import Database
@@ -222,7 +223,7 @@ class TestAllTimeSurvivesThePrune:
         from fbposter import stats
 
         return stats.summary(
-            tasks.history_records(), tasks.archived_totals(), NOON, daily_cap=25
+            tasks.history_records(), tasks.archived_totals(), NOON
         ).all_time
 
     def test_the_total_is_the_same_after_a_prune(self, db, repos):
@@ -315,18 +316,17 @@ class TestTheGuardsSurvive:
         assert "wording 0" in kept
         assert f"wording {RECENT_BODIES_LIMIT + extra - 1}" not in kept
 
-    def test_a_wording_from_years_ago_is_still_refused(self, db, repos):
-        """The whole point. Tidying the database must not let a repeat through."""
+    def test_a_wording_from_years_ago_is_still_known(self, db, repos):
+        """The whole point. Tidying the database must not make the worker
+        forget that these words are already in the group's feed."""
         groups, tasks, _settings = repos
         group = add_group(groups)
         posted_batch(db, tasks, group, "Selling a bike, 1800.", days_ago=1000)
 
         tasks.prune_history(NOON, keep_days=90)
 
-        violation = guards.check_repeat_text(
-            "Selling a bike, 1800.", groups.recent_bodies(group.id), group.display_name
-        )
-        assert violation is not None, "pruning let a repeat through"
+        kept = [normalise(body) for body in groups.recent_bodies(group.id)]
+        assert normalise("Selling a bike, 1800.") in kept, "pruning forgot it"
 
     def test_the_keep_set_is_per_group_not_global(self, db, repos):
         groups, tasks, _settings = repos
@@ -340,8 +340,8 @@ class TestTheGuardsSurvive:
         assert len(groups.recent_bodies(one.id)) == RECENT_BODIES_LIMIT
         assert groups.recent_bodies(two.id) == ["two only"]
 
-    def test_the_daily_cap_is_unaffected(self, db, repos):
-        """The window is far wider than the cap's local-midnight lookback."""
+    def test_today_is_still_counted(self, db, repos):
+        """The window is far wider than the Dashboard's local-midnight lookback."""
         groups, tasks, _settings = repos
         group = add_group(groups)
         posted_batch(db, tasks, group, "today's wording", days_ago=0)

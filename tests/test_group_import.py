@@ -200,11 +200,6 @@ class TestStoringThem:
         assert new == []
         assert qt_app.group_repo.list() == []
 
-    def test_the_cooldown_is_the_rule_in_force(self, qt_app):
-        qt_app.settings_repo.set_default_cooldown(5)
-        (group,) = qt_app.group_repo.import_found(self.found(("1", "A")))
-        assert group.cooldown_hours == 5
-
 
 class StubFinder:
     def __init__(self, result):

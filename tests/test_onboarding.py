@@ -1,7 +1,7 @@
 """The setup wizard's judgement, tested without Chrome or a window.
 
-`onboarding.py` is pure on purpose -- the same split `guards.py` has against
-`worker.py` -- so what the app decides to tell the user next is checkable here
+`onboarding.py` is pure on purpose -- the same split `stats.py` has against
+the Dashboard -- so what the app decides to tell the user next is checkable here
 in milliseconds rather than through a browser.
 """
 

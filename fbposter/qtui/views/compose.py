@@ -12,7 +12,6 @@ reordering library to get part of the way there.
 
 from __future__ import annotations
 
-from datetime import timedelta
 from pathlib import Path
 
 from PySide6.QtCore import QPointF, QSize, Qt
@@ -42,10 +41,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from fbposter import clock, media
+from fbposter import media
 from fbposter.text import strip_invisible
-from fbposter.db.models import utcnow
-from fbposter.guards import OVERRIDABLE, PlannedTarget, evaluate_batch, rule_labels
 
 from .. import theme
 from ..widgets import card, clear, row, segmented
@@ -357,7 +354,8 @@ class ComposeView(QWidget):
 
         Qt needs no direction marks of its own, but a paste out of Word or
         WhatsApp brings its own invisible ones. Left in, they make an identical
-        post compare as different and defeat the repeated-text guard.
+        post compare as different, and an old post in the feed is then taken
+        for this one (`PostRequest.sent_before`).
         """
         return strip_invisible(self.editor.toPlainText())
 
@@ -643,17 +641,12 @@ class ComposeView(QWidget):
             self.attachment_box.addWidget(row)
 
     # -- queueing ----------------------------------------------------------
-    def add_to_queue(self, when=None, allow=frozenset(), on_blocked=None) -> bool:
+    def add_to_queue(self, when=None) -> bool:
         """Queue this post. `when` is a UTC instant, or None for "as soon as".
 
         Compose owns the content, so it owns the writing of the batch; the
-        Publish screen supplies nothing but the moment.
-
-        A batch that breaks a posting rule is refused, as it always was -- but
-        when `on_blocked` is given and every rule broken is one the user may
-        override, it is handed the whole list instead, which is how Publish
-        offers "Post anyway". `allow` is what the user then accepted: those
-        rules are recorded on the batch, and the worker skips exactly them.
+        Publish screen supplies nothing but the moment. Nothing about it is
+        judged: there are no posting rules (the user's choice, 2026-10-18).
         """
         self.capture()
         selected = self.selected_group_ids()
@@ -666,69 +659,22 @@ class ComposeView(QWidget):
             self.notify("Every selected group needs some text or a picture or video.", "error")
             return False
 
-        now = utcnow()
-        settings = self.app.settings_repo
-        planned = []
-        for group_id in selected:
-            group = self.app.group_repo.get(group_id)
-            if group is None:
-                continue
-            planned.append(
-                PlannedTarget(
-                    group_id=group.id,
-                    group_name=group.display_name,
-                    body=self.body_for(group.id).strip(),
-                    last_posted_at=group.last_posted_at,
-                    cooldown_hours=group.cooldown_hours,
-                    # Only that day's: the same words may go once a day.
-                    recent_bodies=tuple(
-                        self.app.group_repo.sent_on_day(group.id, when or now)
-                    ),
-                )
-            )
-
-        verdict = evaluate_batch(
-            planned,
-            now=now,
-            when=when,
-            daily_cap=settings.get_int("daily_cap", 25),
-            # The day the batch runs, not today: a batch for next week is
-            # judged against next week's posts, of which there are none yet.
-            posted_today=self.app.task_repo.posted_count_since(
-                clock.start_of_local_day(when or now)
-            ),
-            window_start_hour=settings.get_int("posting_window_start_hour", 8),
-            window_end_hour=settings.get_int("posting_window_end_hour", 23),
-        )
-        refused = [v for v in verdict.blocked if v.rule not in allow]
-        if refused:
-            if on_blocked is not None and all(v.rule in OVERRIDABLE for v in refused):
-                # All of them, not only the new ones: "Post anyway" has to
-                # cover everything the batch breaks, and the user should see it.
-                on_blocked(verdict.blocked)
-            else:
-                self.notify(refused[0].message, "error")
+        targets = [
+            (group_id, self.body_for(group_id).strip())
+            for group_id in selected
+            if self.app.group_repo.get(group_id) is not None
+        ]
+        if not targets:
+            self.notify("Pick at least one group.", "error")
             return False
-
-        overrides = frozenset(v.rule for v in verdict.blocked)
         self.app.task_repo.create(
             self._base_body.strip(),
-            [(target.group_id, target.body) for target in planned],
+            targets,
             media_paths=[str(p) for p in self.attachments],
             scheduled_for=when,
-            overrides=overrides,
         )
-        for warning in verdict.warnings:
-            self.notify(warning, "warning")
-        count = f"{len(planned)} group{'s' if len(planned) != 1 else ''}"
-        if overrides:
-            self.notify(
-                f"Queued for {count}, posting anyway despite the "
-                f"{rule_labels(overrides)}.",
-                "warning",
-            )
-        elif not verdict.warnings:
-            self.notify(f"Queued for {count}.", "success")
+        count = f"{len(targets)} group{'s' if len(targets) != 1 else ''}"
+        self.notify(f"Queued for {count}.", "success")
         return True
 
 

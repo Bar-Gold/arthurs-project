@@ -28,7 +28,6 @@ from PySide6.QtWidgets import (
 
 from fbposter import clock, stats
 from fbposter.worker import PAUSED_KEY
-from fbposter.guards import rule_labels
 from fbposter.db.models import (
     SCHEDULE_ACTIVE,
     SCHEDULE_PAUSED,
@@ -87,7 +86,7 @@ OUTCOMES = (
     (TARGET_AWAITING_APPROVAL, "Waiting for admin approval", "ACCENT"),
     (TARGET_UNCONFIRMED, "Might have posted", "WARNING"),
     (TARGET_FAILED, "Not posted", "DANGER"),
-    (TARGET_SKIPPED, "Skipped by the rules", "BORDER_STRONG"),
+    (TARGET_SKIPPED, "Skipped", "BORDER_STRONG"),
     (TARGET_DECLINED, "Declined by an admin", "TEXT_MUTED"),
 )
 
@@ -98,10 +97,7 @@ RECENT_LIMIT = 15
 TILE_COLUMNS = 4
 CHART_HEIGHT = 170
 OUTCOME_BAR_HEIGHT = 14
-METER_HEIGHT = 6
 SWATCH_SIZE = 10
-# The daily limit's meter turns amber this close to the limit.
-METER_WARN_AT = 0.8
 
 
 def unverified(target) -> bool:
@@ -287,44 +283,6 @@ class Swatch(QWidget):
         painter.end()
 
 
-class Meter(QWidget):
-    """A thin bar filled to a share: how much of the daily limit is used."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.setObjectName("Row")
-        self.setFixedHeight(METER_HEIGHT)
-        self.share = 0.0
-
-    def set_share(self, share: float) -> None:
-        share = max(0.0, min(1.0, share))
-        if share != self.share:
-            self.share = share
-            self.update()
-
-    def colour(self) -> str:
-        if self.share >= 1:
-            return "DANGER"
-        if self.share >= METER_WARN_AT:
-            return "WARNING"
-        return "ACCENT"
-
-    def paintEvent(self, _event) -> None:  # noqa: N802 - Qt's name
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-        painter.setPen(Qt.NoPen)
-        radius = self.height() / 2
-        painter.setBrush(QColor(theme.C["HOVER_BG"]))
-        painter.drawRoundedRect(QRectF(0, 0, self.width(), self.height()), radius, radius)
-        if self.share:
-            painter.setBrush(QColor(theme.C[self.colour()]))
-            painter.drawRoundedRect(
-                QRectF(0, 0, max(self.height(), self.width() * self.share), self.height()),
-                radius, radius,
-            )
-        painter.end()
-
-
 class Tile:
     """One number on the Dashboard: a caption, the number, a line under it."""
 
@@ -420,13 +378,7 @@ class DashboardView(QWidget):
             "repeating": Tile("Repeating posts"),
             "wordings": Tile("Different wordings"),
         }
-        self.tiles["wordings"].frame.setToolTip(
-            "Different texts sent in the last 7 days. Varied text, not the "
-            "number of posts, is what keeps an account clear of restrictions."
-        )
-        self.meter = Meter()
-        today = self.tiles["today"].frame.layout()
-        today.insertWidget(today.count() - 1, self.meter)
+        self.tiles["wordings"].frame.setToolTip("Different texts sent in the last 7 days.")
 
         grid = QGridLayout()
         grid.setSpacing(theme.PAD_S)
@@ -498,9 +450,7 @@ class DashboardView(QWidget):
         schedules = self.app.schedule_repo.list()
         settings = self.app.settings_repo
 
-        summary = stats.summary(
-            records, archived, now, settings.get_int("daily_cap", 25)
-        )
+        summary = stats.summary(records, archived, now)
         paused = settings.get(PAUSED_KEY) == "1"
         self._show_tiles(summary, stats.next_scheduled(tasks, schedules, paused, now),
                          schedules, now)
@@ -523,13 +473,7 @@ class DashboardView(QWidget):
 
     def _show_tiles(self, summary, next_up, schedules, now) -> None:
         tiles = self.tiles
-        cap = summary.daily_cap
-        tiles["today"].show(
-            str(summary.today),
-            f"of {cap} allowed today" if cap > 0 else "No daily limit",
-        )
-        self.meter.set_share(summary.today / cap if cap > 0 else 0)
-        self.meter.setVisible(cap > 0)
+        tiles["today"].show(str(summary.today), "Since midnight, Israel time")
 
         change = summary.last_week - summary.week_before
         if not summary.last_week and not summary.week_before:
@@ -593,7 +537,6 @@ class DashboardView(QWidget):
             (
                 r.group_id, r.name, r.members, r.today, r.last_week, r.all_time,
                 stats.ago_text(r.last_post_at, now),
-                stats.when_text(r.free_at, now) if r.free_at else "",
             )
             for r in rows
         )
@@ -612,13 +555,13 @@ class DashboardView(QWidget):
         grid.setContentsMargins(theme.PAD_M, theme.PAD_S, theme.PAD_M, theme.PAD_S)
         grid.setHorizontalSpacing(theme.PAD_L)
         grid.setVerticalSpacing(theme.PAD_S)
-        headers = ("Group", "Members", "Today", "7 days", "All time", "Last post", "Can post")
+        headers = ("Group", "Members", "Today", "7 days", "All time", "Last post")
         for column, text in enumerate(headers):
             label = self._muted(text)
             if 2 <= column <= 4:
                 label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
             grid.addWidget(label, 0, column)
-        for index, (_id, name, members, today, week, total, last, free) in enumerate(drawn, 1):
+        for index, (_id, name, members, today, week, total, last) in enumerate(drawn, 1):
             # One line, shortened if long: a wrapped name sized to fit its
             # cell came out two lines tall in a one-line row and overlapped
             # the next. The full name is on hover.
@@ -636,10 +579,6 @@ class DashboardView(QWidget):
                 label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
                 grid.addWidget(label, index, column)
             grid.addWidget(self._muted(last), index, 5)
-            # When the cooldown lets it be posted to again. "Post anyway" can
-            # still go sooner; this says what the rule says.
-            status = badge(f"From {free}", "TEXT_MUTED") if free else badge("Now", "SUCCESS")
-            grid.addWidget(status, index, 6, Qt.AlignLeft)
         grid.setColumnStretch(0, 1)
         self.groups_box.addWidget(box)
 
@@ -650,7 +589,7 @@ class DashboardView(QWidget):
         drawn = tuple(
             (
                 task.id, task.state, task.body, task.scheduled_for, task.resume_at,
-                task.error, task.overrides, names.get(task.schedule_id, ""),
+                task.error, names.get(task.schedule_id, ""),
                 tuple((t.id, t.state) for t in targets.get(task.id, ())),
             )
             for task in tasks
@@ -696,18 +635,8 @@ class DashboardView(QWidget):
         when += f" · {done} of {len(targets)} group{'s' if len(targets) != 1 else ''} done"
         layout.addWidget(self._muted(when))
 
-        if task.overrides:
-            # So a post at 23:40, or a second one to a group the same morning,
-            # is never a mystery: someone chose it. Tense-free, since it may
-            # not have posted yet.
-            anyway = QLabel(
-                f"Post anyway: allowed to break the {rule_labels(task.overrides)}."
-            )
-            anyway.setStyleSheet(f"color: {theme.C['WARNING']};")
-            anyway.setWordWrap(True)
-            layout.addWidget(anyway)
         if task.error:
-            # Why it is waiting: posting hours, the daily limit, Chrome away.
+            # Why it is waiting: Chrome away, say.
             note = self._muted(task.error)
             note.setWordWrap(True)
             layout.addWidget(note)

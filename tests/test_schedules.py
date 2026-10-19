@@ -5,9 +5,9 @@ test_worker.py, because a schedule's whole job is to produce an ordinary batch
 and then get out of the way.
 
 The case worth reading first is
-TestWordingRotation::test_the_second_run_does_not_repeat_the_first_runs_text.
-`guards.check_repeat_text` refuses the same words to the same group outright,
-so a repeating post that could only hold one wording would work exactly once.
+TestWordingRotation::test_the_second_run_does_not_repeat_the_first_runs_text:
+each run gives a group the next wording. Nothing refuses a repeat any more
+(the user's choice, 2026-10-18), so the rotation is the whole of it.
 """
 
 from __future__ import annotations
@@ -96,15 +96,10 @@ def make_worker(db, poster=None, clock_fn=None):
 
 
 def add_groups(groups, count=2):
-    made = [
+    return [
         groups.add_from_url(f"https://www.facebook.com/groups/g{index}")
         for index in range(count)
     ]
-    # No cooldown by default: these tests are about the schedule, and the
-    # cooldown has its own coverage in test_worker.py.
-    for group in made:
-        groups.set_cooldown(group.id, 0)
-    return made
 
 
 def make_schedule(schedules, group_ids, *, times=("12:00",), bodies=None, next_run_at=NOON):
@@ -413,11 +408,9 @@ class TestWordingRotation:
         assert len(set(bodies)) == 3, "the same text went to more than one group"
 
     def test_the_second_run_does_not_repeat_the_first_runs_text(self, db, repos):
-        """The reason a schedule holds several wordings at all.
-
-        guards.check_repeat_text refuses the same words to the same group, so
-        a schedule that reused one wording would be dead after its first run.
-        """
+        """The reason a schedule holds several wordings at all: each run gives
+        a group the next one, so the same group does not see the same text
+        run after run."""
         groups, tasks, schedules, _settings = repos
         one, _two = add_groups(groups, 2)
         made = make_schedule(schedules, [one.id])
@@ -449,9 +442,9 @@ class TestWordingRotation:
 
         assert sorted(poster.bodies) == sorted(WORDINGS)
 
-    def test_running_out_of_wordings_for_the_day_skips_the_group_and_says_so(
-        self, db, repos
-    ):
+    def test_running_out_of_wordings_for_the_day_sends_one_again(self, db, repos):
+        """Nothing holds a repeat back any more (the user's choice, 2026-10-18):
+        one wording, two runs a day, two posts."""
         groups, tasks, schedules, _settings = repos
         one, _two = add_groups(groups, 2)
         make_schedule(
@@ -462,14 +455,12 @@ class TestWordingRotation:
         ticker = Clock()
         worker = make_worker(db, poster, ticker)
         drain(worker)
-        assert len(poster.bodies) == 1
-
         ticker.now = clock.parse_local("2026-08-10 21:00")
         drain(worker)
 
-        assert len(poster.bodies) == 1, "the same text went to a group twice in a day"
-        assert len(tasks.list_recent()) == 1, "queued a batch with nothing in it"
-        assert any("wording today" in event for event in messages(worker))
+        assert poster.bodies == ["Only one wording", "Only one wording"]
+        assert len(tasks.list_recent()) == 2
+        assert not any("wording today" in event for event in messages(worker))
 
     def test_the_same_wording_goes_again_the_next_day(self, db, repos):
         """Once a day, not never again: the user's choice, 2026-10-07. A daily
@@ -487,7 +478,7 @@ class TestWordingRotation:
 
         assert poster.bodies == ["Only one wording", "Only one wording"]
 
-    def test_running_out_for_one_group_does_not_stop_the_others(self, db, repos):
+    def test_a_group_that_has_had_every_wording_still_gets_the_run(self, db, repos):
         groups, tasks, schedules, _settings = repos
         one, two = add_groups(groups, 2)
         # Group one already had "Alpha" this morning, so by the evening run it
@@ -516,10 +507,7 @@ class TestWordingRotation:
         drain(worker)
 
         evening = max(tasks.list_recent(), key=lambda task: task.id)
-        assert [t.group_id for t in tasks.targets_for(evening.id)] == [two.id]
-        for group in (one, two):
-            today = groups.sent_on_day(group.id, ticker.now)
-            assert len(today) == len(set(today)), "a group got the same text twice today"
+        assert [t.group_id for t in tasks.targets_for(evening.id)] == [one.id, two.id]
 
 
 def messages(worker) -> list[str]:
@@ -548,7 +536,7 @@ class TestScheduledBatchesGoThroughTheNormalPath:
         worker.run_once()
         assert len(poster.requests) == 2
 
-    def test_the_daily_cap_still_applies_to_a_scheduled_batch(self, db, repos):
+    def test_the_old_daily_limit_holds_nothing_back(self, db, repos):
         groups, tasks, schedules, settings = repos
         made_groups = add_groups(groups, 3)
         settings.set("daily_cap", 1)
@@ -557,30 +545,25 @@ class TestScheduledBatchesGoThroughTheNormalPath:
         poster = FakePoster()
         ticker = Clock()
         worker = make_worker(db, poster, ticker)
-        drain(worker)
-        assert len(poster.requests) == 1
+        for _ in range(3):
+            drain(worker)
+            ticker.advance(minutes=30)
+        assert len(poster.requests) == 3
 
-    def test_a_slot_outside_the_window_defers_rather_than_being_dropped(self, db, repos):
-        """The missed check must not eat a batch the worker itself parked."""
+    def test_a_late_slot_posts_at_its_time(self, db, repos):
+        """23:30 used to wait for the posting hours to open at 08:00."""
         groups, tasks, schedules, _settings = repos
         one, _two = add_groups(groups, 2)
         late = clock.parse_local("2026-08-10 23:30")
         make_schedule(schedules, [one.id], times=("23:30",), next_run_at=late)
 
         poster = FakePoster()
-        ticker = Clock(late)
-        worker = make_worker(db, poster, ticker)
+        worker = make_worker(db, poster, Clock(late))
         worker.run_once()  # materialise
-        worker.run_once()  # defers: outside the 08:00-23:00 window
+        worker.run_once()  # posts, at 23:30
 
-        task = tasks.list_recent()[0]
-        assert task.resume_at is not None
-        assert clock.format_local(task.resume_at) == "2026-08-11 08:00"
-
-        ticker.now = task.resume_at
-        drain(worker)
-        assert tasks.get(task.id).state != TASK_MISSED
         assert len(poster.requests) == 1
+        assert tasks.get(tasks.list_recent()[0].id).state != TASK_MISSED
 
 
 class TestAScheduleWithNothingLeftToPostTo:
@@ -618,9 +601,7 @@ class TestAScheduleWithNothingLeftToPostTo:
         targets = tasks.targets_for(tasks.list_recent()[0].id)
         assert [t.group_id for t in targets] == [two.id]
 
-    def test_stale_wordings_are_still_reported_as_stale(self, db, repos):
-        """The empty-schedule message must not displace the one that tells the
-        user to add another wording -- they call for different fixes."""
+    def test_a_group_already_sent_the_only_wording_still_gets_it(self, db, repos):
         groups, tasks, schedules, _settings = repos
         one, _two = add_groups(groups)
         made = make_schedule(schedules, [one.id], bodies=["only wording"])
@@ -635,10 +616,46 @@ class TestAScheduleWithNothingLeftToPostTo:
         worker.run_once()
 
         seen = kinds(worker)
-        assert "skipped" in seen
+        assert "skipped" not in seen
         assert "schedule_error" not in seen
         assert schedules.get(made.id).state == SCHEDULE_ACTIVE
+        fired = max(tasks.list_recent(), key=lambda t: t.id)
+        assert [t.body for t in tasks.targets_for(fired.id)] == ["only wording"]
 
+
+class TestPicturesAlone:
+    """A repeating post of pictures or a video with no words (the user's
+    choice, 2026-10-18). It used to be refused: no wording to rotate."""
+
+    def test_it_is_stored(self, repos):
+        groups, _tasks, schedules, _settings = repos
+        one, _two = add_groups(groups)
+        made = schedules.create(
+            name="Flat", bodies=[], group_ids=[one.id], times=["12:00"],
+            media_paths=["C:/pictures/flat.jpg"], next_run_at=NOON,
+        )
+        assert schedules.get(made.id).bodies == []
+
+    def test_nothing_at_all_is_still_refused(self, repos):
+        groups, _tasks, schedules, _settings = repos
+        one, _two = add_groups(groups)
+        with pytest.raises(ValueError):
+            schedules.create(name="Empty", bodies=["  "], group_ids=[one.id], times=["12:00"])
+
+    def test_it_fires_with_no_words(self, db, repos):
+        groups, tasks, schedules, _settings = repos
+        one, two = add_groups(groups)
+        schedules.create(
+            name="Flat", bodies=[], group_ids=[one.id, two.id], times=["12:00"],
+            media_paths=["C:/pictures/flat.jpg"], next_run_at=NOON,
+        )
+
+        make_worker(db).run_once()
+
+        (task,) = tasks.list_recent()
+        assert task.body == ""
+        assert task.media_paths == ["C:/pictures/flat.jpg"]
+        assert [t.body for t in tasks.targets_for(task.id)] == ["", ""]
 
 
 class TestEditingASchedule:
@@ -674,7 +691,6 @@ class TestEditingASchedule:
             times=["09:00", "18:00"],
             days=[0, 4],
             media_paths=["C:/pictures/new.jpg"],
-            overrides={"cooldown"},
         )
 
         stored = schedules.get(made.id)
@@ -684,7 +700,6 @@ class TestEditingASchedule:
         assert stored.times == ["09:00", "18:00"]
         assert stored.days == [0, 4]
         assert stored.media_paths == ["C:/pictures/new.jpg"]
-        assert stored.overrides == frozenset({"cooldown"})
 
     def test_it_leaves_the_state_and_the_rotation_alone(self, repos):
         groups, _tasks, schedules, _settings = repos
@@ -780,20 +795,3 @@ class TestEditingASchedule:
 
         assert [(t.group_id, t.body) for t in tasks.targets_for(task.id)] == before
         assert tasks.get(task.id).body == WORDINGS[0]
-
-    def test_running_out_of_wordings_now_points_at_editing(self, db, repos):
-        groups, _tasks, schedules, _settings = repos
-        one, _two = add_groups(groups)
-        make_schedule(
-            schedules, [one.id], times=("12:00", "21:00"), bodies=["Only one wording"]
-        )
-
-        ticker = Clock()
-        worker = make_worker(db, FakePoster(), ticker)
-        drain(worker)
-        messages(worker)
-        ticker.now = clock.parse_local("2026-08-10 21:00")
-        drain(worker)
-
-        said = " ".join(messages(worker))
-        assert "edit this repeating post and add another wording" in said

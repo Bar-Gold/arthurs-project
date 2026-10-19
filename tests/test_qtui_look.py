@@ -288,7 +288,7 @@ class TestTheSettingsPage:
         from PySide6.QtCore import Qt
 
         settings = qt_app.views["settings"]
-        for control in (settings.cap_entry, settings.cooldown_entry, settings.awake_box):
+        for control in (settings.autostart_box, settings.awake_box):
             line = control.parentWidget().layout()
             last = line.itemAt(line.count() - 1)
             assert last.widget() is control, control.accessibleName()

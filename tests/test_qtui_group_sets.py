@@ -24,7 +24,6 @@ from PySide6.QtWidgets import QLabel
 
 from fbposter import recurrence
 from fbposter.db.models import utcnow
-from fbposter.guards import DAILY_CAP
 from fbposter.qtui.views.publish import NOW, REPEAT
 
 BODY = "Selling a road bike, 54cm frame."
@@ -61,7 +60,7 @@ def make_set(qt_app, name, members):
     return qt_app.group_set_repo.create(name, [g.id for g in members])
 
 
-def make_schedule(qt_app, *, group_ids=(), set_ids=(), overrides=()):
+def make_schedule(qt_app, *, group_ids=(), set_ids=()):
     rule = recurrence.build(["09:00"])
     return qt_app.schedule_repo.create(
         name="Bikes",
@@ -70,7 +69,6 @@ def make_schedule(qt_app, *, group_ids=(), set_ids=(), overrides=()):
         set_ids=list(set_ids),
         times=list(rule.times),
         next_run_at=recurrence.next_occurrence(rule, utcnow()),
-        overrides=overrides,
     )
 
 
@@ -158,8 +156,9 @@ class TestChangingASet:
         assert "Demo 0, Demo 1" in texts
         assert "Used by Bikes." in texts
 
-    def test_a_rule_newly_broken_is_named_after_saving(self, qt_app, screen, groups):
-        """The user chose to be told after, not asked first."""
+    def test_saving_judges_no_rules(self, qt_app, screen, groups):
+        """There are no posting rules (2026-10-18): a set that grows past the
+        old daily limit is saved and said plainly, like any other."""
         qt_app.settings_repo.set("daily_cap", 2)
         made = make_set(qt_app, "Tel Aviv", groups[:1])
         make_schedule(qt_app, set_ids=[made.id])
@@ -168,21 +167,10 @@ class TestChangingASet:
         screen.tick([groups[1].id, groups[2].id])
         assert screen.save() is True
 
-        text = qt_app.toast_label.text()
-        assert "Bikes:" in text
-        assert "daily limit of 2" in text
+        assert qt_app.toast_label.text() == "Tel Aviv saved: 3 groups."
         assert qt_app.group_set_repo.get(made.id).group_ids == [g.id for g in groups[:3]]
 
-    def test_post_anyway_is_said_to_cover_the_new_groups(self, qt_app, screen, groups):
-        made = make_set(qt_app, "Tel Aviv", groups[:1])
-        make_schedule(qt_app, set_ids=[made.id], overrides=[DAILY_CAP])
-        screen.refresh()
-        screen.open_editor(made.id)
-        screen.tick([groups[1].id])
-        screen.save()
-        assert "covers the groups added to this set too" in qt_app.toast_label.text()
-
-    def test_a_change_that_breaks_nothing_new_is_plain(self, qt_app, screen, groups):
+    def test_a_change_is_said_plainly(self, qt_app, screen, groups):
         made = make_set(qt_app, "Tel Aviv", groups[:1])
         make_schedule(qt_app, set_ids=[made.id])
         screen.refresh()

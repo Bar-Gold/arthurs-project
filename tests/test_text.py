@@ -7,9 +7,11 @@ against the user's own words.
 
 The two that matter are:
 
-* TestTheRepeatGuardIsNotFooled: an invisible character made an identical post
-  compare as different, so the guard waved through the exact repeat it exists
-  to stop. That is the app's main protection against a restriction.
+* TestTheSameWordsCompareTheSame: an invisible character made an identical
+  post compare as different. That once let the repeated-text rule wave a
+  repeat through; there are no rules now, but `normalise` still decides
+  whether a group was sent these words before (`sent_before`), and so whether
+  finding them in its feed proves anything about this post.
 * TestVerificationIsNotFooled: Facebook strips these when it renders, so a
   snippet still containing one is searched for and never found, reporting a
   post that went out fine as failed and halting the batch.
@@ -19,7 +21,7 @@ from __future__ import annotations
 
 import pytest
 
-from fbposter import guards, text
+from fbposter import text
 from fbposter.automation.poster import distinctive_snippet
 
 HEBREW = 'מוכר אופניים חשמליים במחיר 1800 ש"ח'
@@ -79,31 +81,35 @@ class TestStripping:
             text.has_invisible(sample)
 
 
-class TestTheRepeatGuardIsNotFooled:
-    """The live hole: paste the same ad twice and it went out twice."""
+class TestTheSameWordsCompareTheSame:
+    """The live hole: the same ad pasted twice compared as two different ads."""
 
     @pytest.mark.parametrize("name,mark", list(MARKS.items()))
-    def test_a_mark_only_difference_is_still_a_repeat(self, name, mark):
-        already_sent = HEBREW
+    def test_a_mark_only_difference_is_the_same_text(self, name, mark):
         pasted_again = f"{mark}{HEBREW}{mark}"
-        violation = guards.check_repeat_text(pasted_again, [already_sent])
-        assert violation is not None, f"{name} let a repeat through"
+        assert text.normalise(pasted_again) == text.normalise(HEBREW), name
 
     def test_it_works_the_other_way_round_too(self):
         """History stored before the fix still has marks in it."""
         stored_with_marks = f"‫{HEBREW}‬"
-        typed_clean = HEBREW
-        assert guards.check_repeat_text(typed_clean, [stored_with_marks]) is not None
+        assert text.normalise(HEBREW) == text.normalise(stored_with_marks)
 
-    def test_genuinely_different_wording_is_still_allowed(self):
-        assert guards.check_repeat_text("A different ad entirely", [HEBREW]) is None
+    def test_genuinely_different_wording_is_different(self):
+        assert text.normalise("A different ad entirely") != text.normalise(HEBREW)
 
     def test_normalise_folds_marks_with_case_and_spacing(self):
-        assert guards.normalise("  Hello​  World  ") == guards.normalise("hello world")
+        assert text.normalise("  Hello​  World  ") == text.normalise("hello world")
 
-    def test_the_variation_warning_counts_them_as_the_same(self):
-        bodies = [HEBREW, f"‏{HEBREW}", f"{HEBREW}​"]
-        assert guards.variation_warning(bodies) is not None
+    @pytest.mark.parametrize(
+        "variant",
+        ["selling a bike", "Selling  a   bike", "  Selling a bike\n", "Selling a bike\n\n"],
+    )
+    def test_trivial_differences_are_the_same_text(self, variant):
+        """Whitespace and capitals are not new content."""
+        assert text.normalise(variant) == text.normalise("Selling a bike")
+
+    def test_reworded_text_is_different(self):
+        assert text.normalise("Road bike for sale") != text.normalise("Selling a bike")
 
 
 class TestVerificationIsNotFooled:

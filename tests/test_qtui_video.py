@@ -125,12 +125,13 @@ class TestTheWording:
         assert publish.publish() is True
         assert qt_app.task_repo.list_recent()[0].media_paths == [str(clip)]
 
-    def test_a_repeating_post_still_needs_words(self, qt_app, views, clip):  # noqa: F811
-        """A video alone is the same post every run, like a picture alone."""
+    def test_a_video_alone_may_repeat(self, qt_app, views, clip):  # noqa: F811
+        """Like a picture alone (the user's choice, 2026-10-18)."""
         compose, publish = views
         compose._show("")
         compose.capture()
         compose.attachments = [clip]
         publish.set_mode(REPEAT)
-        assert publish.publish() is False
-        assert "as well as pictures or videos" in qt_app.toast_label.text()
+        assert publish.publish() is True
+        (schedule,) = qt_app.schedule_repo.list()
+        assert schedule.bodies == [] and schedule.media_paths == [str(clip)]

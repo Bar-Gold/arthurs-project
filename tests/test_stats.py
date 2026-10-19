@@ -41,8 +41,8 @@ def sent(when: str, group_id: int = 1, body: str = "Bike for sale", state=TARGET
     return PostRecord(group_id=group_id, state=state, at=at(when), body=body)
 
 
-def summary(records, archived=None, cap=25):
-    return stats.summary(records, archived or {}, NOW, cap)
+def summary(records, archived=None):
+    return stats.summary(records, archived or {}, NOW)
 
 
 class TestToday:
@@ -60,9 +60,9 @@ class TestToday:
         assert record.at.date().isoformat() == "2026-10-13"
         assert summary([record]).today == 1
 
-    def test_counts_what_the_daily_limit_counts(self):
-        """Posted, waiting for an admin and might-have-posted all count, as
-        they do for the limit; a failure or a skip does not."""
+    def test_counts_what_counts_as_sent(self):
+        """Posted, waiting for an admin and might-have-posted all count; a
+        failure or a skip does not."""
         records = [
             sent("2026-10-14 09:00", state=TARGET_DONE),
             sent("2026-10-14 09:30", state=TARGET_AWAITING_APPROVAL),
@@ -71,9 +71,6 @@ class TestToday:
             sent("2026-10-14 11:00", state=TARGET_SKIPPED),
         ]
         assert summary(records).today == 3
-
-    def test_carries_the_daily_limit(self):
-        assert summary([], cap=7).daily_cap == 7
 
 
 class TestWeeksAndMonths:
@@ -96,7 +93,7 @@ class TestWeeksAndMonths:
         around it still holds exactly the posts made on those dates."""
         now = at("2026-10-28 12:00")
         records = [sent("2026-10-22 00:30"), sent("2026-10-21 23:30")]
-        result = stats.summary(records, {}, now, 25)
+        result = stats.summary(records, {}, now)
         assert result.last_week == 1
 
 
@@ -136,7 +133,7 @@ class TestSuccessRate:
         assert result.tried == 4
         assert result.success_rate == 0.75
 
-    def test_a_skip_by_the_rules_is_not_a_failure(self):
+    def test_a_skip_is_not_a_failure(self):
         records = [sent("2026-10-14 09:00"), sent("2026-10-14 10:00", state=TARGET_SKIPPED)]
         assert summary(records).success_rate == 1.0
 
@@ -234,19 +231,9 @@ class TestByGroup:
         (row,) = stats.by_group([sent("2026-10-14 09:00")], archived, [group(1)], NOW)
         assert row.all_time == 31
 
-    def test_a_group_inside_its_cooldown_says_when_it_is_free(self):
-        last = at("2026-10-14 09:00")
-        (row,) = stats.by_group([], {}, [group(1, last=last, cooldown=8)], NOW)
-        assert row.free_at == at("2026-10-14 17:00")
-
-    def test_a_group_past_its_cooldown_is_free_now(self):
-        last = at("2026-10-14 01:00")
-        (row,) = stats.by_group([], {}, [group(1, last=last, cooldown=8)], NOW)
-        assert row.free_at is None
-
     def test_a_group_never_posted_to(self):
         (row,) = stats.by_group([], {}, [group(1, members="12K members")], NOW)
-        assert (row.all_time, row.last_post_at, row.free_at) == (0, None, None)
+        assert (row.all_time, row.last_post_at) == (0, None)
         assert row.members == "12K members"
         assert row.name == "1"  # no name yet: its identifier
 

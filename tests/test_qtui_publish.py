@@ -32,16 +32,11 @@ BODY = "Selling a road bike, 54cm frame."
 
 @pytest.fixture
 def views(qt_app):
-    """Compose and Publish, with three groups and the posting window open."""
+    """Compose and Publish, with three groups picked."""
     for index in range(3):
         qt_app.group_repo.add_from_url(
             f"https://www.facebook.com/groups/demo{index}", name=f"Demo {index}"
         )
-    # The window is judged in Israel time and the suite has to pass at 03:00
-    # as readily as at noon.
-    qt_app.settings_repo.set("posting_window_start_hour", 0)
-    qt_app.settings_repo.set("posting_window_end_hour", 0)
-
     # Groups are chosen on the Groups screen now, not in Compose.
     groups = qt_app.views["groups"]
     qt_app.show_view("groups")
@@ -244,26 +239,22 @@ class TestRepeat:
         assert publish.publish() is False
         assert qt_app.schedule_repo.list() == []
 
-    def test_times_stop_at_the_ceiling(self, views):
+    def test_there_is_no_ceiling_on_times(self, views):
+        """Three a day was the most until 2026-10-18."""
         _compose, publish = views
         publish.set_mode(REPEAT)
-        while len(publish.times()) < recurrence.MAX_TIMES_PER_DAY:
+        for _ in range(5):
             assert publish.add_time() is True
-        assert publish.add_time() is False
+        assert len(set(publish.times())) == 6, "a new row repeated a time already listed"
 
-    def test_three_times_a_day_reaches_the_database(self, qt_app, views):
-        """Only with "Post anyway": inside a 08:00-23:00 window, three runs a
-        day cannot all be 8h apart, so every group would be skipped on two."""
+    def test_many_times_a_day_reach_the_database(self, qt_app, views):
         _compose, publish = views
         publish.set_mode(REPEAT)
-        publish.add_time("14:00")
-        publish.add_time("20:00")
-        assert publish.publish() is False
-        assert qt_app.schedule_repo.list() == []
-        assert publish.post_anyway() is True
+        for text in ("12:00", "14:00", "20:00", "23:00"):
+            publish.add_time(text)
+        assert publish.publish() is True
         stored = qt_app.schedule_repo.list()[0]
-        assert len(stored.times) == 3
-        assert "cooldown" in stored.overrides
+        assert stored.times == ["09:00", "12:00", "14:00", "20:00", "23:00"]
 
     def test_all_seven_days_is_stored_as_every_day(self, qt_app, views):
         _compose, publish = views
@@ -315,34 +306,28 @@ class TestSummaryAndWarnings:
         publish.set_mode(REPEAT)
         assert "First run" in publish.summary.text()
 
-    def test_one_wording_across_three_groups_is_flagged(self, views):
-        _compose, publish = views
-        publish.set_mode(REPEAT)
-        assert "Repetitive content" in publish.summary.text()
+    def test_nothing_is_flagged(self, views):
+        """No posting rules (2026-10-18): one wording to every group, at 03:00,
+        is said as a fact and warned about not at all."""
+        from fbposter.qtui import theme
 
-    def test_a_wording_per_group_is_not_flagged(self, views):
         _compose, publish = views
-        publish.set_mode(REPEAT)
-        publish.add_wording("Second wording")
-        publish.add_wording("Third wording")
-        assert "Repetitive content" not in publish.summary.text()
-
-    def test_a_time_outside_the_posting_window_is_flagged(self, qt_app, views):
-        _compose, publish = views
-        qt_app.settings_repo.set("posting_window_start_hour", 8)
-        qt_app.settings_repo.set("posting_window_end_hour", 23)
         publish.set_mode(REPEAT)
         publish._time_rows[0].setTime(
             publish._time_rows[0].time().fromString("03:00", "HH:mm")
         )
-        assert "posting hours" in publish.summary.text()
+        text = publish.summary.text()
+        assert "Every day at 03:00" in text
+        assert theme.C["WARNING"] not in text
+        assert "Repetitive content" not in text and "posting hours" not in text
 
     def test_the_empty_wordings_hint_shows_when_there_are_no_alternates(self, views):
-        """It carries the one non-obvious thing: one wording is one run a day."""
+        """It says what a wording is for: with none, every run sends the
+        Compose text."""
         _compose, publish = views
         publish.set_mode(REPEAT)
         assert publish.wording_hint.isVisibleTo(publish)
-        assert "one run a day" in publish.wording_hint.text()
+        assert "every run sends the Compose text" in publish.wording_hint.text()
 
     def test_the_hint_goes_away_once_an_alternate_exists(self, views):
         _compose, publish = views
@@ -427,7 +412,7 @@ class TestTheWindowItself:
         # So is "schedule_edit", reached from a repeating post's card.
         assert set(qt_app.views) == {
             "compose", "publish", "groups", "dashboard", "settings", "welcome",
-            "schedule_edit", "group_sets",
+            "schedule_edit", "group_sets", "tips",
         }
 
     def test_the_wizard_is_not_a_sidebar_step(self, qt_app):
@@ -437,157 +422,55 @@ class TestTheWindowItself:
         assert qt_app.worker is None
 
 
-class TestPostAnyway:
-    """The rules refuse, then offer; nothing is posted without the second click."""
+class TestThereAreNoRules:
+    """The user's choice, 2026-10-18: one click posts, whatever was posted
+    before. There is no "Post anyway" panel and nothing is recorded as an
+    exception, because there is nothing to be an exception to."""
 
     @staticmethod
     def recently_posted(qt_app):
         for group in qt_app.group_repo.list():
             qt_app.group_repo.mark_posted(group.id, utcnow() - timedelta(hours=1))
 
-    def test_a_rule_broken_offers_post_anyway_instead_of_refusing(self, qt_app, views):
+    def test_groups_posted_to_an_hour_ago_are_queued_at_once(self, qt_app, views):
         _compose, publish = views
         self.recently_posted(qt_app)
-        assert publish.publish() is False
-        assert qt_app.task_repo.list_recent() == []
-        assert not publish.override_card.isHidden()
-        assert publish.go_button.isHidden()
-        assert "cooldown" in publish.override_list.text()
-
-    def test_post_anyway_queues_it_and_records_why(self, qt_app, views):
-        _compose, publish = views
-        self.recently_posted(qt_app)
-        publish.publish()
-        assert publish.post_anyway() is True
-        (task,) = qt_app.task_repo.list_recent()
-        assert task.overrides == frozenset({"cooldown"})
-        assert publish.override_card.isHidden()
-        assert not publish.go_button.isHidden()
-
-    def test_cancel_posts_nothing(self, qt_app, views):
-        _compose, publish = views
-        self.recently_posted(qt_app)
-        publish.publish()
-        publish.keep_rules_button.click()
-        assert qt_app.task_repo.list_recent() == []
-        assert publish.override_card.isHidden()
-
-    def test_changing_mode_withdraws_the_offer(self, qt_app, views):
-        """It was made for one moment; it says nothing about another."""
-        _compose, publish = views
-        self.recently_posted(qt_app)
-        publish.publish()
-        publish.set_mode(ONCE)
-        assert publish.override_card.isHidden()
-
-    def test_a_batch_inside_the_rules_needs_no_second_click(self, qt_app, views):
-        _compose, publish = views
         assert publish.publish() is True
         (task,) = qt_app.task_repo.list_recent()
-        assert task.overrides == frozenset()
-        assert publish.override_card.isHidden()
+        assert len(qt_app.task_repo.targets_for(task.id)) == 3
+        assert qt_app.toast_label.text() == "Queued for 3 groups."
 
-    def test_what_is_not_a_rule_is_still_just_refused(self, qt_app, views):
-        """No groups is not something to post anyway."""
+    def test_there_is_no_post_anyway_panel(self, views):
         _compose, publish = views
-        qt_app.selected_groups.clear()
-        assert publish.publish() is False
-        assert publish.override_card.isHidden()
+        assert not hasattr(publish, "override_card")
+        assert not hasattr(publish, "post_anyway")
 
-    def test_the_offer_is_not_the_screens_accent_button(self, views):
-        """One filled button per screen, and it is the next step, not this."""
+    def test_the_same_text_again_the_same_day_is_queued(self, qt_app, views):
         _compose, publish = views
-        assert publish.anyway_button.objectName() == "Danger"
+        assert publish.publish() is True
+        assert publish.publish() is True
+        assert len(qt_app.task_repo.list_recent()) == 2
 
-    def test_a_repeat_three_hours_apart_is_caught_and_can_be_forced(self, qt_app, views):
+    def test_the_old_daily_limit_refuses_nothing(self, qt_app, views):
+        _compose, publish = views
+        qt_app.settings_repo.set("daily_cap", 1)
+        assert publish.publish() is True
+
+    def test_a_repeat_three_hours_apart_on_one_wording_is_created(self, qt_app, views):
         _compose, publish = views
         publish.set_mode(REPEAT)
         publish.add_time("12:00")  # beside the default 09:00
-        assert publish.publish() is False
-        assert "3h apart" in publish.override_list.text()
-        assert qt_app.schedule_repo.list() == []
-        assert publish.post_anyway() is True
-        (schedule,) = qt_app.schedule_repo.list()
-        assert "cooldown" in schedule.overrides
-
-    def test_a_repeat_inside_the_rules_is_created_straight_away(self, qt_app, views):
-        _compose, publish = views
-        publish.set_mode(REPEAT)
-        publish._time_rows[0].setTime(publish._time_rows[0].time().fromString("10:00", "HH:mm"))
-        publish.add_time("20:00")
-        # Two runs a day need two wordings: the same text goes once a day.
-        publish.add_wording("Second wording")
         assert publish.publish() is True
         (schedule,) = qt_app.schedule_repo.list()
-        assert schedule.overrides == frozenset()
+        assert schedule.times == ["09:00", "12:00"]
+        assert schedule.bodies == [BODY]
 
-    def test_the_summary_says_so_before_the_button_is_pressed(self, views):
+    def test_what_is_not_a_rule_is_still_refused(self, qt_app, views):
+        """No groups is not a rule: there is nothing to post to."""
         _compose, publish = views
-        publish.set_mode(REPEAT)
-        publish.add_time("12:00")
-        assert "3h apart" in publish.summary.text()
-
-    def test_the_panel_says_what_post_anyway_does(self, qt_app, views):
-        _compose, publish = views
-        self.recently_posted(qt_app)
-        publish.publish()
-        effect = publish.override_effect.text()
-        assert "goes out despite these" in effect
-        # The one thing people expect "anyway" to skip, and it does not.
-        assert "10-25 minute gap" in effect
-
-    def test_for_a_repeat_it_says_every_run_goes_out(self, qt_app, views):
-        """The screenshot: the list said the 11:00 run "would be skipped",
-        directly above the button whose whole job is to post it."""
-        _compose, publish = views
-        publish.set_mode(REPEAT)
-        publish.add_time("11:00")
-        publish.publish()
-        assert "every run goes out" in publish.override_effect.text()
-        assert "2h apart" in publish.override_list.text()
-        assert "skip" not in publish.override_list.text().lower()
-        assert "would" not in publish.override_list.text().lower()
-
-    def test_editing_withdraws_the_offer(self, qt_app, views):
-        """The panel described the post as it was; after an edit it would be
-        offering to break rules for a post that no longer exists."""
-        _compose, publish = views
-        publish.set_mode(REPEAT)
-        publish.add_wording("Second wording")  # two runs a day need two
-        publish.add_time("12:00")
-        publish.publish()
-        assert not publish.override_card.isHidden()
-        publish._time_rows[1].setTime(publish._time_rows[1].time().fromString("21:00", "HH:mm"))
-        assert publish.override_card.isHidden()
-        assert not publish.go_button.isHidden()
-        assert publish.publish() is True  # 09:00 and 21:00 break nothing
-
-
-class TestTheDailyLimitIsJudgedOnTheDayItPosts:
-    """Today's posts used to count against a batch scheduled for next week,
-    which was refused as "27 posts today" -- neither true nor today."""
-
-    @pytest.fixture
-    def today_is_full(self, qt_app, monkeypatch):
-        qt_app.settings_repo.set("daily_cap", 3)
-        start_of_today = clock.start_of_local_day(utcnow())
-        monkeypatch.setattr(
-            qt_app.task_repo,
-            "posted_count_since",
-            lambda since: 3 if since <= start_of_today else 0,
-        )
-
-    def test_a_full_today_does_not_refuse_another_day(self, qt_app, views, today_is_full):
-        _compose, publish = views
-        publish.set_mode(ONCE)
-        publish.schedule_entry.setDateTime(publish.schedule_entry.dateTime().addDays(2))
-        assert publish.publish() is True
-        assert publish.override_card.isHidden()
-
-    def test_a_full_today_still_counts_today(self, qt_app, views, today_is_full):
-        _compose, publish = views
+        qt_app.selected_groups.clear()
         assert publish.publish() is False
-        assert "posts today, over the daily limit of 3" in publish.override_list.text()
+        assert qt_app.task_repo.list_recent() == []
 
 
 class TestTheRotationNote:
@@ -663,13 +546,14 @@ class TestPicturesOnly:
         assert qt_app.task_repo.list_recent() == []
         assert "text or a picture" in said[-1]
 
-    def test_repeat_is_refused_and_says_why(self, qt_app, pictures):
-        """Rotating wordings is what stops each run being the same post."""
-        _compose, publish, said = pictures
+    def test_repeat_is_created_too(self, qt_app, pictures):
+        """Pictures alone may repeat (the user's choice, 2026-10-18)."""
+        _compose, publish, _said = pictures
         publish.set_mode(REPEAT)
-        assert publish.publish() is False
-        assert qt_app.schedule_repo.list() == []
-        assert "needs some text as well as pictures" in said[-1]
+        assert publish.publish() is True
+        (schedule,) = qt_app.schedule_repo.list()
+        assert schedule.bodies == []
+        assert schedule.media_paths == [str(self.PICTURE)]
 
     def test_the_summary_says_pictures_only(self, pictures):
         _compose, publish, _said = pictures
@@ -677,17 +561,15 @@ class TestPicturesOnly:
         assert publish.preview_note.text() == "Pictures only (1 picture, no text)."
 
 
-class TestOnceADay:
-    """The same words may go to a group once a day (the user's choice,
-    2026-10-07). A repeating post needs as many wordings as it has runs a day."""
+class TestOneWordingIsEnough:
+    """Two runs a day on one wording needed a second wording until 2026-10-18."""
 
-    def test_two_runs_a_day_on_one_wording_is_refused(self, qt_app, views):
+    def test_two_runs_a_day_on_one_wording_is_created(self, qt_app, views):
         _compose, publish = views
         publish.set_mode(REPEAT)
         publish._time_rows[0].setTime(publish._time_rows[0].time().fromString("10:00", "HH:mm"))
         publish.add_time("20:00")
-        assert publish.publish() is False
-        assert "only 1 different wording" in publish.override_list.text()
+        assert publish.publish() is True
 
     def test_one_run_a_day_on_one_wording_is_fine(self, qt_app, views):
         _compose, publish = views

@@ -167,12 +167,13 @@ class TestClicking:
 
 
 class TestGroupGap:
-    def test_the_gap_is_inside_the_ten_to_twentyfive_minute_band(self):
-        """README section 7: this pacing is the point, not a performance bug."""
+    def test_the_gap_is_inside_the_two_to_four_minute_band(self):
+        """Lowered from 10-25 minutes on 2026-10-18, for one listing to 40-80
+        groups. Guides put the floor at 2-3 minutes: closer reads as a bot."""
         human, _ = make()
         for _ in range(200):
             gap = human.gap_between_groups()
-            assert 600 <= gap <= 1500
+            assert 120 <= gap <= 240
 
     def test_gaps_vary(self):
         human, _ = make()

@@ -28,7 +28,6 @@ from fbposter.db.models import (
 )
 from fbposter.qtui.views.dashboard import (
     DayBars,
-    Meter,
     OutcomeBar,
     target_label,
     task_label,
@@ -97,15 +96,15 @@ class TestTheSidebar:
 
 
 class TestTheTiles:
-    def test_today_and_the_daily_limit(self, qt_app, groups, view):
-        qt_app.settings_repo.set("daily_cap", 4)
+    def test_today(self, qt_app, groups, view):
+        """No "of 25 allowed today": there is no daily limit (2026-10-18)."""
         post(qt_app, groups[0])
         post(qt_app, groups[1], body="Another wording")
         view.refresh()
         tile = view.tiles["today"]
         assert tile.value.text() == "2"
-        assert tile.detail.text() == "of 4 allowed today"
-        assert view.meter.share == 0.5
+        assert tile.detail.text() == "Since midnight, Israel time"
+        assert not hasattr(view, "meter")
 
     def test_all_time_includes_what_was_pruned(self, qt_app, groups, view):
         post(qt_app, groups[0])
@@ -173,11 +172,11 @@ class TestTheGroupTable:
         assert label.text().endswith("…")
         assert not label.wordWrap()
 
-    def test_a_group_in_its_cooldown_says_when_it_is_free(self, qt_app, groups, view):
+    def test_there_is_no_cooldown_column(self, qt_app, groups, view):
         qt_app.group_repo.mark_posted(groups[0].id, utcnow() - timedelta(hours=1))
         shown = texts(view)
-        assert any(text.startswith("From ") for text in shown)
-        assert "Now" in shown  # the other group
+        assert "Can post" not in shown
+        assert not any(text.startswith("From ") for text in shown)
 
 
 class TestGoingOut:
@@ -209,13 +208,18 @@ class TestGoingOut:
 
     def test_a_waiting_batch_says_why(self, qt_app, groups, view):
         task = qt_app.task_repo.create(BODY, [(groups[0].id, BODY)])
-        note = "Waiting: it is outside the posting hours (08:00-23:00)."
+        note = "Waiting: Chrome is not reachable."
         qt_app.task_repo.set_resume_at(task.id, utcnow() + timedelta(hours=8), note=note)
         assert note in texts(view)
 
-    def test_a_post_anyway_batch_says_which_rules(self, qt_app, groups, view):
-        qt_app.task_repo.create(BODY, [(groups[0].id, BODY)], overrides={"cooldown"})
-        assert any(text.startswith("Post anyway: allowed to break") for text in texts(view))
+    def test_a_batch_from_the_post_anyway_days_says_nothing_about_it(
+        self, qt_app, groups, view
+    ):
+        task = qt_app.task_repo.create(BODY, [(groups[0].id, BODY)])
+        qt_app.db.write(
+            "UPDATE tasks SET overrides = '[\"cooldown\"]' WHERE id = ?", (task.id,)
+        )
+        assert not any("Post anyway" in text for text in texts(view))
 
     def test_a_pictures_only_batch_says_so_rather_than_nothing(self, qt_app, groups, view):
         qt_app.task_repo.create("", [(groups[0].id, "")], media_paths=["a.jpg", "b.jpg"])
@@ -328,18 +332,7 @@ class TestTheDrawnParts:
             outcome = OutcomeBar()
             outcome.set_counts({TARGET_DONE: 5, TARGET_FAILED: 1})
             outcome.resize(700, 14)
-            meter = Meter()
-            meter.set_share(1.0)
-            meter.resize(200, 6)
-            for widget in (bars, outcome, meter):
+            for widget in (bars, outcome):
                 assert not widget.grab().isNull()
-            assert meter.colour() == "DANGER"
         finally:
             theme.activate(dark=False)
-
-    def test_the_meter_warns_near_the_limit(self, qt_application):
-        meter = Meter()
-        meter.set_share(0.5)
-        assert meter.colour() == "ACCENT"
-        meter.set_share(0.85)
-        assert meter.colour() == "WARNING"

@@ -303,8 +303,8 @@ class TestOutcomesArePersisted:
 class TestDryRunOutcomes:
     """A poster that published nothing must not be recorded as if it had.
 
-    Marking a rehearsal 'done' would start the group's real cooldown and count
-    against the real daily cap.
+    Marking a rehearsal 'done' would count a post that never happened, on the
+    Dashboard and as the group's last post.
     """
 
     def test_a_dry_run_is_not_recorded_as_posted(self, db, repos):
@@ -324,7 +324,7 @@ class TestDryRunOutcomes:
 
         assert tasks.targets_for(task.id)[0].state == TARGET_SKIPPED
 
-    def test_a_dry_run_does_not_start_a_cooldown(self, db, repos):
+    def test_a_dry_run_is_not_the_groups_last_post(self, db, repos):
         groups, tasks, _ = repos
         one, _ = add_groups(groups)
         tasks.create(BODY, [(one.id, BODY)])
@@ -412,9 +412,23 @@ class TestCancellation:
         assert tasks.get(task.id).state == TASK_CANCELLED
 
 
-class TestPostingWindow:
-    def test_a_batch_crossing_the_close_defers_to_the_morning(self, db, repos):
-        """The reason this exists: never post at 01:00."""
+class TestThereAreNoPostingRules:
+    """The user's choice, 2026-10-18: no daily limit, no cooldown, no posting
+    hours and no repeated-text rule. Whatever is queued goes out, one group at
+    a time with the gap between them; the advice is on Posting tips."""
+
+    def test_it_posts_at_one_in_the_morning(self, db, repos):
+        groups, tasks, _ = repos
+        (one,) = add_groups(groups, 1)
+        task = tasks.create(BODY, [(one.id, BODY)])
+
+        poster = FakePoster()
+        make_worker(db, poster, Clock(clock.parse_local("2026-08-11 01:00"))).run_once()
+
+        assert len(poster.requests) == 1
+        assert tasks.targets_for(task.id)[0].state == TARGET_DONE
+
+    def test_a_batch_crossing_23_00_carries_on(self, db, repos):
         groups, tasks, _ = repos
         one, two = add_groups(groups)
         task = tasks.create(BODY, [(one.id, "a"), (two.id, "b")])
@@ -422,34 +436,55 @@ class TestPostingWindow:
         ticker = Clock(clock.parse_local("2026-08-10 22:50"))
         poster = FakePoster()
         worker = make_worker(db, poster, ticker)
-
-        worker.run_once()  # 22:50 -- inside the window, posts
-        assert len(poster.requests) == 1
-
-        ticker.advance(minutes=30)  # 23:20 -- window shut
         worker.run_once()
-        assert len(poster.requests) == 1, "posted outside the window"
-
-        resume = tasks.get(task.id).resume_at
-        assert clock.to_local(resume).hour == 8
-        assert clock.to_local(resume).day == 11
-
-    def test_it_resumes_once_the_window_reopens(self, db, repos):
-        groups, tasks, _ = repos
-        one, two = add_groups(groups)
-        tasks.create(BODY, [(one.id, "a"), (two.id, "b")])
-
-        ticker = Clock(clock.parse_local("2026-08-10 22:50"))
-        poster = FakePoster()
-        worker = make_worker(db, poster, ticker)
-
-        worker.run_once()
-        ticker.advance(minutes=30)
-        worker.run_once()  # defers
-        ticker.now = clock.parse_local("2026-08-11 08:30")
+        ticker.advance(minutes=30)  # 23:20
         worker.run_once()
 
         assert len(poster.requests) == 2
+        assert tasks.get(task.id).error == ""
+
+    def test_the_old_daily_limit_holds_nothing_back(self, db, repos):
+        groups, tasks, settings = repos
+        settings.set("daily_cap", 1)
+        one, two = add_groups(groups)
+        tasks.create(BODY, [(one.id, "a"), (two.id, "b")])
+
+        poster = FakePoster()
+        ticker = Clock()
+        worker = make_worker(db, poster, ticker)
+        worker.run_once()
+        ticker.advance(minutes=30)
+        worker.run_once()
+
+        assert len(poster.requests) == 2
+
+    def test_a_group_posted_to_an_hour_ago_is_posted_to_again(self, db, repos):
+        groups, tasks, _ = repos
+        one, two = add_groups(groups)
+        ticker = Clock()
+        groups.mark_posted(one.id, ticker.now - timedelta(hours=1))
+        task = tasks.create(BODY, [(one.id, "a"), (two.id, "b")])
+
+        poster = FakePoster()
+        worker = make_worker(db, poster, ticker)
+        worker.run_once()
+        ticker.advance(minutes=30)
+        worker.run_once()
+
+        assert [t.state for t in tasks.targets_for(task.id)] == [TARGET_DONE, TARGET_DONE]
+        assert poster.group_urls == [one.url, two.url]
+
+    def test_a_batch_once_allowed_past_a_rule_reads_like_any_other(self, db, repos):
+        """A batch queued with "Post anyway" before it went still has the old
+        `overrides` column filled in. Nothing reads it."""
+        groups, tasks, _ = repos
+        (one,) = add_groups(groups, 1)
+        task = tasks.create(BODY, [(one.id, BODY)])
+        db.write("UPDATE tasks SET overrides = '[\"cooldown\"]' WHERE id = ?", (task.id,))
+
+        poster = FakePoster()
+        make_worker(db, poster).run_once()
+        assert len(poster.requests) == 1
 
 
 class TestMissedSlots:
@@ -498,42 +533,65 @@ class TestMissedSlots:
         assert tasks.get(task.id).state == TASK_DONE
 
 
-class TestDailyCap:
-    def test_the_cap_defers_the_rest_of_the_batch(self, db, repos):
-        groups, tasks, settings = repos
-        settings.set("daily_cap", 1)
-        one, two = add_groups(groups)
-        task = tasks.create(BODY, [(one.id, "a"), (two.id, "b")])
+class TestABatchWaitingItsTurnIsNotMissed:
+    """One listing to 80 groups takes hours. A batch set for a time in the
+    middle of that waits behind it, and used to count as missed two hours in,
+    as if the computer had been asleep, and be thrown away."""
 
-        poster = FakePoster()
-        ticker = Clock()
-        worker = make_worker(db, poster, ticker)
+    def long_batch(self, groups, tasks, count=4):
+        made = add_groups(groups, count)
+        return tasks.create(BODY, [(g.id, f"words {i}") for i, g in enumerate(made)])
 
-        worker.run_once()
-        ticker.advance(minutes=30)
-        worker.run_once()
-
-        assert len(poster.requests) == 1
-        assert tasks.get(task.id).resume_at is not None
-
-
-class TestCooldown:
-    def test_a_group_in_cooldown_is_skipped_not_stalled(self, db, repos):
+    def test_it_goes_out_after_the_long_one(self, db, repos):
         groups, tasks, _ = repos
-        one, two = add_groups(groups)
+        long = self.long_batch(groups, tasks)
+        late = groups.add_from_url("https://www.facebook.com/groups/later")
         ticker = Clock()
-        groups.mark_posted(one.id, ticker.now - timedelta(hours=1))
-        task = tasks.create(BODY, [(one.id, "a"), (two.id, "b")])
+        waiting = tasks.create(
+            "Later words", [(late.id, "Later words")],
+            scheduled_for=ticker.now + timedelta(minutes=10),
+        )
+        poster = FakePoster()
+        # An hour between groups: the long batch takes three hours.
+        worker = make_worker(db, poster, ticker, gap_seconds=(3600, 3600))
+
+        for _ in range(16):
+            drain(worker)
+            ticker.advance(minutes=20)
+
+        assert tasks.get(long.id).state == TASK_DONE
+        assert tasks.get(waiting.id).state == TASK_DONE, "thrown away as missed"
+        assert poster.group_urls[-1] == late.url
+
+    def test_it_is_stamped_the_moment_it_comes_due(self, db, repos):
+        groups, tasks, _ = repos
+        self.long_batch(groups, tasks)
+        late = groups.add_from_url("https://www.facebook.com/groups/later")
+        ticker = Clock()
+        when = ticker.now + timedelta(minutes=10)
+        waiting = tasks.create("Later words", [(late.id, "Later words")], scheduled_for=when)
+        worker = make_worker(db, FakePoster(), ticker, gap_seconds=(3600, 3600))
+
+        worker.run_once()
+        assert tasks.get(waiting.id).resume_at is None, "stamped before it was due"
+        ticker.advance(minutes=15)
+        worker.run_once()
+        assert tasks.get(waiting.id).resume_at == when
+
+    def test_one_first_seen_hours_late_is_still_missed(self, db, repos):
+        """The computer was asleep: that is the case the rule is for."""
+        groups, tasks, _ = repos
+        (one,) = add_groups(groups, 1)
+        ticker = Clock()
+        task = tasks.create(
+            BODY, [(one.id, BODY)], scheduled_for=ticker.now - timedelta(hours=3)
+        )
 
         poster = FakePoster()
-        worker = make_worker(db, poster, ticker)
-        worker.run_once()  # skips group one
-        worker.run_once()  # posts group two
+        make_worker(db, poster, ticker).run_once()
 
-        states = [t.state for t in tasks.targets_for(task.id)]
-        assert states[0] == TARGET_SKIPPED
-        assert states[1] == TARGET_DONE
-        assert poster.group_urls == [two.url]
+        assert tasks.get(task.id).state == TASK_MISSED
+        assert poster.requests == []
 
 
 class TestCrashRecovery:
@@ -630,41 +688,37 @@ class TestSleepInhibition:
         worker._sync_power()
         assert worker.blocker.held, "machine could sleep during the inter-group gap"
 
-    def test_a_batch_deferred_to_the_morning_lets_the_machine_sleep(self, db, repos):
-        """It stays `running` all night with resume_at set to 08:00. Counting
-        that as work in progress held the machine awake for nine hours of
-        deliberate waiting -- on a laptop, the whole night's battery."""
+    def test_a_batch_with_hours_to_wait_lets_the_machine_sleep(self, db, repos):
+        """A batch waiting hours for its next group stays `running`. Counting
+        that as work in progress held the machine awake for nothing -- on a
+        laptop, the whole night's battery."""
         groups, tasks, _ = repos
         one, two = add_groups(groups)
         task = tasks.create(BODY, [(one.id, "a"), (two.id, "b")])
 
-        ticker = Clock(clock.parse_local("2026-08-10 22:50"))
+        ticker = Clock()
         worker = make_worker(db, FakePoster(), ticker)
-        worker.run_once()   # posts to the first group
-        ticker.advance(minutes=30)
-        worker.run_once()   # window shut: defers to the morning
+        worker.run_once()
+        tasks.set_resume_at(task.id, ticker.now + timedelta(hours=9))
 
-        stored = tasks.get(task.id)
-        assert stored.state == TASK_RUNNING
-        assert clock.to_local(stored.resume_at).hour == 8
-
+        assert tasks.get(task.id).state == TASK_RUNNING
         worker._sync_power()
-        assert not worker.blocker.held, "held awake all night for nothing"
+        assert not worker.blocker.held, "held awake for nothing"
 
-    def test_it_takes_hold_again_when_the_window_reopens(self, db, repos):
+    def test_it_takes_hold_again_as_the_wait_ends(self, db, repos):
         groups, tasks, _ = repos
         one, two = add_groups(groups)
-        tasks.create(BODY, [(one.id, "a"), (two.id, "b")])
+        task = tasks.create(BODY, [(one.id, "a"), (two.id, "b")])
 
-        ticker = Clock(clock.parse_local("2026-08-10 22:50"))
+        ticker = Clock()
         worker = make_worker(db, FakePoster(), ticker)
         worker.run_once()
-        ticker.advance(minutes=30)
-        worker.run_once()
+        resume = ticker.now + timedelta(hours=9)
+        tasks.set_resume_at(task.id, resume)
         worker._sync_power()
         assert not worker.blocker.held
 
-        ticker.now = clock.parse_local("2026-08-11 07:45")  # inside the horizon
+        ticker.now = resume - timedelta(minutes=15)  # inside the horizon
         worker._sync_power()
         assert worker.blocker.held
 
@@ -1176,7 +1230,7 @@ class TestAGroupThatHoldsPostsForApproval:
         drain(worker)
         assert tasks.targets_for(task.id)[0].state != TARGET_FAILED
 
-    def test_the_cooldown_starts(self, db, repos):
+    def test_it_is_the_groups_last_post(self, db, repos):
         """The words have left the building even if they are not on screen."""
         groups, tasks, _ = repos
         one, _ = add_groups(groups)
@@ -1185,9 +1239,9 @@ class TestAGroupThatHoldsPostsForApproval:
         drain(make_worker(db, self.pending_poster(one.url)))
         assert groups.get(one.id).last_posted_at is not None
 
-    def test_the_repeat_guard_remembers_the_wording(self, db, repos):
-        """The dangerous one. Recorded as failed, the guard would be blind and
-        the same text could be sent again -- two live posts once approved."""
+    def test_the_wording_is_remembered(self, db, repos):
+        """Recorded as failed, the worker would not know these words are
+        already waiting in that group (`sent_before`)."""
         groups, tasks, _ = repos
         one, _ = add_groups(groups)
         tasks.create(BODY, [(one.id, BODY)])
@@ -1195,7 +1249,7 @@ class TestAGroupThatHoldsPostsForApproval:
         drain(make_worker(db, self.pending_poster(one.url)))
         assert BODY in groups.recent_bodies(one.id)
 
-    def test_it_counts_towards_the_daily_cap(self, db, repos):
+    def test_it_counts_as_sent_today(self, db, repos):
         groups, tasks, _ = repos
         one, _ = add_groups(groups)
         tasks.create(BODY, [(one.id, BODY)])
@@ -1235,7 +1289,7 @@ class TestResolvingAPostThatWasAwaitingApproval:
         assert BODY in groups.recent_bodies(one.id)
 
     def test_declining_releases_the_wording(self, db, repos):
-        """The bug: nothing was published, so the guard must let it go."""
+        """Nothing was published, so the words are not in the group's feed."""
         groups, tasks, _ = repos
         one, _task, target = self.pending_target(groups, tasks)
 
@@ -1247,9 +1301,10 @@ class TestResolvingAPostThatWasAwaitingApproval:
         one, _task, target = self.pending_target(groups, tasks)
         tasks.resolve_pending(target.id, approved=False)
 
-        from fbposter import guards
+        from fbposter.text import normalise
 
-        assert guards.check_repeat_text(BODY, groups.recent_bodies(one.id)) is None
+        sent = [normalise(body) for body in groups.recent_bodies(one.id)]
+        assert normalise(BODY) not in sent, "a declined post still counts as in the feed"
 
     def test_approving_keeps_it_held(self, db, repos):
         """It is live now, so sending the same words again would be a repeat."""
@@ -1278,7 +1333,7 @@ class TestResolvingAPostThatWasAwaitingApproval:
         assert tasks.resolve_pending(target.id, approved=False) is False
         assert tasks.targets_for(task.id)[0].state == TARGET_DONE
 
-    def test_a_declined_post_does_not_count_towards_the_daily_cap(self, db, repos):
+    def test_a_declined_post_does_not_count_as_sent_today(self, db, repos):
         groups, tasks, _ = repos
         _one, _task, target = self.pending_target(groups, tasks)
         before = tasks.posted_count_since(clock.start_of_local_day(NOON))
@@ -1679,7 +1734,7 @@ class TestAGroupTakenOffTheListIsNotPostedTo:
 
 
 class TestThePacingIsGlobal:
-    """The 10-25 minute gap has to hold between *all* posts, not within one
+    """The gap between posts has to hold between *all* posts, not within one
     batch.
 
     `tasks.resume_at` spaces one batch's own groups, and that is all it can do:
@@ -1752,18 +1807,20 @@ class TestThePacingIsGlobal:
         assert timedelta(minutes=10) <= due - ticker.now <= timedelta(minutes=25)
 
     def test_a_skipped_group_costs_nobody_a_wait(self, db, repos):
-        """Skipping is not posting. A batch of groups all inside their cooldown
-        must not lock the account out of posting for another twenty minutes."""
+        """Skipping is not posting. A group taken off the list before its turn
+        must not lock the account out of posting for the length of a gap."""
         groups, tasks, _ = repos
         one, two = add_groups(groups)
-        groups.mark_posted(one.id)  # straight into its cooldown
         tasks.create(BODY, [(one.id, BODY)])
         tasks.create("elsewhere", [(two.id, "elsewhere")])
+        # Archived behind GroupRepo.remove's back, so the worker's own check
+        # is the one that skips it.
+        db.write("UPDATE groups SET archived = 1 WHERE id = ?", (one.id,))
 
         poster = FakePoster()
         worker = make_worker(db, poster, Clock())
 
-        worker.run_once()   # skips the group in cooldown
+        worker.run_once()   # skips the removed group
         worker.run_once()   # finishes that batch
         worker.run_once()   # the other batch is free to post
 
@@ -1771,23 +1828,15 @@ class TestThePacingIsGlobal:
         assert poster.group_urls == [two.url]
 
 
-class TestTheWordingIsCheckedAgainAtPostingTime:
-    """The repeat guard was only ever applied at the door.
-
-    Queue a post now and schedule the same advert for tomorrow: both passed the
-    check before either had gone out, and the same words reached the same group
-    twice. The cooldown hides the near case and nothing covered the far one --
-    and repetitive content, not post count, is what gets accounts restricted.
-    """
+class TestTheSameWordsGoOutAgain:
+    """The repeated-text rule used to skip a group that had these words that
+    day. There is no such rule now (the user's choice, 2026-10-18): the words
+    go out, and the worker tells the poster they went before (`sent_before`),
+    so finding them in the feed is not taken as proof of the new post."""
 
     def _already_sent(self, repos, hours_ago=9):
-        """A group that had BODY earlier today, with its cooldown behind it.
-
-        The history is seeded rather than posted through the worker, so the
-        cooldown is behind it and the wording is the only rule in play. Nine
-        hours before noon is 03:00 the same Israel day: the same words may go
-        to a group once a day.
-        """
+        """A group that had BODY earlier, seeded rather than posted through
+        the worker. Nine hours before noon is 03:00 the same Israel day."""
         groups, tasks, _ = repos
         one, two = add_groups(groups)
         sent_at = NOON - timedelta(hours=hours_ago)
@@ -1802,7 +1851,7 @@ class TestTheWordingIsCheckedAgainAtPostingTime:
         groups.mark_posted(one.id, when=sent_at)
         return one, two
 
-    def test_the_same_words_do_not_reach_the_same_group_twice(self, db, repos):
+    def test_the_same_words_reach_the_same_group_twice_in_a_day(self, db, repos):
         _, tasks, _ = repos
         one, _ = self._already_sent(repos)
         again = tasks.create(BODY, [(one.id, BODY)])
@@ -1810,13 +1859,11 @@ class TestTheWordingIsCheckedAgainAtPostingTime:
         poster = FakePoster()
         make_worker(db, poster, Clock()).run_once()
 
-        target = tasks.targets_for(again.id)[0]
-        assert target.state == TARGET_SKIPPED
-        assert "already sent" in target.error and "today" in target.error
-        assert poster.requests == [], "the same text went out to the group twice"
+        assert tasks.targets_for(again.id)[0].state == TARGET_DONE
+        assert len(poster.requests) == 1
+        assert poster.requests[0].sent_before is True
 
     def test_the_same_words_go_again_the_next_day(self, db, repos):
-        """Once a day, not never again: the user's choice, 2026-10-07."""
         _, tasks, _ = repos
         one, _ = self._already_sent(repos, hours_ago=20)  # 16:00 yesterday
         again = tasks.create(BODY, [(one.id, BODY)])
@@ -1827,8 +1874,7 @@ class TestTheWordingIsCheckedAgainAtPostingTime:
         assert tasks.targets_for(again.id)[0].state == TARGET_DONE
         assert len(poster.requests) == 1
 
-    def test_a_post_that_may_have_gone_out_counts_for_the_day(self, db, repos):
-        """If it did go out, a second copy the same day is a duplicate."""
+    def test_a_post_that_may_have_gone_out_holds_nothing_back(self, db, repos):
         groups, tasks, _ = repos
         one, _ = add_groups(groups)
         first = tasks.create(BODY, [(one.id, BODY)])
@@ -1837,14 +1883,12 @@ class TestTheWordingIsCheckedAgainAtPostingTime:
         make_worker(db, poster, ticker).run_once()
         assert tasks.targets_for(first.id)[0].state == TARGET_UNCONFIRMED
 
-        ticker.advance(hours=9)  # past the cooldown, still the same day
+        ticker.advance(minutes=30)
         again = tasks.create(BODY, [(one.id, BODY)])
         make_worker(db, FakePoster(), ticker).run_once()
-        assert tasks.targets_for(again.id)[0].state == TARGET_SKIPPED
+        assert tasks.targets_for(again.id)[0].state == TARGET_DONE
 
-    def test_a_reworded_post_goes_out_normally(self, db, repos):
-        """The guard must not creep. Posting to a group often is fine; it is
-        repeating yourself that is not."""
+    def test_a_reworded_post_goes_out_and_is_not_marked_as_sent_before(self, db, repos):
         _, tasks, _ = repos
         one, _ = self._already_sent(repos)
         reworded = "A different advert entirely"
@@ -1854,37 +1898,22 @@ class TestTheWordingIsCheckedAgainAtPostingTime:
         make_worker(db, poster, Clock()).run_once()
 
         assert tasks.targets_for(fresh.id)[0].state == TARGET_DONE
-        assert len(poster.requests) == 1
+        assert poster.requests[0].sent_before is False
 
-    def test_the_rest_of_the_batch_still_goes_out(self, db, repos):
-        """One group, not the batch -- the same treatment a cooldown gets.
-        Halting over a wording that can simply be reworded would cost the user
-        posts they are entitled to make."""
+    def test_a_whole_batch_of_repeats_goes_out(self, db, repos):
         _, tasks, _ = repos
         one, two = self._already_sent(repos)
         mixed = tasks.create(BODY, [(one.id, BODY), (two.id, BODY)])
 
         ticker = Clock()
         worker = make_worker(db, FakePoster(), ticker)
-        worker.run_once()          # the repeat is skipped
-        ticker.advance(minutes=26)  # the gap the skip did not cost
+        worker.run_once()
+        ticker.advance(minutes=26)
         drain(worker)
 
         states = {t.group_id: t.state for t in tasks.targets_for(mixed.id)}
-        assert states[one.id] == TARGET_SKIPPED
-        assert states[two.id] == TARGET_DONE
-
-    def test_it_is_said_out_loud(self, db, repos):
-        """Silently dropping a group would leave the user believing a post
-        went out that never did."""
-        _, tasks, _ = repos
-        one, _ = self._already_sent(repos)
-        tasks.create(BODY, [(one.id, BODY)])
-
-        worker = make_worker(db, FakePoster(), Clock())
-        worker.run_once()
-
-        assert "skipped" in kinds(worker)
+        assert states == {one.id: TARGET_DONE, two.id: TARGET_DONE}
+        assert "skipped" not in kinds(worker)
 
 
 class TestRecoveryLooksTwiceBeforeSendingAgain:
@@ -1925,10 +1954,9 @@ class TestRecoveryLooksTwiceBeforeSendingAgain:
         drain(worker)
         assert poster.requests == [], "posted again over a post awaiting an admin"
 
-    def test_a_held_post_starts_the_cooldown_like_any_other(self, db, repos):
+    def test_a_held_post_is_the_groups_last_post_like_any_other(self, db, repos):
         """It has been submitted and appears the moment an admin approves it,
-        so it counts for every safety purpose -- exactly as a live pending
-        post does."""
+        so it counts as sent -- exactly as a live pending post does."""
         groups, _, _ = repos
         _, group, _, _ = self._recovered_with(db, repos, "pending")
         assert groups.get(group.id).last_posted_at is not None
@@ -2085,27 +2113,22 @@ class TestAStoppedPostSaysWhetherItWentOut:
 
 class TestAWaitingBatchSaysWhy:
     """A deferral used to be a toast and nothing else: the Queue showed a
-    batch sitting there with no reason once the toast had gone."""
-
-    def test_outside_posting_hours(self, db, repos):
-        groups, tasks, _ = repos
-        (one,) = add_groups(groups, 1)
-        task = tasks.create(BODY, [(one.id, BODY)])
-        ticker = Clock(clock.parse_local("2026-08-10 23:30"))
-        make_worker(db, FakePoster(), ticker).run_once()
-
-        note = tasks.get(task.id).error
-        assert note.startswith("Waiting:") and "posting hours" in note
+    batch sitting there with no reason once the toast had gone. Chrome being
+    away is the one wait left (the posting hours and the daily limit went on
+    2026-10-18)."""
 
     def test_the_note_goes_once_it_posts(self, db, repos):
         groups, tasks, _ = repos
         (one,) = add_groups(groups, 1)
         task = tasks.create(BODY, [(one.id, BODY)])
-        ticker = Clock(clock.parse_local("2026-08-10 23:30"))
-        worker = make_worker(db, FakePoster(), ticker)
+        poster = FakePoster(raises={one.url: ConnectionFailed("no Chrome")})
+        ticker = Clock()
+        worker = make_worker(db, poster, ticker)
         worker.run_once()
+        assert tasks.get(task.id).error
 
-        ticker.advance(hours=9)
+        poster.raises = {}
+        ticker.advance(minutes=10)
         drain(worker)
         assert tasks.get(task.id).error == ""
         assert tasks.targets_for(task.id)[0].state == TARGET_DONE
@@ -2122,7 +2145,9 @@ class TestAWaitingBatchSaysWhy:
         groups, tasks, _ = repos
         (one,) = add_groups(groups, 1)
         task = tasks.create(BODY, [(one.id, BODY)])
-        make_worker(db, FakePoster(), Clock(clock.parse_local("2026-08-10 23:30"))).run_once()
+        poster = FakePoster(raises={one.url: ConnectionFailed("no Chrome")})
+        make_worker(db, poster).run_once()
+        assert tasks.get(task.id).error
         tasks.cancel(task.id)
         assert tasks.get(task.id).error == ""
 
@@ -2247,8 +2272,8 @@ class TestTheWorkerKnowsWhenTheTextWentBefore:
 
 
 class TestAMightHavePostedCountsAsSent:
-    """The user's choice, 2026-10-07: if it did go out, the group must not get
-    another post minutes later, and it takes a place in the daily limit."""
+    """The user's choice, 2026-10-07: it may well be live, so it counts as
+    sent. It no longer holds anything back (2026-10-18)."""
 
     def stop(self, db, repos):
         groups, tasks, _ = repos
@@ -2259,7 +2284,7 @@ class TestAMightHavePostedCountsAsSent:
         make_worker(db, poster, ticker).run_once()
         return one, ticker
 
-    def test_it_starts_the_cooldown(self, db, repos):
+    def test_it_is_the_groups_last_post(self, db, repos):
         groups, tasks, _ = repos
         one, ticker = self.stop(db, repos)
         assert groups.get(one.id).last_posted_at == ticker.now
@@ -2267,11 +2292,9 @@ class TestAMightHavePostedCountsAsSent:
         ticker.advance(hours=1)
         later = tasks.create("Different words", [(one.id, "Different words")])
         make_worker(db, FakePoster(), ticker).run_once()
-        stored = tasks.targets_for(later.id)[0]
-        assert stored.state == TARGET_SKIPPED
-        assert "cooldown" in stored.error
+        assert tasks.targets_for(later.id)[0].state == TARGET_DONE
 
-    def test_it_counts_in_the_daily_limit(self, db, repos):
+    def test_it_counts_as_sent_today(self, db, repos):
         _groups, tasks, _ = repos
         _one, ticker = self.stop(db, repos)
         assert tasks.posted_count_since(clock.start_of_local_day(ticker.now)) == 1

@@ -1,4 +1,6 @@
-"""The Settings screen: pausing, the posting rules, the account, and this PC.
+"""The Settings screen: pausing, the account, and this PC.
+
+The posting-rules card went on 2026-10-18 with the rules themselves.
 
 Pausing used to be a card in the sidebar on every screen, and changing
 account a button beside "Check connection". Both moved here so the controls
@@ -13,14 +15,8 @@ import pytest
 from fbposter import login, onboarding
 from fbposter.always_on import Status
 from fbposter.db.repo import GroupRepo, SettingsRepo, TaskRepo
-from fbposter.db.schema import DEFAULT_SETTINGS
 from fbposter.qtui.app import FLOW_STEPS, NAV_ITEMS
 from fbposter.connection import ConnectionResult, ConnectionState
-
-DEFAULT_COOLDOWN = int(DEFAULT_SETTINGS["default_cooldown_hours"])
-DEFAULT_CAP = int(DEFAULT_SETTINGS["daily_cap"])
-DEFAULT_START = int(DEFAULT_SETTINGS["posting_window_start_hour"])
-DEFAULT_END = int(DEFAULT_SETTINGS["posting_window_end_hour"])
 
 
 class StubWorker:
@@ -226,126 +222,16 @@ class TestTheSchedulerCard:
         assert PostingWorker(qt_app.db, poster=object()).paused
 
 
-class TestThePostingRules:
-    def stored(self, app, key, default=0):
-        return SettingsRepo(app.db).get_int(key, default)
+class TestThereAreNoPostingRules:
+    def test_the_card_is_gone(self, settings):
+        from PySide6.QtWidgets import QLabel, QSpinBox
 
-    def test_it_shows_what_is_stored(self, qt_app):
-        SettingsRepo(qt_app.db).set_posting_rules(
-            start_hour=9, end_hour=21, daily_cap=12, cooldown_hours=10
-        )
-        qt_app.show_view("settings")
-        view = qt_app.views["settings"]
-        assert view.start_entry.value() == 9
-        assert view.end_entry.value() == 21
-        assert view.cap_entry.value() == 12
-        assert view.cooldown_entry.value() == 10
+        titles = [label.text() for label in settings.findChildren(QLabel)]
+        assert "Posting rules" not in titles
+        assert settings.findChildren(QSpinBox) == []
 
-    def test_hours_read_as_a_clock(self, settings):
-        assert settings.start_entry.text() == f"{DEFAULT_START:02d}:00"
-
-    def test_save_is_off_until_something_changes(self, settings):
-        assert not settings.save_button.isEnabled()
-        settings.cap_entry.setValue(DEFAULT_CAP - 5)
-        assert settings.save_button.isEnabled()
-
-    def test_saving_stores_all_three(self, qt_app, settings):
-        settings.start_entry.setValue(9)
-        settings.end_entry.setValue(22)
-        settings.cap_entry.setValue(15)
-        settings.cooldown_entry.setValue(10)
-        settings.save_button.click()
-
-        assert self.stored(qt_app, "posting_window_start_hour") == 9
-        assert self.stored(qt_app, "posting_window_end_hour") == 22
-        assert self.stored(qt_app, "daily_cap") == 15
-        assert self.stored(qt_app, "default_cooldown_hours") == 10
-        assert not settings.save_button.isEnabled()
-        assert qt_app.toast_label.text() == "Posting rules saved."
-
-    def test_the_cooldown_reaches_every_group(self, qt_app, settings):
-        """The worker reads each group's own copy, not the setting."""
-        groups = GroupRepo(qt_app.db)
-        one = groups.add_from_url("https://www.facebook.com/groups/one")
-        two = groups.add_from_url("https://www.facebook.com/groups/two")
-        settings.cooldown_entry.setValue(10)
-        settings.save_rules()
-        assert groups.get(one.id).cooldown_hours == 10
-        assert groups.get(two.id).cooldown_hours == 10
-
-    def test_the_same_start_and_end_cannot_be_saved(self, qt_app, settings):
-        """The clock reads it as "no posting hours", which would let a batch
-        post at 4am."""
-        settings.start_entry.setValue(10)
-        settings.end_entry.setValue(10)
-        assert not settings.save_button.isEnabled()
-        assert "same hour" in settings.hours_note.text()
-
-        settings.save_rules()
-        assert self.stored(qt_app, "posting_window_start_hour") == DEFAULT_START
-        assert self.stored(qt_app, "posting_window_end_hour") == DEFAULT_END
-
-    def test_hours_that_cross_midnight_are_allowed_and_said(self, qt_app, settings):
-        settings.start_entry.setValue(22)
-        settings.end_entry.setValue(6)
-        assert "next morning" in settings.hours_note.text()
-        settings.save_rules()
-        assert self.stored(qt_app, "posting_window_start_hour") == 22
-        assert self.stored(qt_app, "posting_window_end_hour") == 6
-
-    def test_night_hours_are_warned_about(self, settings):
-        assert settings.night_note.isHidden()
-        settings.start_entry.setValue(22)
-        settings.end_entry.setValue(6)
-        assert not settings.night_note.isHidden()
-
-    def test_the_hour_goes_round_midnight(self, settings):
-        settings.end_entry.setValue(23)
-        settings.end_entry.stepBy(1)
-        assert settings.end_entry.value() == 0
-
-    def test_the_limits_cannot_reach_nought(self, settings):
-        """Nought means "no limit" to the daily cap and "no cooldown" to the
-        cooldown: off, for good, for every group."""
-        settings.cap_entry.setValue(0)
-        settings.cooldown_entry.setValue(0)
-        assert settings.cap_entry.value() == 1
-        assert settings.cooldown_entry.value() == 1
-
-    def test_a_typed_value_is_read_without_leaving_the_field(self, qt_app, settings):
-        """A click does not take focus from the field, so Save must read the
-        text itself rather than wait for the field to commit it."""
-        settings.cap_entry.lineEdit().setText("7 posts")
-        settings.save_rules()
-        assert self.stored(qt_app, "daily_cap") == 7
-
-    def test_the_defaults_are_one_click_back(self, qt_app, settings):
-        assert settings.defaults_button.isHidden()
-        settings.cap_entry.setValue(3)
-        settings.cooldown_entry.setValue(3)
-        settings.save_rules()
-        assert not settings.defaults_button.isHidden()
-
-        settings.defaults_button.click()
-        assert self.stored(qt_app, "daily_cap") == DEFAULT_CAP
-        assert self.stored(qt_app, "default_cooldown_hours") == DEFAULT_COOLDOWN
-        assert settings.defaults_button.isHidden()
-
-    @pytest.mark.parametrize("field", ["start_entry", "end_entry", "cap_entry", "cooldown_entry"])
-    def test_the_mouse_wheel_changes_nothing(self, settings, field):
-        """Scrolling past a field must not change when or how often posts go out."""
-        from PySide6.QtCore import QPoint, QPointF, Qt
-        from PySide6.QtGui import QWheelEvent
-        from PySide6.QtWidgets import QApplication
-
-        entry = getattr(settings, field)
-        before = entry.value()
-        event = QWheelEvent(
-            QPointF(5, 5), QPointF(5, 5), QPoint(0, 0), QPoint(0, 120),
-            Qt.NoButton, Qt.NoModifier, Qt.NoScrollPhase, False,
-        )
-        QApplication.sendEvent(entry, event)
-        assert entry.value() == before
+    def test_the_subtitle_does_not_mention_rules(self, settings):
+        assert "rules" not in settings.subtitle
 
 
 class TestSwitchingAccount:

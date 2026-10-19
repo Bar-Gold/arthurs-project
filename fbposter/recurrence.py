@@ -3,12 +3,15 @@
 A recurrence is a *definition*: "these wordings, to these groups, at 09:00 and
 18:00 every day". It is not a queue entry. Each time one comes due the worker
 materialises an ordinary `tasks` row from it, so everything downstream -- the
-serial worker, the inter-group gap, crash recovery, the daily cap -- keeps
-working exactly as it already did, with no second code path.
+serial worker, the gap between posts, crash recovery -- keeps working exactly
+as it already did, with no second code path.
 
 Nothing here touches the database or the clock: callers pass `now` in and get a
-judgement back, the same arrangement as `guards.py`. That is what makes a
+judgement back, the same arrangement as `stats.py`. That is what makes a
 year's worth of firings testable in milliseconds.
+
+There are no posting rules here any more (the user's choice, 2026-10-18): as
+many times a day as the user picks, any number of wordings, pictures alone.
 
 Two things this module exists to get right:
 
@@ -29,21 +32,7 @@ from datetime import datetime, timedelta
 from typing import Sequence
 
 from . import clock
-from .guards import (
-    COOLDOWN,
-    DAILY_CAP,
-    POSTING_WINDOW,
-    REPEAT_TEXT,
-    Violation,
-    check_cooldown,
-    normalise,
-    span,
-)
-
-# A daily schedule may fire at most this many times. This is the user's own
-# ceiling ("two or three times a day"), kept here as a rail rather than only in
-# the UI so nothing can write a rule the safety story was not designed for.
-MAX_TIMES_PER_DAY = 3
+from .text import normalise
 
 # A day-of-week rule can skip at most six days, so eight covers every rule that
 # can be expressed with room to spare.
@@ -98,15 +87,10 @@ def parse_hhmm(text: str) -> tuple[int, int]:
 
 
 def build(times: Sequence[str], days: Sequence[int] = ()) -> Recurrence:
-    """Validate and normalise a rule: sorted, de-duplicated, within the rails."""
+    """Validate and normalise a rule: sorted and de-duplicated."""
     cleaned = sorted({f"{h:02d}:{m:02d}" for h, m in (parse_hhmm(t) for t in times)})
     if not cleaned:
         raise InvalidRecurrence("A repeating post needs at least one time of day.")
-    if len(cleaned) > MAX_TIMES_PER_DAY:
-        raise InvalidRecurrence(
-            f"At most {MAX_TIMES_PER_DAY} times a day. More than that stops "
-            "looking like a person posting."
-        )
 
     chosen = sorted({int(d) for d in days})
     if any(d < 0 or d > 6 for d in chosen):
@@ -175,224 +159,28 @@ def pick_body(
     variants: Sequence[str],
     offset: int,
     recent_bodies: Sequence[str] = (),
-    allow_repeats: bool = False,
-) -> str | None:
-    """Choose this run's wording for one group, or None if nothing is fresh.
+) -> str:
+    """Choose this run's wording for one group, or "" when there is none.
 
     Starting at `offset` and wrapping is what keeps a run from sending one
     wording to every group at once: group 0 takes variant 0, group 1 takes
-    variant 1, and the whole cycle shifts by one on the next run. Anything
-    already sent to *this* group today is passed over, because that is what
-    `guards.check_repeat_text` refuses at the manual door. `recent_bodies` is
-    that day's text only: the same words may go to a group once a day.
+    variant 1, and the whole cycle shifts by one on the next run. A wording
+    this group has not had today (`recent_bodies`) is preferred, and when it
+    has had them all the rotation carries on regardless: nothing holds a
+    repeat back (the user's choice, 2026-10-18).
 
-    `allow_repeats` is a schedule the user started with "Post anyway" over the
-    repeated-text rule: a fresh wording is still preferred, and only when none
-    is left does the rotation carry on regardless.
+    "" is a post of pictures or a video alone.
     """
     usable = [v for v in variants if v.strip()]
     if not usable:
-        return None
+        return ""
 
     seen = {normalise(body) for body in recent_bodies}
     for step in range(len(usable)):
         candidate = usable[(offset + step) % len(usable)]
         if normalise(candidate) not in seen:
             return candidate
-    if allow_repeats:
-        return usable[offset % len(usable)]
-    return None
-
-
-@dataclass(frozen=True)
-class ScheduleTarget:
-    """One group a schedule would post to, with the history needed to judge it."""
-
-    name: str
-    last_posted_at: datetime | None = None
-    # Text already sent to the group on the day of the first run.
-    recent_bodies: tuple[str, ...] = ()
-
-
-def upcoming(rule: Recurrence, now: datetime, days: int = SEARCH_DAYS) -> list[datetime]:
-    """Every firing in the next `days` days, in order."""
-    horizon = now + timedelta(days=days)
-    runs: list[datetime] = []
-    moment = now
-    while True:
-        moment = next_occurrence(rule, moment)
-        if moment > horizon:
-            return runs
-        runs.append(moment)
-
-
-def window_violation(rule: Recurrence, start_hour: int, end_hour: int) -> Violation | None:
-    """Times of day outside the posting hours.
-
-    Through `clock.inside_window`, so a window crossing midnight is judged the
-    same way the guard and the worker judge it.
-    """
-    start_hour = clock.sane_hour(start_hour, 8)
-    end_hour = clock.sane_hour(end_hour, 23)
-    if start_hour == end_hour:
-        return None
-    outside = [
-        t for t in rule.times
-        if not clock.inside_window(parse_hhmm(t)[0], start_hour, end_hour)
-    ]
-    if not outside:
-        return None
-    return Violation(
-        POSTING_WINDOW,
-        f"{' and '.join(outside)} {'is' if len(outside) == 1 else 'are'} outside the "
-        f"posting hours ({start_hour:02d}:00-{end_hour:02d}:00).",
-    )
-
-
-def interval_violation(
-    rule: Recurrence, now: datetime, cooldown_hours: int
-) -> Violation | None:
-    """The shortest gap between two runs, if it is inside the cooldown.
-
-    Every run posts to every group in the schedule, so two runs closer than the
-    cooldown mean the second is refused for every group, every time. This is
-    judged on the actual gaps, not the average: 09:00 and 12:00 is two runs a
-    day -- twelve hours on average, comfortably outside an 8h cooldown -- and
-    yet the 12:00 run would be skipped every single day.
-
-    The message says what is true and stops there. It used to end "so the
-    12:00 run would be skipped", which is only so if the user does *not* press
-    "Post anyway" -- and it was written on the very panel offering that button.
-    """
-    if cooldown_hours <= 0:
-        return None
-    runs = upcoming(rule, now)
-    gaps = [(later - earlier, earlier, later) for earlier, later in zip(runs, runs[1:])]
-    if not gaps:
-        return None
-    gap, earlier, later = min(gaps)
-    if gap >= timedelta(hours=cooldown_hours):
-        return None
-    first, second = clock.to_local(earlier), clock.to_local(later)
-    when = second.strftime("%H:%M")
-    if second.date() != first.date():
-        when += " the next day"
-    return Violation(
-        COOLDOWN,
-        f"Runs at {first.strftime('%H:%M')} and {when} are only {span(gap)} apart, "
-        f"less than the {cooldown_hours}h cooldown between posts to the same group.",
-    )
-
-
-def check_schedule(
-    rule: Recurrence,
-    now: datetime,
-    *,
-    targets: Sequence[ScheduleTarget] = (),
-    wordings: Sequence[str] = (),
-    cooldown_hours: int = 8,
-    window_start_hour: int = 8,
-    window_end_hour: int = 23,
-    daily_cap: int = 25,
-) -> tuple[Violation, ...]:
-    """Every posting rule this schedule would break, before it is created.
-
-    Each of these used to surface only as a skipped or deferred post in the
-    queue, days later, or as a warning under the button that did not stop
-    anything. Now they are refusals the user can override with "Post anyway" --
-    so they have to be the same rules the worker applies when the schedule
-    fires, judged the same way.
-    """
-    found: list[Violation] = []
-
-    window = window_violation(rule, window_start_hour, window_end_hour)
-    if window is not None:
-        found.append(window)
-
-    interval = interval_violation(rule, now, cooldown_hours)
-    if interval is not None:
-        found.append(interval)
-
-    # The first run against each group's last post: a group posted to an hour
-    # ago would be skipped on the schedule's very first outing.
-    first_run = next_occurrence(rule, now)
-    for target in targets:
-        early = check_cooldown(
-            target.last_posted_at, first_run, cooldown_hours, target.name,
-            " at the first run",
-        )
-        if early is not None:
-            found.append(early)
-
-    if daily_cap > 0 and targets:
-        per_day = rule.per_day * len(targets)
-        if per_day > daily_cap:
-            found.append(
-                Violation(
-                    DAILY_CAP,
-                    f"{rule.per_day} run{'s' if rule.per_day != 1 else ''} a day to "
-                    f"{len(targets)} groups is {per_day} posts a day, over the "
-                    f"daily limit of {daily_cap}.",
-                )
-            )
-
-    usable = {normalise(w) for w in wordings if w.strip()}
-    if usable:
-        # The same words may go to a group once a day, and every run posts to
-        # every group: so a day needs as many different wordings as it has runs.
-        if len(usable) < rule.per_day:
-            found.append(
-                Violation(
-                    REPEAT_TEXT,
-                    f"{rule.per_day} runs a day and only {len(usable)} different "
-                    f"wording{'s' if len(usable) != 1 else ''}, so the same text "
-                    "goes to a group more than once in a day.",
-                )
-            )
-        else:
-            for target in targets:
-                seen = {normalise(body) for body in target.recent_bodies}
-                if usable <= seen:
-                    found.append(
-                        Violation(
-                            REPEAT_TEXT,
-                            f"{target.name} has already been sent every one of "
-                            "these wordings on the day of the first run.",
-                        )
-                    )
-
-    return tuple(found)
-
-
-def identical_reach(group_count: int, variant_count: int) -> int:
-    """How many groups the busiest single wording would reach in one run.
-
-    Feeds the same warning threshold as `guards.variation_warning`, but before
-    the schedule exists rather than after it has fired.
-    """
-    if group_count <= 0:
-        return 0
-    if variant_count <= 0:
-        return group_count
-    return -(-group_count // variant_count)  # ceil
-
-
-def variation_note(group_count: int, variant_count: int) -> str | None:
-    """A warning, not a rule: one wording reaching too many groups in one run.
-
-    Nothing refuses this, so it needs no "Post anyway" -- it is said, and the
-    schedule goes ahead.
-    """
-    if not (variant_count and group_count):
-        return None
-    reach = identical_reach(group_count, variant_count)
-    if reach <= 2:
-        return None
-    return (
-        f"With {variant_count} wording{'s' if variant_count != 1 else ''} across "
-        f"{group_count} groups, the same text reaches {reach} of them in one run. "
-        "Repetitive content is the main thing that gets accounts restricted."
-    )
+    return usable[offset % len(usable)]
 
 
 def describe(rule: Recurrence) -> str:
@@ -415,54 +203,17 @@ def describe(rule: Recurrence) -> str:
 
 @dataclass(frozen=True)
 class RulePreview:
-    """What creating this schedule would actually mean, before it is created."""
+    """What creating this schedule would mean, before it is created."""
 
     summary: str
     next_runs: tuple[datetime, ...] = ()
-    warnings: tuple[str, ...] = ()
 
 
-def preview(
-    rule: Recurrence,
-    now: datetime,
-    *,
-    group_count: int = 0,
-    variant_count: int = 0,
-    cooldown_hours: int = 8,
-    window_start_hour: int = 8,
-    window_end_hour: int = 23,
-    ahead: int = 3,
-) -> RulePreview:
-    """Describe a rule and flag the ways it will disappoint.
-
-    Every warning here is something the schedule would otherwise hit silently at
-    three in the morning: a slot outside the posting window that gets deferred,
-    a frequency the per-group cooldown will refuse most of, or too few wordings
-    to keep the content varied. None of them block -- the guards downstream
-    still do the actual refusing -- but being told now beats finding out from
-    the queue a week later.
-    """
-    warnings: list[str] = []
-
+def preview(rule: Recurrence, now: datetime, *, ahead: int = 3) -> RulePreview:
+    """Describe a rule and list its next few runs."""
     moment = now
     runs: list[datetime] = []
     for _ in range(max(0, ahead)):
         moment = next_occurrence(rule, moment)
         runs.append(moment)
-
-    # The same judgements check_schedule() refuses on, so the summary under the
-    # button and the refusal when it is pressed cannot disagree.
-    for violation in (
-        window_violation(rule, window_start_hour, window_end_hour),
-        interval_violation(rule, now, cooldown_hours),
-    ):
-        if violation is not None:
-            warnings.append(violation.message)
-
-    note = variation_note(group_count, variant_count)
-    if note is not None:
-        warnings.append(note)
-
-    return RulePreview(
-        summary=describe(rule), next_runs=tuple(runs), warnings=tuple(warnings)
-    )
+    return RulePreview(summary=describe(rule), next_runs=tuple(runs))

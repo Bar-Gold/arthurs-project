@@ -8,10 +8,11 @@ them, but they are in the string.
 That matters here more than it would in most apps, because two of the app's
 load-bearing comparisons are string equality against the user's own words:
 
-* `guards.check_repeat_text` refuses wording a group has already been sent.
-  An invisible character makes two identical posts compare as different, so
-  the guard waves through the exact repeat it exists to stop -- and repetitive
-  content is what gets accounts restricted.
+* `normalise` decides whether these words went to a group before. The worker
+  asks it before posting (`PostRequest.sent_before`), because finding words
+  that were already in the feed is no proof that *this* post went out. An
+  invisible character makes two identical posts compare as different, and
+  the old post is then taken as proof of the new one.
 * `automation.poster.distinctive_snippet` searches the group's feed for the
   post to confirm it appeared. Facebook strips these characters when it
   renders, so searching for a snippet that still contains one finds nothing
@@ -73,3 +74,15 @@ def strip_invisible(text: str) -> str:
 def has_invisible(text: str) -> bool:
     """Whether stripping would change anything. For messages and tests."""
     return any(ch in _TABLE for ch in map(ord, text or ""))
+
+
+def normalise(text: str) -> str:
+    """Fold text for comparison: no invisible marks, spacing or capitals.
+
+    A trailing newline or a changed capital is not a different post. The
+    invisible characters go first: the same post pasted twice from Word or
+    WhatsApp otherwise compares as two different posts. Folding them here
+    rather than only at the input means bodies already stored with marks in
+    them compare correctly too.
+    """
+    return " ".join(strip_invisible(text).split()).casefold()

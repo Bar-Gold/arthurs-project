@@ -39,7 +39,6 @@ from fbposter.qtui.views.publish import (
     ScheduleEntry,
     TimePicker,
 )
-from fbposter.qtui.views.settings import HourEntry
 from fbposter.qtui.widgets import AppStyle
 
 
@@ -65,14 +64,20 @@ def choosable(combo: QComboBox) -> list[int]:
 
 
 class TestAClickOnAStepperLands:
-    """The bug as reported: half of "up" was dead, under the text box."""
+    """The bug as reported: half of "up" was dead, under the text box.
+
+    The number boxes it was found on went with the posting rules (2026-10-18),
+    so a plain spin box carries the app's stylesheet here: the stepper rules
+    are still in it, and the next number box gets them.
+    """
 
     @pytest.fixture
     def entry(self, qt_application):
         holder = QWidget()
         holder.setStyleSheet(theme.stylesheet())
         layout = QVBoxLayout(holder)
-        entry = HourEntry("Hour")
+        entry = QSpinBox()
+        entry.setRange(0, 23)
         entry.setValue(9)
         layout.addWidget(entry)
         holder.resize(240, 60)
@@ -97,7 +102,7 @@ class TestAClickOnAStepperLands:
 
     @pytest.mark.parametrize(
         "control,expected",
-        [(QStyle.SC_SpinBoxUp, "10:00"), (QStyle.SC_SpinBoxDown, "08:00")],
+        [(QStyle.SC_SpinBoxUp, "10"), (QStyle.SC_SpinBoxDown, "8")],
         ids=["up", "down"],
     )
     def test_every_part_of_each_arrow_steps(self, qt_application, entry, control, expected):

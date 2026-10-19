@@ -201,7 +201,6 @@ class TestUndoingADelete:
             group_ids=[g.id for g in groups],
             times=list(rule.times),
             next_run_at=recurrence.next_occurrence(rule, utcnow()),
-            overrides={"cooldown"},
         )
         qt_app.schedule_repo.record_run(schedule.id, utcnow(), schedule.next_run_at)
         return qt_app.schedule_repo.get(schedule.id)
@@ -293,8 +292,14 @@ class TestWarningsLookLikeWarnings:
 
         html = publish.summary.text()
         warning = f'<div style="color: {theme.C["WARNING"]};">'
-        assert warning + "With 1 wording" in html
         assert "<div>Every day at" in html
+        # No posting rules (2026-10-18), so a valid repeat warns about nothing.
+        assert warning not in html
+
+        for box in publish._day_boxes:
+            box.setChecked(False)
+        publish.refresh_summary()
+        assert warning + "Pick at least one day" in publish.summary.text()
 
     def test_a_group_name_cannot_inject_markup(self, qt_application):
         from PySide6.QtWidgets import QLabel

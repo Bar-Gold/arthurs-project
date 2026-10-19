@@ -52,7 +52,7 @@ def groups(qt_app):
     return made
 
 
-def make_schedule(qt_app, group_ids, *, times=("09:00",), overrides=(), **extra):
+def make_schedule(qt_app, group_ids, *, times=("09:00",), **extra):
     rule = recurrence.build(list(times))
     fields = dict(
         name="Bikes",
@@ -60,7 +60,6 @@ def make_schedule(qt_app, group_ids, *, times=("09:00",), overrides=(), **extra)
         group_ids=list(group_ids),
         times=list(rule.times),
         next_run_at=recurrence.next_occurrence(rule, utcnow()),
-        overrides=overrides,
     )
     fields.update(extra)
     return qt_app.schedule_repo.create(**fields)
@@ -337,13 +336,16 @@ class TestWhatIsRefused:
         assert stored(qt_app, schedule).bodies == WORDINGS
         assert qt_app.current_view == "schedule_edit"
 
-    def test_pictures_but_no_wording(self, qt_app, editing):
-        editor, _schedule = editing
+    def test_pictures_with_no_wording_are_saved(self, qt_app, editing):
+        """Pictures alone may repeat (the user's choice, 2026-10-18)."""
+        editor, schedule = editing
         editor.add_pictures(["C:\\pictures\\bike.jpg"])
         for text_edit in editor._wordings:
             text_edit.setPlainText("")
-        assert editor.save() is False
-        assert "text as well as pictures" in qt_app.toast_label.text()
+        assert editor.save() is True
+        after = stored(qt_app, schedule)
+        assert after.bodies == []
+        assert after.media_paths == ["C:\\pictures\\bike.jpg"]
 
     def test_no_group(self, qt_app, editing):
         editor, schedule = editing
@@ -359,11 +361,14 @@ class TestWhatIsRefused:
         assert editor.save() is False
         assert stored(qt_app, schedule).days == []
 
-    def test_times_stop_at_the_ceiling(self, editing):
-        editor, _schedule = editing
-        assert editor.add_time("12:00")
-        assert editor.add_time("18:00")
-        assert editor.add_time("21:00") is False
+    def test_there_is_no_ceiling_on_times(self, qt_app, editing):
+        editor, schedule = editing
+        for text in ("12:00", "15:00", "18:00", "21:00"):
+            assert editor.add_time(text)
+        assert editor.save() is True
+        assert stored(qt_app, schedule).times == [
+            "09:00", "12:00", "15:00", "18:00", "21:00"
+        ]
 
     def test_a_post_deleted_meanwhile(self, qt_app, editing):
         editor, schedule = editing
@@ -372,85 +377,38 @@ class TestWhatIsRefused:
         assert qt_app.current_view == "publish"
 
 
-class TestTheRules:
-    def test_a_newly_broken_rule_offers_post_anyway(self, qt_app, editing):
-        editor, schedule = editing
-        editor.add_time("12:00")  # three hours after 09:00, inside the 8h cooldown
-        assert editor.save() is False
-        assert not editor.override_card.isHidden()
-        assert editor.save_button.isHidden()
-        assert "3h apart" in editor.override_list.text()
-        assert stored(qt_app, schedule).times == ["09:00"]
+class TestThereAreNoRules:
+    """Saving judges nothing (the user's choice, 2026-10-18): no "Post anyway"
+    panel, no warnings, and nothing kept from the days when there was one."""
 
-        assert editor.post_anyway() is True
-        after = stored(qt_app, schedule)
-        assert after.times == ["09:00", "12:00"]
-        assert "cooldown" in after.overrides
-
-    def test_cancel_saves_nothing(self, qt_app, editing):
+    def test_runs_three_hours_apart_save_straight_away(self, qt_app, editing):
         editor, schedule = editing
         editor.add_time("12:00")
-        editor.save()
-        editor.keep_rules_button.click()
-        assert editor.override_card.isHidden()
-        assert stored(qt_app, schedule).times == ["09:00"]
-
-    def test_a_rule_already_allowed_is_not_asked_again(self, qt_app, groups):
-        schedule = make_schedule(
-            qt_app, [groups[0].id], times=("09:00", "12:00"), overrides={"cooldown"}
-        )
-        editor = qt_app.views["schedule_edit"]
-        editor.load(schedule.id)
-        editor._wordings[0].setPlainText("Edited")
         assert editor.save() is True
-        assert editor.override_card.isHidden()
-        assert stored(qt_app, schedule).overrides == frozenset({"cooldown"})
+        assert stored(qt_app, schedule).times == ["09:00", "12:00"]
 
-    def test_a_rule_no_longer_broken_is_dropped(self, qt_app, groups):
-        schedule = make_schedule(
-            qt_app, [groups[0].id], times=("09:00", "12:00"), overrides={"cooldown"}
-        )
-        editor = qt_app.views["schedule_edit"]
-        editor.load(schedule.id)
-        set_time(editor, 1, "21:00")
-        assert editor.save() is True
-        assert stored(qt_app, schedule).overrides == frozenset()
+    def test_there_is_no_post_anyway_panel(self, editing):
+        editor, _schedule = editing
+        assert not hasattr(editor, "override_card")
+        assert not hasattr(editor, "post_anyway")
 
-    def test_a_group_that_has_had_every_wording_is_caught(self, qt_app, editing, groups):
-        """Adding a group is judged against its own history, like creating.
-
-        The history that counts is the day of the first run: the same words
-        may go to a group once a day.
-        """
+    def test_a_group_that_has_had_every_wording_is_added(self, qt_app, editing, groups):
         editor, schedule = editing
-        first_run = recurrence.next_occurrence(
-            recurrence.build(schedule.times), utcnow()
-        )
         for body in WORDINGS:
             task = qt_app.task_repo.create(body, [(groups[2].id, body)])
             target = qt_app.task_repo.targets_for(task.id)[0]
             qt_app.task_repo.claim_target(target.id)
             qt_app.task_repo.mark_target(
-                target.id,
-                TARGET_DONE,
-                posted=True,
-                posted_at=first_run - timedelta(hours=1),
+                target.id, TARGET_DONE, posted=True, posted_at=utcnow() - timedelta(hours=1)
             )
         editor._group_boxes[groups[2].id].setChecked(True)
-        assert editor.save() is False
-        assert "every one of these wordings" in editor.override_list.text()
-        assert groups[2].id not in stored(qt_app, schedule).group_ids
+        assert editor.save() is True
+        assert groups[2].id in stored(qt_app, schedule).group_ids
 
-    def test_editing_withdraws_the_offer(self, editing):
-        editor, _schedule = editing
-        editor.add_time("12:00")
-        editor.save()
-        assert not editor.override_card.isHidden()
-        set_time(editor, 1, "21:00")
-        assert editor.override_card.isHidden()
-        assert not editor.save_button.isHidden()
+    def test_the_summary_warns_about_nothing(self, editing):
+        from fbposter.qtui import theme
 
-    def test_the_summary_says_so_before_save_is_pressed(self, editing):
         editor, _schedule = editing
-        editor.add_time("12:00")
-        assert "3h apart" in editor.summary.text()
+        editor.add_time("03:00")
+        editor.add_time("03:30")
+        assert theme.C["WARNING"] not in editor.summary.text()

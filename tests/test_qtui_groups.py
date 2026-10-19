@@ -26,6 +26,7 @@ from fbposter.qtui.views.publish import (
     ONCE,
     SCHEDULE_HORIZON_DAYS,
     ScheduleEntry,
+    next_slot,
 )
 
 URL = "https://www.facebook.com/groups/demo{}"
@@ -364,6 +365,8 @@ class TestTheFlowBetweenScreens:
             "dashboard",
             # Not a step: where sets are made (the user's choice, 2026-10-15).
             "group_sets",
+            # Not a step: advice to read (2026-10-18).
+            "tips",
             # Not a step: somewhere you go on purpose, at the foot.
             "settings",
         ]
@@ -395,6 +398,24 @@ class TestTheFlowBetweenScreens:
 
 class TestTheOnceDatePicker:
     """The 2028 report. The default was never wrong; the widget was."""
+
+    @pytest.mark.parametrize(
+        "now,expected",
+        [
+            ("14:45:00", "14:45"),
+            ("14:45:20", "15:00"),  # was 14:45, already past: a flaky suite
+            ("14:44:30", "14:45"),
+            ("14:46:00", "15:00"),
+            ("23:59:10", "00:00"),
+        ],
+    )
+    def test_the_earliest_slot_is_never_in_the_past(self, qt_application, now, expected):
+        from PySide6.QtCore import QDate, QTime
+
+        moment = QDateTime(QDate(2026, 10, 19), QTime.fromString(now, "HH:mm:ss"))
+        slot = next_slot(moment)
+        assert slot >= moment
+        assert slot.time().toString("HH:mm") == expected
 
     def test_it_defaults_to_the_next_quarter_hour(self, qt_application):
         """Not an hour out: an arbitrary offset is one more thing to undo. The

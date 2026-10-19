@@ -40,9 +40,11 @@ class HumanProfile:
     scroll_delta: tuple[int, int] = (240, 620)
     scroll_pause_ms: tuple[float, float] = (280, 950)
 
-    # Between groups in a batch: 10-25 minutes, per README section 7. At 5-7
-    # groups this makes a batch take 1-3 hours, which is the intended cost.
-    group_gap_seconds: tuple[float, float] = (600, 1500)
+    # Between groups in a batch: 2-4 minutes (the user's choice, 2026-10-18;
+    # it was 10-25). A post itself takes about a minute and a half, so one
+    # listing to 80 groups is about six hours. Guides put the floor at 2-3
+    # minutes: closer than that reads as automation.
+    group_gap_seconds: tuple[float, float] = (120, 240)
 
 
 @dataclass

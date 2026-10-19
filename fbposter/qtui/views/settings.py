@@ -1,5 +1,8 @@
-"""Settings screen: whether the app is posting, the rules it posts by, which
-Facebook account it posts as, and what this PC does to keep it posting.
+"""Settings screen: whether the app is posting, which Facebook account it
+posts as, and what this PC does to keep it posting.
+
+There is no posting-rules card any more: the app has no rules to set (the
+user's choice, 2026-10-18). Advice is on the Posting tips screen.
 
 Not a step in the flow, so it sits apart from Compose, Groups and Publish in
 the sidebar. Everything here is something you set once and come back to
@@ -18,40 +21,15 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QScrollArea,
-    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
 
 from fbposter import onboarding
-from fbposter.db.schema import DEFAULT_SETTINGS
 from fbposter.connection import ConnectionState
 
 from .. import theme
 from ..widgets import Switch, badge, card, row, set_badge
-
-START_KEY = "posting_window_start_hour"
-END_KEY = "posting_window_end_hour"
-CAP_KEY = "daily_cap"
-COOLDOWN_KEY = "default_cooldown_hours"
-
-DEFAULTS = {key: int(DEFAULT_SETTINGS[key]) for key in (START_KEY, END_KEY, CAP_KEY, COOLDOWN_KEY)}
-DEFAULT_COOLDOWN = DEFAULTS[COOLDOWN_KEY]
-
-# At least an hour: nought would switch the rule off for every group, for
-# good. Breaking it for one post is what "Post anyway" is for.
-COOLDOWN_MIN = 1
-COOLDOWN_MAX = 168
-# At least one: nought is read as "no limit at all".
-CAP_MIN = 1
-CAP_MAX = 100
-# Wide enough for "100 posts" and the steppers; the stock width stretched
-# each field across half the card. An hour needs a little less room.
-FIELD_WIDTH = 170
-HOUR_WIDTH = 150
-# Hours that count as the middle of the night, for the warning under the
-# posting hours. Posting at 4am is the loudest automation signal there is.
-NIGHT_HOURS = range(0, 6)
 
 # What the scheduler row says for each worker state: headline, colour, detail.
 STATUS = {
@@ -99,83 +77,9 @@ AWAKE_HELP = (
 )
 
 
-def hours_summary(start: int, end: int) -> str:
-    """The posting hours as a sentence, including the one that crosses midnight."""
-    if start == end:
-        return "The start and end can't be the same hour."
-    if start < end:
-        return f"Posts only start between {start:02d}:00 and {end:02d}:00, Israel time."
-    return (
-        f"Posts only start between {start:02d}:00 and {end:02d}:00 the next "
-        "morning, Israel time."
-    )
-
-
-def covers_night(start: int, end: int) -> bool:
-    """Whether the posting hours reach into the middle of the night."""
-    if start == end:
-        return False
-    if start < end:
-        hours = range(start, end)
-    else:
-        hours = [*range(start, 24), *range(0, end)]
-    return any(hour in NIGHT_HOURS for hour in hours)
-
-
-class _NoWheel:
-    """Scrolling the page must not change a setting it passes over.
-
-    Every field that decides when or how often a post goes out follows this
-    rule. The wheel event is ignored, so it reaches the scroll area instead.
-    """
-
-    def wheelEvent(self, event) -> None:  # noqa: N802 - Qt's name
-        event.ignore()
-
-
-class CooldownEntry(_NoWheel, QSpinBox):
-    """Hours between posts to one group."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.setRange(COOLDOWN_MIN, COOLDOWN_MAX)
-        self.setSuffix(" h")
-        self.setAccelerated(True)
-        self.setAccessibleName("Cooldown between posts to the same group, in hours")
-
-
-class CapEntry(_NoWheel, QSpinBox):
-    """Posts a day, across every group."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.setRange(CAP_MIN, CAP_MAX)
-        self.setSuffix(" posts")
-        self.setAccelerated(True)
-        self.setAccessibleName("Daily limit, in posts")
-
-
-class HourEntry(_NoWheel, QSpinBox):
-    """An hour of the day, shown as 08:00. Goes round midnight.
-
-    Hours only: the posting window is stored in whole hours, and a minutes
-    field that did nothing would be a lie.
-    """
-
-    def __init__(self, name: str) -> None:
-        super().__init__()
-        self.setRange(0, 23)
-        self.setWrapping(True)
-        self.setSuffix(":00")
-        self.setAccessibleName(name)
-
-    def textFromValue(self, value: int) -> str:  # noqa: N802 - Qt's name
-        return f"{value:02d}"
-
-
 class SettingsView(QWidget):
     title = "Settings"
-    subtitle = "Whether the app is posting, the rules it posts by, and the account it posts as."
+    subtitle = "Whether the app is posting, the account it posts as, and this PC."
 
     def __init__(self, app) -> None:
         super().__init__()
@@ -208,7 +112,6 @@ class SettingsView(QWidget):
         column.setContentsMargins(0, 0, 0, 0)
         column.setSpacing(theme.PAD_M)
         column.addWidget(self._build_scheduler())
-        column.addWidget(self._build_rules())
         column.addWidget(self._build_account())
         column.addWidget(self._build_pc())
         column.addStretch(1)
@@ -294,74 +197,6 @@ class SettingsView(QWidget):
         inner.addWidget(self.waiting_label)
         return box
 
-    def _build_rules(self) -> QWidget:
-        box, inner = self._card("Posting rules")
-        inner.addWidget(self._muted(
-            "Every batch and every repeating post follows these, including "
-            "ones already queued. \"Post anyway\" on the Publish screen can "
-            "break them for one post."
-        ))
-
-        # Posting hours.
-        self.start_entry = HourEntry("Posting hours start")
-        self.end_entry = HourEntry("Posting hours end")
-        hours = QHBoxLayout()
-        hours.setSpacing(theme.PAD_S)
-        for entry in (self.start_entry, self.end_entry):
-            entry.setFixedWidth(HOUR_WIDTH)
-        hours.addWidget(self.start_entry)
-        hours.addWidget(QLabel("to"))
-        hours.addWidget(self.end_entry)
-        self.hours_note = self._muted()
-        self.night_note = self._muted(
-            "These hours include the middle of the night. Posts at night are "
-            "the clearest sign of automation there is."
-        )
-        self.night_note.setStyleSheet(f"color: {theme.C['WARNING']};")
-        self._divider(inner)
-        inner.addWidget(self._setting("Posting hours", hours, self.hours_note, self.night_note))
-
-        # Daily limit.
-        self.cap_entry = CapEntry()
-        self.cap_entry.setFixedWidth(FIELD_WIDTH)
-        self._divider(inner)
-        inner.addWidget(self._setting(
-            "Daily limit", self.cap_entry,
-            self._muted("Across all groups together, per day in Israel time."),
-        ))
-
-        # Cooldown.
-        self.cooldown_entry = CooldownEntry()
-        self.cooldown_entry.setFixedWidth(FIELD_WIDTH)
-        self._divider(inner)
-        inner.addWidget(self._setting(
-            "Cooldown per group", self.cooldown_entry,
-            self._muted(
-                "After posting to a group, the app waits at least this long "
-                "before posting to that group again."
-            ),
-        ))
-
-        for entry in (self.start_entry, self.end_entry, self.cap_entry, self.cooldown_entry):
-            entry.valueChanged.connect(self._rules_edited)
-
-        # Save at the end of the card, the way a form's action sits under it;
-        # going back to the defaults is the lesser choice, so it is on the left.
-        self._divider(inner)
-        line = QHBoxLayout()
-        self.defaults_button = QPushButton(
-            f"Use the defaults ({DEFAULTS[START_KEY]:02d}:00-{DEFAULTS[END_KEY]:02d}:00, "
-            f"{DEFAULTS[CAP_KEY]} a day, {DEFAULT_COOLDOWN} h)"
-        )
-        self.defaults_button.clicked.connect(self.use_defaults)
-        line.addWidget(self.defaults_button)
-        line.addStretch(1)
-        self.save_button = QPushButton("Save")
-        self.save_button.clicked.connect(self.save_rules)
-        line.addWidget(self.save_button)
-        inner.addLayout(line)
-        return box
-
     def _build_account(self) -> QWidget:
         self.switch_button = QPushButton(onboarding.SWITCH_ACTION)
         self.switch_button.clicked.connect(self.begin_switch)
@@ -412,7 +247,6 @@ class SettingsView(QWidget):
 
     # -- showing -----------------------------------------------------------
     def on_show(self) -> None:
-        self.load_rules()
         self.refresh_status()
         self.refresh_account()
         self.load_pc()
@@ -443,74 +277,6 @@ class SettingsView(QWidget):
     # -- the scheduler -----------------------------------------------------
     def toggle(self) -> None:
         self.app.toggle_worker()
-
-    # -- the rules ---------------------------------------------------------
-    def stored_rules(self) -> dict[str, int]:
-        get = self.app.settings_repo.get_int
-        return {key: get(key, default) for key, default in DEFAULTS.items()}
-
-    def shown_rules(self) -> dict[str, int]:
-        return {
-            START_KEY: self.start_entry.value(),
-            END_KEY: self.end_entry.value(),
-            CAP_KEY: self.cap_entry.value(),
-            COOLDOWN_KEY: self.cooldown_entry.value(),
-        }
-
-    def load_rules(self) -> None:
-        stored = self.stored_rules()
-        self.start_entry.setValue(stored[START_KEY])
-        self.end_entry.setValue(stored[END_KEY])
-        self.cap_entry.setValue(stored[CAP_KEY])
-        self.cooldown_entry.setValue(stored[COOLDOWN_KEY])
-        self._rules_edited()
-
-    def stored_cooldown(self) -> int:
-        return self.stored_rules()[COOLDOWN_KEY]
-
-    def _rules_edited(self, _value=None) -> None:
-        shown = self.shown_rules()
-        start, end = shown[START_KEY], shown[END_KEY]
-        valid = start != end
-        self.hours_note.setText(hours_summary(start, end))
-        self.hours_note.setStyleSheet(
-            "" if valid else f"color: {theme.C['DANGER']};"
-        )
-        self.night_note.setVisible(covers_night(start, end))
-        # Enabled only when there is something valid to save, so the button
-        # itself says whether what is on screen is what is in force.
-        self.save_button.setEnabled(valid and shown != self.stored_rules())
-        self.defaults_button.setVisible(shown != DEFAULTS)
-
-    def use_defaults(self) -> None:
-        for entry, key in (
-            (self.start_entry, START_KEY), (self.end_entry, END_KEY),
-            (self.cap_entry, CAP_KEY), (self.cooldown_entry, COOLDOWN_KEY),
-        ):
-            entry.setValue(DEFAULTS[key])
-        self.save_rules()
-
-    def save_rules(self) -> None:
-        # A click does not take focus from a field (widgets.AppStyle), so a
-        # half-typed number is read here rather than on focus loss.
-        for entry in (self.start_entry, self.end_entry, self.cap_entry, self.cooldown_entry):
-            entry.interpretText()
-        shown = self.shown_rules()
-        if shown == self.stored_rules():
-            self._rules_edited()
-            return
-        if shown[START_KEY] == shown[END_KEY]:
-            self._rules_edited()
-            self.app.toast(hours_summary(shown[START_KEY], shown[END_KEY]), "error")
-            return
-        self.app.settings_repo.set_posting_rules(
-            start_hour=shown[START_KEY],
-            end_hour=shown[END_KEY],
-            daily_cap=shown[CAP_KEY],
-            cooldown_hours=shown[COOLDOWN_KEY],
-        )
-        self._rules_edited()
-        self.app.toast("Posting rules saved.", "success")
 
     # -- the Facebook account ----------------------------------------------
     def _connected(self) -> bool:

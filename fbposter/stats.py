@@ -1,14 +1,13 @@
 """The Dashboard's numbers, as pure functions.
 
-The same split as `guards.py` against `worker.py`: the repositories supply
-rows, and everything worked out from them lives here, so every number on the
-screen can be tested without a database, a window or the wall clock.
+The repositories supply rows, and everything worked out from them lives
+here, so every number on the screen can be tested without a database, a
+window or the wall clock.
 
 Two rules hold throughout:
 
-* **"Sent" means what the daily limit counts** (`repo.SENT_STATES`: posted,
-  waiting for an admin, or might have posted). "Posted today" and "3 of 25
-  today" can then never disagree.
+* **"Sent" is `repo.SENT_STATES`**: posted, waiting for an admin, or might
+  have posted. Every number that counts posts counts those three.
 * **Days are Israel days**, judged on local calendar dates through `clock`,
   never by subtracting 24 hours: across a daylight-saving change a day is 23
   or 25 hours long, and "the last 7 days" is seven dates, not 168 hours.
@@ -33,7 +32,7 @@ from .db.models import (
     PostRecord,
 )
 from .db.repo import SENT_STATES
-from .guards import normalise
+from .text import normalise
 
 WEEK_DAYS = 7
 MONTH_DAYS = 30
@@ -42,8 +41,8 @@ CHART_DAYS = 14
 # Tried and went out, as far as the app could tell. Declined went out too: an
 # admin turned it down afterwards.
 WENT_OUT = (TARGET_DONE, TARGET_AWAITING_APPROVAL, TARGET_DECLINED)
-# Tried and did not, or nobody can say. A skip is not here: that was the rules
-# deciding not to try, which is the app working, not failing.
+# Tried and did not, or nobody can say. A skip is not here: the app decided
+# not to try (a group removed mid-batch), which is not a failure.
 TRIED = WENT_OUT + (TARGET_FAILED, TARGET_UNCONFIRMED)
 
 # {(group_id, state): (count, earliest)}, from `TaskRepo.archived_totals`.
@@ -66,7 +65,6 @@ def _between(records: Iterable[PostRecord], first: date, last: date) -> list[Pos
 @dataclass(frozen=True)
 class Summary:
     today: int
-    daily_cap: int
     last_week: int
     week_before: int
     last_month: int
@@ -83,7 +81,6 @@ def summary(
     records: Sequence[PostRecord],
     archived: Archived,
     now: datetime,
-    daily_cap: int,
 ) -> Summary:
     today = local_day(now)
     sent = _sent(records)
@@ -103,7 +100,6 @@ def summary(
 
     return Summary(
         today=len(_between(sent, today, today)),
-        daily_cap=daily_cap,
         last_week=len(week),
         week_before=len(before),
         last_month=len(_between(sent, month_start, today)),
@@ -148,8 +144,6 @@ class GroupRow:
     last_week: int
     all_time: int
     last_post_at: datetime | None
-    # When the cooldown lets it be posted to again; None when it already can.
-    free_at: datetime | None
 
 
 def by_group(
@@ -174,10 +168,6 @@ def by_group(
             if group_id == group.id and state in SENT_STATES
         )
         last = max((r.at for r in mine), default=None) or group.last_posted_at
-        free_at = None
-        if group.last_posted_at is not None:
-            ready = group.last_posted_at + timedelta(hours=group.cooldown_hours)
-            free_at = ready if ready > now else None
         rows.append(
             GroupRow(
                 group_id=group.id,
@@ -187,7 +177,6 @@ def by_group(
                 last_week=len(_between(mine, week_start, today)),
                 all_time=len(mine) + kept,
                 last_post_at=last,
-                free_at=free_at,
             )
         )
     rows.sort(key=lambda row: (-row.all_time, -row.last_week, row.name.casefold()))
@@ -215,15 +204,15 @@ def next_scheduled(
 ) -> NextUp:
     """The next thing due to go out, as stored. A fact, not a forecast.
 
-    The worker may still hold it back (posting hours, the gap between posts,
-    the daily limit); this says when it is set for, which is what the user set.
+    The worker may still hold it back (the gap between posts, a batch ahead
+    of it); this says when it is set for, which is what the user set.
     """
     if paused:
         return NextUp(NEXT_PAUSED)
     for task in tasks:
         if task.state == TASK_RUNNING:
-            # Between groups it waits 10-25 minutes, or overnight for posting
-            # hours; `resume_at` is when its next group is due.
+            # Between groups it waits 2-4 minutes, or 5 when Chrome is away;
+            # `resume_at` is when its next group is due.
             later = task.resume_at if task.resume_at and task.resume_at > now else None
             return NextUp(NEXT_POSTING, later)
     names = {schedule.id: schedule.name for schedule in schedules}

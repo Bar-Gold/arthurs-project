@@ -51,7 +51,12 @@ SHAPES = {
         '<circle cx="15.5" cy="9.5" r="2"/>'
         '<circle cx="12" cy="15.5" r="2"/>'
     ),
-    # Sliders: the rules it posts by.
+    # A light bulb: advice for posting safely.
+    "tips": (
+        '<path d="M9.5 18h5M10.5 21h3"/>'
+        '<path d="M12 3a6 6 0 0 0-3.4 10.9c.6.5.9 1.1.9 1.9v.2h5v-.2c0-.8.3-1.4.9-1.9A6 6 0 0 0 12 3z"/>'
+    ),
+    # Sliders: pausing, the account, this PC.
     "settings": (
         '<path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/>'
         '<circle cx="15" cy="6" r="2"/>'

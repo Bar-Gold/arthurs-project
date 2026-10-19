@@ -85,13 +85,6 @@ def _paths_from_json(raw: str | None) -> list[str]:
     return [str(item) for item in loaded] if isinstance(loaded, list) else []
 
 
-def _overrides_from_row(row: Mapping[str, Any]) -> frozenset[str]:
-    """The rules a row was allowed to break; none for a row from before 009."""
-    if "overrides" not in row.keys():
-        return frozenset()
-    return frozenset(_paths_from_json(row["overrides"]))
-
-
 def _ints_from_json(raw: str | None) -> list[int]:
     values = []
     for item in _paths_from_json(raw):
@@ -176,9 +169,6 @@ class Task:
     # Set when a repeating schedule materialised this batch, so the queue can
     # say where it came from.
     schedule_id: int | None = None
-    # The rules the user chose "Post anyway" over, as guards.OVERRIDABLE
-    # names. The worker skips exactly these checks for this batch.
-    overrides: frozenset[str] = frozenset()
 
     @classmethod
     def from_row(cls, row: Mapping[str, Any]) -> "Task":
@@ -195,7 +185,6 @@ class Task:
             error=row["error"] or "",
             resume_at=from_iso(row["resume_at"]) if "resume_at" in keys else None,
             schedule_id=row["schedule_id"] if "schedule_id" in keys else None,
-            overrides=_overrides_from_row(row),
         )
 
     @property
@@ -267,9 +256,9 @@ class PostRecord:
 class Schedule:
     """A repeating post: several wordings, some groups, and when to fire.
 
-    `bodies` is plural on purpose. One wording would be refused by
-    `guards.check_repeat_text` the second time it reached a group, so a
-    schedule that could only hold one would work exactly once.
+    `bodies` is plural on purpose: each run shares the wordings out across
+    the groups, so one run never sends the same text to all of them. It may
+    be empty for a post of pictures or a video alone.
     """
 
     id: int
@@ -286,8 +275,6 @@ class Schedule:
     # Filled in by the repository from schedule_targets, in position order.
     # The groups ticked one by one, never the ones a set brings.
     group_ids: list[int] = field(default_factory=list)
-    # "Post anyway" for a repeating post: copied onto every batch it fires.
-    overrides: frozenset[str] = frozenset()
     # The group sets it follows, from schedule_sets, in position order.
     set_ids: list[int] = field(default_factory=list)
     # Every group a run goes to, worked out by the repository: the plain
@@ -324,7 +311,6 @@ class Schedule:
             last_run_at=from_iso(row["last_run_at"]),
             created_at=from_iso(row["created_at"]),
             group_ids=list(group_ids),
-            overrides=_overrides_from_row(row),
             set_ids=list(set_ids),
             recipient_ids=list(group_ids if recipient_ids is None else recipient_ids),
         )
