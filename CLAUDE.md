@@ -108,7 +108,7 @@ Core: `config.py` (paths, port, Chrome flags), `chrome.py` (find/launch Chrome, 
 
 Scripts: `scripts/setup_always_on.ps1`: the laptop power plan and the logon task. See the Power section.
 
-Packaging: `packaging/`: `fbposter.spec` (PyInstaller), `installer.iss` (Inno Setup), `build.ps1` (both, plus the suite), `entry.py`, `SETUP.md` (the client's one-pager). Its rules are in `packaging/CLAUDE.md`.
+Packaging: `packaging/`: `fbposter.spec` (PyInstaller), `installer.iss` (Inno Setup), `build.ps1` (both, plus the suite), `entry.py`. Its rules are in `packaging/CLAUDE.md`.
 
 Automation: `automation/poster.py` (`GroupPoster`: arrive → compose → type → attach → publish → verify, plus the read-only `probe`), `detect.py` (`classify` a page as OK / checkpoint / login / rate-limit / unavailable), `humanize.py` (`Humanizer`: keystroke timing, hovers, arrival scroll, the inter-group gap), `groupinfo.py` (read a group's display name off the `h1` **inside `[role="main"]`**, and its member count in the same visit; cosmetic, and must never raise into a caller), `groupfinder.py` (read every group the account is in off Facebook's "Your groups" page; see "Reading the client's groups off Facebook").
 

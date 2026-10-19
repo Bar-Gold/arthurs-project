@@ -37,6 +37,12 @@ ArchitecturesAllowed=x64compatible
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
+[Messages]
+; There is no setup guide to read. The app's own Welcome screen walks the
+; client through Chrome and the Facebook login one step at a time, so the
+; last page of the installer just says so.
+FinishedLabel=[name] is installed.%n%nWhen it opens, it will walk you through the rest: starting Chrome and logging into Facebook. It takes about two minutes.
+
 [Tasks]
 Name: "desktopicon"; Description: "Create a shortcut on the desktop"; \
     GroupDescription: "Shortcuts:"
@@ -57,16 +63,19 @@ Source: "..\dist\FacebookAutoPoster\*"; DestDir: "{app}"; \
 ; Shipped so the uninstaller can put the power settings back, and so the
 ; logon task can be repaired without a source checkout.
 Source: "..\scripts\setup_always_on.ps1"; DestDir: "{app}\scripts"; Flags: ignoreversion
-; Installed as .txt, not .md: a Windows machine with no markdown handler
-; answers a .md double-click with "How do you want to open this file?",
-; which is the last thing to show somebody on their first run.
-Source: "SETUP.md"; DestDir: "{app}"; DestName: "Setup Guide.txt"; Flags: ignoreversion isreadme
+; No setup guide is shipped. It used to open in Notepad at the end of the
+; install (the user found that unprofessional, 2026-10-19), and it repeated
+; what the Welcome screen already says, going out of date as the app changed.
+
+[InstallDelete]
+; Left behind by an older version, which shipped the guide.
+Type: files; Name: "{app}\Setup Guide.txt"
+Type: files; Name: "{group}\Setup Guide.lnk"
 
 [Icons]
 Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExe}"
 ; For the support call. Runs the bundle's own checks and shows the result,
 ; so a client who cannot describe a symptom can still send back a picture.
-Name: "{group}\Setup Guide"; Filename: "{app}\Setup Guide.txt"
 Name: "{group}\Check my setup"; Filename: "{app}\{#AppExe}"; Parameters: "--selftest"; Comment: "Checks this PC and shows a report you can send on"
 Name: "{group}\Uninstall {#AppName}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExe}"; Tasks: desktopicon
