@@ -375,6 +375,64 @@ class TestSwitchingFacebookAccount:
         assert qt_app.connection_result.state is ConnectionState.LOGGED_OUT
         assert view.step is SetupStep.LOGGED_OUT
 
+    def test_the_groups_are_replaced_at_the_next_login(self, qt_app, monkeypatch):
+        """The user's choice (2026-10-19): the list becomes the new account's
+        groups. Stored, so a restart before the login does not lose it."""
+        from fbposter.qtui.views.groups import IMPORT_PENDING_KEY, REPLACE_PENDING_KEY
+
+        view = self.ready(qt_app, monkeypatch)
+        self.recorder(qt_app, monkeypatch)
+        view.start_switch()
+        assert qt_app.settings_repo.get(REPLACE_PENDING_KEY) != "1", "nothing signed out yet"
+        view._on_done(None)
+        assert qt_app.settings_repo.get(REPLACE_PENDING_KEY) == "1"
+        assert qt_app.settings_repo.get(IMPORT_PENDING_KEY) == "1"
+
+    def test_a_failed_sign_out_leaves_the_groups_alone(self, qt_app, monkeypatch):
+        from fbposter.qtui.views.groups import REPLACE_PENDING_KEY
+
+        view = self.ready(qt_app, monkeypatch)
+        self.recorder(qt_app, monkeypatch)
+        view.start_switch()
+        view._on_failed(RuntimeError("Could not sign the current account out"))
+        assert qt_app.settings_repo.get(REPLACE_PENDING_KEY) != "1"
+
+    def _waiting_and_repeating(self, qt_app):
+        group = qt_app.group_repo.add_from_url("https://www.facebook.com/groups/1/")
+        task = qt_app.task_repo.create("Hi", [(group.id, "Hi")])
+        qt_app.schedule_repo.create(
+            name="Daily", bodies=["Hi"], group_ids=[group.id], times=["09:00"]
+        )
+        return task
+
+    def test_the_sign_out_clears_the_old_account(self, qt_app, monkeypatch):
+        """New account, new everything but the templates (the user's choice,
+        2026-10-19), and the message says what went."""
+        view = self.ready(qt_app, monkeypatch)
+        self.recorder(qt_app, monkeypatch)
+        task = self._waiting_and_repeating(qt_app)
+        compose = qt_app.views["compose"]
+        compose.editor.setPlainText("Half written")
+        compose.capture()
+        said = []
+        monkeypatch.setattr(qt_app, "toast", lambda m, level="info": said.append(m))
+        view.start_switch()
+        view._on_done(None)
+        assert qt_app.task_repo.get(task.id) is None
+        assert qt_app.schedule_repo.list() == []
+        assert compose.get_text() == ""
+        assert said[-1].startswith(onboarding.switch_cleared(1, 1, 0))
+
+    def test_a_failed_sign_out_keeps_the_posts(self, qt_app, monkeypatch):
+        """Still the old account: its posts are still its own."""
+        view = self.ready(qt_app, monkeypatch)
+        self.recorder(qt_app, monkeypatch)
+        task = self._waiting_and_repeating(qt_app)
+        view.start_switch()
+        view._on_failed(RuntimeError("Could not sign the current account out"))
+        assert qt_app.task_repo.get(task.id).state == "pending"
+        assert len(qt_app.schedule_repo.list()) == 1
+
     def test_the_new_login_is_explained(self, qt_app, monkeypatch):
         view = self.ready(qt_app, monkeypatch)
         self.recorder(qt_app, monkeypatch)

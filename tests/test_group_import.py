@@ -26,7 +26,12 @@ from fbposter.automation.humanize import Humanizer
 from fbposter.connection import ConnectionResult, ConnectionState
 from fbposter.groups import parse_group_url
 from fbposter.qtui.app import SETUP_COMPLETE_KEY
-from fbposter.qtui.views.groups import IMPORT_LABEL, IMPORT_PENDING_KEY, IMPORTING_LABEL
+from fbposter.qtui.views.groups import (
+    IMPORT_LABEL,
+    IMPORT_PENDING_KEY,
+    IMPORTING_LABEL,
+    REPLACE_PENDING_KEY,
+)
 
 G = strings.BASE_URL + "/groups/"
 
@@ -330,3 +335,144 @@ class TestTheButton:
         assert not groups.import_button.isEnabled()
         groups.import_from_facebook()
         assert len(held) == 1, "a second read started while the first was running"
+
+
+class TestCountingTheWholeList:
+    def test_complete_when_every_counted_group_was_read(self):
+        assert found(("1", "A"), ("2", "B")).complete
+
+    def test_not_complete_when_some_were_missed(self):
+        assert not FoundGroups(groups=found(("1", "A")).groups, expected=2).complete
+
+    def test_not_complete_without_a_count(self):
+        """No count, no knowing: a partial read would remove groups the
+        account is in."""
+        assert not FoundGroups(groups=found(("1", "A")).groups, expected=None).complete
+
+    def test_not_complete_on_an_error(self):
+        assert not FoundGroups(error="no", expected=0).complete
+
+
+class TestReplacingTheList:
+    """After an account switch the list becomes the new account's groups
+    (the user's choices, 2026-10-19)."""
+
+    def found(self, *pairs):
+        return [(identifier, f"{G}{identifier}/", name) for identifier, name in pairs]
+
+    def test_the_old_accounts_groups_go_and_the_new_ones_come(self, qt_app):
+        repo = qt_app.group_repo
+        old = repo.add_from_url(f"{G}1/", name="Old")
+        result = repo.replace_with(self.found(("2", "New")))
+        assert [g.name for g in repo.list()] == ["New"]
+        assert [g.name for g in result.added] == ["New"]
+        assert list(result.removals) == [old.id]
+        assert repo.get(old.id) is None, "no history to keep it for, so deleted"
+        assert repo.removed() == []
+
+    def test_a_group_in_both_accounts_keeps_its_place(self, qt_app):
+        repo = qt_app.group_repo
+        both = repo.add_from_url(f"{G}1/", name="Both")
+        old = repo.add_from_url(f"{G}2/", name="Old")
+        post = qt_app.schedule_repo.create(
+            name="Daily", bodies=["Hi"], group_ids=[both.id, old.id], times=["09:00"]
+        )
+        group_set = qt_app.group_set_repo.create("Mine", [both.id, old.id])
+        result = repo.replace_with(self.found(("1", "Both")))
+        assert list(result.removals) == [old.id]
+        assert qt_app.schedule_repo.get(post.id).group_ids == [both.id]
+        assert qt_app.group_set_repo.get(group_set.id).group_ids == [both.id]
+
+    def test_a_removed_group_the_new_account_is_in_comes_back(self, qt_app):
+        """Unlike the button, which never overrules a removal."""
+        repo = qt_app.group_repo
+        gone = repo.add_from_url(f"{G}SneakerHeads/", name="SneakerHeads")
+        repo.remove(gone.id)
+        result = repo.replace_with(self.found(("sneakerheads", "SneakerHeads")))
+        assert [g.id for g in result.brought_back] == [gone.id]
+        assert [g.id for g in repo.list()] == [gone.id]
+
+    def test_a_queued_post_skips_the_removed_groups(self, qt_app):
+        repo = qt_app.group_repo
+        both = repo.add_from_url(f"{G}1/")
+        old = repo.add_from_url(f"{G}2/")
+        task = qt_app.task_repo.create("Hi", [(both.id, "Hi"), (old.id, "Hi")])
+        result = repo.replace_with(self.found(("1", "")))
+        assert result.removals[old.id].batch_ids == (task.id,)
+        states = {t.group_id: t.state for t in qt_app.task_repo.targets_for(task.id)}
+        assert states == {both.id: "pending", old.id: "skipped"}
+
+    def test_an_account_in_no_groups_empties_the_list(self, qt_app):
+        qt_app.group_repo.add_from_url(f"{G}1/")
+        qt_app.group_repo.replace_with([])
+        assert qt_app.group_repo.list() == []
+
+
+def switched(app):
+    """What signing the old account out leaves behind."""
+    app.settings_repo.set(SETUP_COMPLETE_KEY, "1")
+    app.settings_repo.set(REPLACE_PENDING_KEY, "1")
+    app.settings_repo.set(IMPORT_PENDING_KEY, "1")
+
+
+class TestAfterASwitch:
+    def test_the_next_login_replaces_the_list(self, window):
+        old = window.group_repo.add_from_url(f"{G}9/", name="Old")
+        window.set_group_selected(old.id, True)
+        switched(window)
+        connect(window)
+        assert [g.name for g in window.group_repo.list()] == ["TRY", "Bikes"]
+        assert window.selected_groups == {g.id for g in window.group_repo.list()}
+        assert "2 added, 1 removed" in window.toast_label.text()
+        assert window.settings_repo.get(REPLACE_PENDING_KEY) == "0"
+        assert window.settings_repo.get(IMPORT_PENDING_KEY) == "0"
+
+    def test_it_says_what_the_removed_groups_were_taken_out_of(self, window):
+        old = window.group_repo.add_from_url(f"{G}9/", name="Old")
+        window.schedule_repo.create(
+            name="Daily", bodies=["Hi"], group_ids=[old.id], times=["09:00"]
+        )
+        switched(window)
+        connect(window)
+        assert "taken out of 1 repeating post" in window.toast_label.text()
+
+    def test_a_partial_read_changes_nothing(self, window):
+        window.group_repo.add_from_url(f"{G}9/", name="Old")
+        window.group_finder = StubFinder(
+            FoundGroups(groups=found(("1", "A")).groups, expected=4)
+        )
+        switched(window)
+        connect(window)
+        assert [g.name for g in window.group_repo.list()] == ["Old"]
+        assert "were not changed yet" in window.toast_label.text()
+        assert window.banner.level == "warning"
+        assert window.settings_repo.get(REPLACE_PENDING_KEY) == "1"
+
+    def test_the_button_finishes_it(self, window):
+        window.group_repo.add_from_url(f"{G}9/", name="Old")
+        window.group_finder = StubFinder(FoundGroups(groups=found(("1", "A")).groups))
+        switched(window)
+        connect(window)
+        assert [g.name for g in window.group_repo.list()] == ["Old"]
+        window.group_finder = StubFinder(found(("1", "A")))
+        window.views["groups"].import_from_facebook()
+        assert [g.name for g in window.group_repo.list()] == ["A"]
+
+    def test_a_failed_read_is_said_and_tried_again(self, window):
+        """The automatic run is usually silent, but after a switch the user
+        is looking at the old account's groups with no other way to know why."""
+        window.group_finder = StubFinder(FoundGroups(error="Facebook said no."))
+        switched(window)
+        connect(window)
+        assert window.toast_label.text() == "Facebook said no."
+        window.group_finder = StubFinder(found(("1", "TRY")))
+        connect(window)
+        assert [g.name for g in window.group_repo.list()] == ["TRY"]
+
+    def test_afterwards_the_button_only_adds_again(self, window):
+        switched(window)
+        connect(window)
+        gone = window.group_repo.list()[0]
+        window.group_repo.remove(gone.id)
+        window.views["groups"].import_from_facebook()
+        assert gone.id not in {g.id for g in window.group_repo.list()}

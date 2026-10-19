@@ -87,10 +87,73 @@ class Removal(NamedTuple):
     finished: tuple = ()
     # (set_id, position) of every group set it was taken out of.
     set_rows: tuple = ()
+    # Ids of the queued posts it was taken out of.
+    batch_ids: tuple = ()
 
     @property
     def sets(self) -> int:
         return len(self.set_rows)
+
+
+class Replacement(NamedTuple):
+    """What `GroupRepo.replace_with` changed, for the Groups screen to say."""
+
+    added: list
+    brought_back: list
+    # group id -> what removing it took it out of.
+    removals: dict
+
+
+def _insert_found(connection, identifier: str, url: str, name: str, cooldown: int) -> int:
+    """Store one group read off Facebook. Returns its id."""
+    cursor = connection.execute(
+        "INSERT INTO groups (identifier, url, name, cooldown_hours, notes, created_at) "
+        "VALUES (?, ?, ?, ?, '', ?)",
+        (identifier, url, name, cooldown, to_iso(utcnow())),
+    )
+    return cursor.lastrowid
+
+
+class AccountReset(NamedTuple):
+    """What switching Facebook account deleted, for the screen to say."""
+
+    waiting: int
+    repeating: int
+    sets: int
+
+
+def start_new_account(db: Database) -> AccountReset:
+    """Delete everything that belonged to the account just signed out.
+
+    The user's choices (2026-10-19): a new account starts with nothing of the
+    old one's but the templates. Every batch goes, waiting or finished, and
+    with it the whole posting history; every repeating post; every group set;
+    the counts the history prune kept (`post_totals`); and the removed groups,
+    which were only kept for their history. The groups still listed stay until
+    the new account's groups are read (`GroupRepo.replace_with`), with their
+    last-posted time cleared.
+
+    That also closes the gap between the switch and that read: nothing is left
+    that could post as the new account to the old one's groups. The price is
+    that `sent_before` forgets the old account's posts, so in a group both
+    accounts are in, an old post with the same words is no longer known about.
+
+    One transaction: a switch that emptied the queue but left a repeating post
+    to fill it again would not be a fresh start.
+    """
+    with db.transaction() as connection:
+        waiting = connection.execute(
+            "SELECT COUNT(*) FROM tasks WHERE state IN (?, ?)", (TASK_PENDING, TASK_RUNNING)
+        ).fetchone()[0]
+        # task_targets go with their tasks, schedule_targets and schedule_sets
+        # with their schedules, and members with their sets: ON DELETE CASCADE.
+        connection.execute("DELETE FROM tasks")
+        repeating = connection.execute("DELETE FROM schedules").rowcount
+        sets = connection.execute("DELETE FROM group_sets").rowcount
+        connection.execute("DELETE FROM post_totals")
+        connection.execute("DELETE FROM groups WHERE archived = 1")
+        connection.execute("UPDATE groups SET last_posted_at = NULL")
+    return AccountReset(waiting=waiting, repeating=repeating, sets=sets)
 
 
 class SetDeletion(NamedTuple):
@@ -213,13 +276,60 @@ class GroupRepo:
                 ).fetchone()
                 if known:
                     continue
-                cursor = connection.execute(
-                    "INSERT INTO groups (identifier, url, name, cooldown_hours, notes, created_at) "
-                    "VALUES (?, ?, ?, ?, '', ?)",
-                    (identifier, url, name, default_cooldown, to_iso(utcnow())),
-                )
-                added.append(cursor.lastrowid)
+                added.append(_insert_found(connection, identifier, url, name, default_cooldown))
         return [group for group in (self.get(group_id) for group_id in added) if group]
+
+    def replace_with(self, found: Iterable[tuple[str, str, str]]) -> Replacement:
+        """Make the list exactly the groups read off Facebook, after an account switch.
+
+        The user's choices (2026-10-19): once another account is logged in, the
+        list holds its groups and only its groups. A group it is not in is
+        removed exactly as the Remove button removes one (taken out of
+        repeating posts, queued posts and group sets), and then deleted
+        outright unless something was sent to it since the switch: the switch
+        already deleted the old account's history (`start_new_account`), so
+        there is nothing to keep it for, and it must not sit in the new
+        account's removed groups. A group it is in that was removed earlier
+        comes back. A group in both accounts is not touched.
+
+        One transaction: a list half replaced would be posted to as it stood.
+        The caller only asks once the whole list was read (`FoundGroups.complete`);
+        a partial read here would remove groups the account is in.
+        """
+        found = list(found)
+        wanted = {identifier.lower() for identifier, _url, _name in found}
+        default_cooldown = SettingsRepo(self.db).get_int("default_cooldown_hours", 8)
+        added: list[int] = []
+        back: list[int] = []
+        removals: dict[int, Removal] = {}
+        with self.db.transaction() as connection:
+            for identifier, url, name in found:
+                known = connection.execute(
+                    "SELECT id, archived FROM groups WHERE lower(identifier) = lower(?)",
+                    (identifier,),
+                ).fetchone()
+                if known is None:
+                    added.append(_insert_found(connection, identifier, url, name, default_cooldown))
+                elif known["archived"]:
+                    connection.execute(
+                        "UPDATE groups SET archived = 0, "
+                        "name = CASE WHEN name = '' THEN ? ELSE name END WHERE id = ?",
+                        (name, known["id"]),
+                    )
+                    back.append(known["id"])
+            listed = connection.execute(
+                "SELECT id, identifier FROM groups WHERE archived = 0 ORDER BY id"
+            ).fetchall()
+            for row in listed:
+                if row["identifier"].lower() not in wanted:
+                    removals[row["id"]] = self._archive(connection, row["id"])
+                    connection.execute(
+                        "DELETE FROM groups WHERE id = ? AND NOT EXISTS "
+                        "(SELECT 1 FROM task_targets WHERE group_id = ?)",
+                        (row["id"], row["id"]),
+                    )
+        groups = lambda ids: [g for g in (self.get(i) for i in ids) if g]  # noqa: E731
+        return Replacement(added=groups(added), brought_back=groups(back), removals=removals)
 
     def remove(self, group_id: int) -> Removal:
         """Take a group out of the list without destroying what went to it.
@@ -250,72 +360,77 @@ class GroupRepo:
         post left with nothing to do is finished here rather than at its time:
         cancelled if it never started, done if it did, as the worker would.
         """
-        unfinished = (TASK_PENDING, TASK_RUNNING)
         with self.db.transaction() as connection:
-            connection.execute("UPDATE groups SET archived = 1 WHERE id = ?", (group_id,))
-            schedule_rows = tuple(
-                (row["schedule_id"], row["position"])
-                for row in connection.execute(
-                    "SELECT schedule_id, position FROM schedule_targets WHERE group_id = ?",
-                    (group_id,),
-                )
-            )
-            schedules = connection.execute(
-                "DELETE FROM schedule_targets WHERE group_id = ?", (group_id,)
-            ).rowcount
-            set_rows = tuple(
-                (row["set_id"], row["position"])
-                for row in connection.execute(
-                    "SELECT set_id, position FROM group_set_members WHERE group_id = ?",
-                    (group_id,),
-                )
-            )
-            connection.execute("DELETE FROM group_set_members WHERE group_id = ?", (group_id,))
+            return self._archive(connection, group_id)
 
-            in_unfinished = "task_id IN (SELECT id FROM tasks WHERE state IN (?, ?))"
-            batches = [
-                row["task_id"]
-                for row in connection.execute(
-                    "SELECT DISTINCT task_id FROM task_targets "
-                    f"WHERE group_id = ? AND state = ? AND {in_unfinished}",
-                    (group_id, TARGET_PENDING, *unfinished),
-                )
-            ]
-            skipped_targets = tuple(
-                row["id"]
-                for row in connection.execute(
-                    "SELECT id FROM task_targets "
-                    f"WHERE group_id = ? AND state = ? AND {in_unfinished}",
-                    (group_id, TARGET_PENDING, *unfinished),
-                )
+    @staticmethod
+    def _archive(connection, group_id: int) -> Removal:
+        """`remove`, inside a transaction the caller already holds."""
+        unfinished = (TASK_PENDING, TASK_RUNNING)
+        connection.execute("UPDATE groups SET archived = 1 WHERE id = ?", (group_id,))
+        schedule_rows = tuple(
+            (row["schedule_id"], row["position"])
+            for row in connection.execute(
+                "SELECT schedule_id, position FROM schedule_targets WHERE group_id = ?",
+                (group_id,),
+            )
+        )
+        schedules = connection.execute(
+            "DELETE FROM schedule_targets WHERE group_id = ?", (group_id,)
+        ).rowcount
+        set_rows = tuple(
+            (row["set_id"], row["position"])
+            for row in connection.execute(
+                "SELECT set_id, position FROM group_set_members WHERE group_id = ?",
+                (group_id,),
+            )
+        )
+        connection.execute("DELETE FROM group_set_members WHERE group_id = ?", (group_id,))
+
+        in_unfinished = "task_id IN (SELECT id FROM tasks WHERE state IN (?, ?))"
+        batches = [
+            row["task_id"]
+            for row in connection.execute(
+                "SELECT DISTINCT task_id FROM task_targets "
+                f"WHERE group_id = ? AND state = ? AND {in_unfinished}",
+                (group_id, TARGET_PENDING, *unfinished),
+            )
+        ]
+        skipped_targets = tuple(
+            row["id"]
+            for row in connection.execute(
+                "SELECT id FROM task_targets "
+                f"WHERE group_id = ? AND state = ? AND {in_unfinished}",
+                (group_id, TARGET_PENDING, *unfinished),
+            )
+        )
+        connection.execute(
+            "UPDATE task_targets SET state = ?, error = ? "
+            f"WHERE group_id = ? AND state = ? AND {in_unfinished}",
+            (TARGET_SKIPPED, GROUP_REMOVED, group_id, TARGET_PENDING, *unfinished),
+        )
+
+        finished = []
+        for task_id in batches:
+            left = connection.execute(
+                "SELECT COUNT(*) FROM task_targets WHERE task_id = ? AND state IN (?, ?)",
+                (task_id, TARGET_PENDING, TARGET_RUNNING),
+            ).fetchone()[0]
+            if left:
+                continue
+            task = connection.execute(
+                "SELECT state, started_at FROM tasks WHERE id = ?", (task_id,)
+            ).fetchone()
+            state, error = (
+                (TASK_DONE, "") if task["started_at"]
+                else (TASK_CANCELLED, "Every group in it was removed.")
             )
             connection.execute(
-                "UPDATE task_targets SET state = ?, error = ? "
-                f"WHERE group_id = ? AND state = ? AND {in_unfinished}",
-                (TARGET_SKIPPED, GROUP_REMOVED, group_id, TARGET_PENDING, *unfinished),
+                "UPDATE tasks SET state = ?, error = ?, finished_at = ?, "
+                "resume_at = NULL WHERE id = ?",
+                (state, error, to_iso(utcnow()), task_id),
             )
-
-            finished = []
-            for task_id in batches:
-                left = connection.execute(
-                    "SELECT COUNT(*) FROM task_targets WHERE task_id = ? AND state IN (?, ?)",
-                    (task_id, TARGET_PENDING, TARGET_RUNNING),
-                ).fetchone()[0]
-                if left:
-                    continue
-                task = connection.execute(
-                    "SELECT state, started_at FROM tasks WHERE id = ?", (task_id,)
-                ).fetchone()
-                state, error = (
-                    (TASK_DONE, "") if task["started_at"]
-                    else (TASK_CANCELLED, "Every group in it was removed.")
-                )
-                connection.execute(
-                    "UPDATE tasks SET state = ?, error = ?, finished_at = ?, "
-                    "resume_at = NULL WHERE id = ?",
-                    (state, error, to_iso(utcnow()), task_id),
-                )
-                finished.append((task_id, task["state"], state))
+            finished.append((task_id, task["state"], state))
         return Removal(
             schedules=schedules,
             batches=len(batches),
@@ -323,6 +438,7 @@ class GroupRepo:
             skipped_targets=skipped_targets,
             finished=tuple(finished),
             set_rows=set_rows,
+            batch_ids=tuple(batches),
         )
 
     def restore(self, group_id: int, removal: Removal) -> bool:

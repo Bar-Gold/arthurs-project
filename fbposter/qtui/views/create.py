@@ -133,6 +133,14 @@ class CreatePostView(QWidget):
 
     def start_over(self) -> None:
         """A post went out or was queued: clear it all and go Home."""
+        self.clear()
+        self.app.show_view("home")
+
+    def clear(self) -> None:
+        """Empty the post being written and go back to step 1, staying put.
+
+        Also what an account switch does (the user's choice, 2026-10-19): the
+        new account starts with no draft of the old one's."""
         self.compose.clear_draft()
         self.app.selected_groups.clear()
         self.app.selected_sets.clear()
@@ -140,4 +148,3 @@ class CreatePostView(QWidget):
         self.index = 0
         self.pages.setCurrentIndex(0)
         self._restate()
-        self.app.show_view("home")

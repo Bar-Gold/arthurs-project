@@ -80,7 +80,7 @@ powershell -ExecutionPolicy Bypass -File packaging\build.ps1 -SkipInstaller  # .
 
 `status` exits 0 when logged in, 1 when not, 2 on error (Chrome not running, etc.).
 
-There is no linter or formatter configured, and no pytest config file. The suite is the whole check. Baseline: **1803 tests, 75-240s**. The spread is machine load, not the suite; the Qt GUI files are much of it. A run of *five minutes or more* means something is reaching the network; see the `SilentNamer` note below.
+There is no linter or formatter configured, and no pytest config file. The suite is the whole check. Baseline: **1837 tests, 75-240s**. The spread is machine load, not the suite; the Qt GUI files are much of it. A run of *five minutes or more* means something is reaching the network; see the `SilentNamer` note below.
 
 **Do not add `playwright install`.** It is unnecessary and was verified so against Chrome 150: the app attaches to the user's real Chrome over CDP and never launches Playwright's bundled Chromium, so the driver shipped inside the pip package is all that is required.
 
@@ -160,7 +160,7 @@ The user's choice, 2026-10-18. The clients are real-estate agents who post one l
 
 **Startup cost was Playwright, and it is now deferred.** This reverses an earlier decision recorded here, on a re-measurement: `playwright.sync_api` costs **~830ms**, not the ~340ms first measured, and importing `fbposter.qtui.app` went from **1670ms to 682ms** without it. The earlier note also had the mechanism wrong. Neither `worker.py` nor `automation/groupinfo.py` imports Playwright; **`session.py` does**, and both pull it in through that, so one lazy import fixed both rather than needing two.
 
-It is imported inside `session.attach()`. The objection recorded last time (that this moves the cost onto the first background name lookup or the first post) is exactly why it is safe: both of those already run **off the thread drawing the window**, and the first post has a ten-to-twenty-five-minute gap in front of it. A second on the worker thread is invisible; a second before the window appears is not. `tests/test_qtui_performance.py` pins both halves: that importing the window does not pull Playwright in, and that nothing in the package imports it at module scope, since the cost comes back silently wherever that is written.
+It is imported inside `session.attach()`. The objection recorded last time (that this moves the cost onto the first background name lookup or the first post) is exactly why it is safe: both of those already run **off the thread drawing the window**. A second on the worker thread is invisible; a second before the window appears is not. `tests/test_qtui_performance.py` pins both halves: that importing the window does not pull Playwright in, and that nothing in the package imports it at module scope, since the cost comes back silently wherever that is written.
 
 ### Two retentions, and only one of them deletes
 
@@ -188,13 +188,13 @@ The user asked for it (2026-10-14): a screen of numbers about the posting, in th
 
 - **"Sent" is `repo.SENT_STATES`**: posted, waiting for an admin, or might have posted, everywhere the Dashboard counts posts. The "Posted today" tile says "Since midnight, Israel time"; it said "N of 25 allowed today" until the daily limit went (2026-10-18), and the per-group "Can post" column went with the cooldown. Success rate is what went out of what was tried; a skip (a group removed mid-batch) is the app working, not failing, and is left out.
 - **Every day is an Israel calendar date** through `clock`, never "now minus 24 hours": "the last 7 days" is seven dates, so a daylight-saving change cannot move a post into another day.
-- **"All time" never shrinks.** The history prune deletes finished batches after 90 days, so before it deletes it adds their counts to `post_totals`, per group and per state, in the same transaction (`TaskRepo.archived_totals`). All time is the rows still stored plus those counts. No foreign key on that table: a cascade would be a way to lose them.
+- **"All time" never shrinks, except at an account switch.** The history prune deletes finished batches after 90 days, so before it deletes it adds their counts to `post_totals`, per group and per state, in the same transaction (`TaskRepo.archived_totals`). All time is the rows still stored plus those counts. No foreign key on that table: a cascade would be a way to lose them. Switching Facebook account is the one deliberate reset: it deletes the history and `post_totals`, so the Dashboard starts from zero; see "Changing which Facebook account it posts as".
 - **Cancel stayed, the approval buttons did not.** "Going out" lists every unfinished batch with Cancel (and Undo). The "Went live" / "Declined" buttons for a post held by an admin were dropped: the worker follows those up by itself, and one it gives up on stays `awaiting_approval`, which counts as sent for that day only. `TaskRepo.resolve_pending` stays, because the worker uses it.
 - **Recent activity replaced the batch history.** The last 15 groups the worker reached, each with its result and the reason under one that did not go out. The Queue's Recent/All toggle, `list_for_queue` and `count_older_than` went with it.
 - **The charts are drawn with `QPainter`** (`DayBars`, `OutcomeBar`, `Meter`). `PySide6.QtCharts` is excluded from the packaged build on purpose (`fbposter.spec`), so do not reach for it.
 - **Worker events refresh it**, several times a minute while a batch runs, so the tiles and charts update in place and the three lists (by group, going out, recent) are rebuilt only when their own snapshot changed. `tests/test_qtui_performance.py::TestTheDashboardIsNotRebuiltForNothing` pins that.
 
-**Do not "tidy up" by deleting old rows.** `task_targets` is what `sent_before` reads and what the Dashboard counts. Deleting history would let an old post in the feed be taken as proof that a new one with the same words went out.
+**Do not "tidy up" by deleting old rows** (an account switch is the one deliberate exception). `task_targets` is what `sent_before` reads and what the Dashboard counts. Deleting history would let an old post in the feed be taken as proof that a new one with the same words went out.
 
 ### Reading the client's groups off Facebook
 
@@ -205,7 +205,7 @@ A client used to paste every group link by hand. Now the app reads them off Face
 - **Read live on 2026-10-13** (an English account in 12 groups, one managed): inside `[role="main"]`, one heading with the count in brackets ("All groups you've joined (12)") and every group under it, the managed one included. Each group has three links to the same address: its picture (no text), its name, and a "View group" button. **The button carries an `aria-label` and the name link does not**, so the name is read without a word of Facebook's, in any language; taking the longest text would have named a group called "TRY" "View group". Addresses use the number, or the group's short name when it has one. All 12 were there on arrival; a longer list is assumed to load as it is scrolled, which is unverified live.
 - **Read only, and bounded.** One page load, scrolled with `Humanizer.browse`, links read from `[role="main"]` only (`groups_from_links`, pure). It stops at the heading's count, after `QUIET_SCROLLS` (3) scrolls with nothing new, at `MAX_SCROLLS` (60), or after `TIME_LIMIT_S` (180s). It clicks and types nothing. A checkpoint, login or block page adds nothing and says so; a page with neither a list nor a heading is an error, never "no groups".
 - **`GroupRepo.import_found` adds only identifiers not in the table, active or archived**, matched ignoring case. Unlike "Bring back", which is the user asking for a group back, an import is the app deciding, and it must not overrule a removal. The names come with the groups, because fifty nameless groups would be fifty page loads in a row through the name lookup. A group added earlier by number and listed by its short name (or the reverse) is not recognised as the same one and is added twice; it can be removed.
-- **The first login is the moment `SETUP_COMPLETE_KEY` is first set.** That sets `groups_import_pending`, and the import runs on each `CONNECTED` until a read succeeds; a failed automatic read says nothing and waits for the next connection, never a timer. A client upgrading from an older version is already set up and never gets an automatic import. Switching Facebook account does not import either; the button does.
+- **The first login is the moment `SETUP_COMPLETE_KEY` is first set.** That sets `groups_import_pending`, and the import runs on each `CONNECTED` until a read succeeds; a failed automatic read says nothing and waits for the next connection, never a timer. A client upgrading from an older version is already set up and never gets an automatic import. Switching Facebook account replaces the list rather than adding to it; see "Changing which Facebook account it posts as".
 - **`App.group_finder` is `None` until `run()` switches it on**, like `_clear_stuck_tabs`: a window the suite builds must not open Facebook even with the app's Chrome running on the machine. `tests/test_group_import.py` covers all of it with a fake page and a stub finder.
 
 ### Group sets: one name for several groups, and a live link for repeating posts
@@ -228,6 +228,8 @@ The user asked for "Group of Groups" (2026-10-15); it is called **Group sets** o
 every post ever made to it. That history was what the repeated-text rule read
 (gone since 2026-10-18), and it is still what `sent_before` reads and the
 Dashboard counts. Two clicks in the UI, no warning, and it was silently gone.
+The one place a group row is deleted is an account switch (`replace_with`), and
+only a group with no history left to lose.
 
 - **`list()` already excludes archived groups**, so every screen needed no
   change; `get()` deliberately still finds them, because the Dashboard has to
@@ -239,8 +241,9 @@ Dashboard counts. Two clicks in the UI, no warning, and it was silently gone.
   or opens a page for, a group the user removed.
 - **The follow-up sweep drops a removed group rather than chasing it**, since
   every check is a real page load and the answer can no longer be acted on. The
-  target row stays `awaiting_approval`, which counts as sent, so that day's
-  rules hold whether or not anyone ever learns what the admin did with it.
+  target row stays `awaiting_approval`, which counts as sent (on the Dashboard
+  and for `sent_before`) whether or not anyone ever learns what the admin did
+  with it.
 - **A removed group comes back from the list under the Groups list**
   ("Show removed groups", then "Bring back": `GroupRepo.removed` and
   `bring_back`). Pasting its link again used to be the way, until the paste box
@@ -371,11 +374,40 @@ Every look is a few DevTools messages to the app's own Chrome over `cdp.py`; non
 ### Changing which Facebook account it posts as
 
 `login.switch_account()` drops the profile's cookies and reopens Facebook. That
-is the entire mechanism, and it is enough because **nothing in the database is
+is the whole browser side, and it is enough because **nothing in the database is
 tied to an account** (the login cookie is only ever read as a yes/no and never
-stored), so the groups, templates, repeating posts and the whole posting history
-survive the switch untouched. Before this existed, the only way to do it was
-renaming `ChromeProfile\` by hand.
+stored). Everything the old account had is then deleted on purpose (below).
+Before this existed, the only way to do it was renaming `ChromeProfile\` by hand.
+
+- **New account, new everything but the templates** (the user's choices,
+  2026-10-19). Once the sign-out has worked, and never before,
+  `repo.start_new_account` deletes in one transaction every batch (waiting or
+  finished, so the whole posting history), every repeating post, every group
+  set, `post_totals`, and every removed group, and clears `last_posted_at` on
+  the groups still listed. The window then empties the post being written
+  (`CreatePostView.clear`) and closes the Group sets editor. The Dashboard is
+  fresh because there is nothing left to count. This is the one deliberate
+  exception to "never delete history", and it has a known cost the user
+  accepted: `sent_before` forgets the old account's posts, so in a group both
+  accounts are in, an old post with the same words can be taken as proof a new
+  one went out. It also closes the gap between the switch and the new groups
+  being read: nothing is left queued that could post as the new account to the
+  old one's groups.
+- **The groups list becomes the new account's groups** (until 2026-10-19 a
+  switch left the list as it was). A successful sign-out sets
+  `groups_replace_pending` and `groups_import_pending`, so the read runs on the
+  next `CONNECTED`, and while the replace is pending the read (automatic or the
+  button) calls `GroupRepo.replace_with` instead of `import_found`. In one
+  transaction: a group the new account is not in is removed as Remove does it
+  (`_archive`), then deleted outright unless something was sent to it since the
+  switch, so it never sits in the new account's removed groups; a removed group
+  it is in comes back, overruling a removal only here; a group in both is not
+  touched. No Undo.
+- **Only a complete read may replace** (`FoundGroups.complete`: the heading's
+  count read, and every group it counts found). A partial read would remove
+  groups the account is in, so it changes nothing, says so, and leaves the
+  replace pending for the next connection or the button. Unlike the first-login
+  import, a failed automatic read here is announced.
 
 - **Cookies, never Facebook's own Log out menu.** Driving that menu would be a
   language-dependent click on obfuscated markup, in the account menu of all
@@ -447,7 +479,7 @@ Three failures here were live gaps, and each one is a rule now:
 One `PostingWorker`, one thread, started by `App.start_worker()` and by nothing else. Constructing an `App` deliberately does **not** start it, which is the only reason the GUI test suite can exist.
 
 - **Every wait is an absolute instant, never a countdown.** The inter-group gap lives in `tasks.resume_at` and is compared against the wall clock each tick. Never replace it with `sleep()`. A countdown does not survive the app closing or the machine suspending.
-- **The 2-4 minute gap is global (10-25 until 2026-10-18), and `tasks.resume_at` cannot enforce that on its own.** It spaces the groups *within* one batch, and that is all it can do: `claimable()` filters a waiting task out of its result and hands back the next one, so a second batch posted straight through the first one's wait, and a batch that finished left nothing behind at all, so the one after it started the same second. Twelve groups across three batches went out in 66 minutes with two posts one minute apart, which is the exact pattern this app exists to avoid. `settings.next_post_after` is the earliest instant *any* post may go out; it is written after every post and checked at the top of `_attempt`, which is the one funnel every post passes through. The same twelve now take 3h20m with no gap under 12 minutes. **A skip is not a post and must never set it**. A batch of groups all removed mid-batch would otherwise lock the account out of posting for a gap. The ORDER BY in `claimable()` was never enough; it decides order, and cannot hold back a row the WHERE clause already removed.
+- **The 2-4 minute gap is global (10-25 until 2026-10-18), and `tasks.resume_at` cannot enforce that on its own.** It spaces the groups *within* one batch, and that is all it can do: `claimable()` filters a waiting task out of its result and hands back the next one, so a second batch posted straight through the first one's wait, and a batch that finished left nothing behind at all, so the one after it started the same second. Twelve groups across three batches went out in 66 minutes with two posts one minute apart, which is the exact pattern this app exists to avoid. `settings.next_post_after` is the earliest instant *any* post may go out; it is written after every post and checked at the top of `_attempt`, which is the one funnel every post passes through. With the 10-25 minute gap of the time, the same twelve then took 3h20m with no gap under 12 minutes. **A skip is not a post and must never set it**. A batch of groups all removed mid-batch would otherwise lock the account out of posting for a gap. The ORDER BY in `claimable()` was never enough; it decides order, and cannot hold back a row the WHERE clause already removed.
 - **Nothing is judged at posting time but the gap and whether the group is still on the list.** `_attempt` used to re-check the daily limit, the posting hours, the cooldown and the day's wording, and defer or skip on each. All of that went on 2026-10-18 with the rules themselves.
 - **Believe the `PostOutcome`.** `outcome.posted` being False (a dry run) must not be recorded as a real post. That would count a post that never happened. This was a live bug.
 - **A target is claimed, not just marked.** `TaskRepo.claim_target` is a conditional `UPDATE ... WHERE state = 'pending'` and the transition itself is the lock. Reading a pending target and then marking it running as two steps left a window in which a *second copy of the app* read the same target and posted it too. Racing two workers on one database produced a duplicate in **7 runs out of 40**. Never replace this with an unconditional `mark_target`.
@@ -470,7 +502,7 @@ One `PostingWorker`, one thread, started by `App.start_worker()` and by nothing 
 - **`_post` catches `BaseException`, records, then re-raises.** `KeyboardInterrupt` and `SystemExit` are not `Exception`, so they used to kill the worker thread outright, leaving the target stuck in `running` and the keep-awake request still held, so the machine could not sleep.
 - **Attachments are checked on disk before the browser is touched.** A file moved since the batch was queued otherwise surfaces as a Playwright timeout inside `set_input_files`, naming nothing the user can act on.
 - **Crash recovery verifies, it does not guess.** A target left `running` is checked against the group with `GroupPoster.verify`: found → done, uncheckable → escalated to the user.
-- **`verify()` answering no is not proof it did not post, so recovery looks twice.** The feed is virtualised and the check is a single page load, so a slow render answers no for a post that is live; and a moderated group shows the author their own queued post, so a check landing either side of the crash can go either way. Requeueing on that alone is how a duplicate happens. `_resolve_unfound` asks `pending_verdict` (the group's own list of your posts, the one page that separates "queued" from "gone"), before anything is sent again: `pending` → `awaiting_approval` and the cooldown starts, `approved` → done (the earlier verify was a false negative), `unknown` → left `running` and retried, and **only `declined`** (not live *and* not in the queue) requeues. `_wait_or_escalate` bounds the waiting at `CONNECTION_GIVE_UP`, because a target left `running` holds the machine awake.
+- **`verify()` answering no is not proof it did not post, so recovery looks twice.** The feed is virtualised and the check is a single page load, so a slow render answers no for a post that is live; and a moderated group shows the author their own queued post, so a check landing either side of the crash can go either way. Requeueing on that alone is how a duplicate happens. `_resolve_unfound` asks `pending_verdict` (the group's own list of your posts, the one page that separates "queued" from "gone"), before anything is sent again: `pending` → `awaiting_approval`, `approved` → done (the earlier verify was a false negative), `unknown` → left `running` and retried, and **only `declined`** (not live *and* not in the queue) requeues. `_wait_or_escalate` bounds the waiting at `CONNECTION_GIVE_UP`, because a target left `running` holds the machine awake.
 - A missed slot older than `MISSED_GRACE` (2h) is marked `missed`, never fired late in a burst. **A batch waiting on purpose is exempt**: `resume_at` being set means it is waiting, not that the machine was asleep. **`_note_due` stamps every scheduled batch that comes due while the worker runs** (`resume_at = scheduled_for`), because one listing to 80 groups takes hours and a batch set for a time in the middle of that waits its turn behind it; without the stamp it was thrown away two hours in. One first seen more than `MISSED_GRACE` late (the machine was asleep or off, or posting was paused) is not stamped and is still missed.
 - **Due schedules are materialised at the top of `run_once`**, before any task is claimed, and creating one counts as a step. See the Repeating posts section above.
 - **`LivePoster` reattaches over CDP per group** and closes its page afterwards. Holding one connection open across a multi-hour batch would mean a Chrome restart kills the run; reattaching costs a second and survives it.
@@ -502,9 +534,9 @@ Expected volume is high now: one listing to 40-80 groups, once or twice a day (t
 
 ## Scope Discipline
 
-The workload is small, and the spec was trimmed accordingly. **Not in v1:** group tags ("groups of groups"), a separate `run_log` table, video upload, skipping a single group mid-batch. Video upload has since been built at the user's request (2026-10-15); see "Videos" under the Automation Engine rules. See the Scope Control table in `README.md` for the reasoning. Do not reintroduce these without asking. Each was cut on purpose. v1 is: compose → pick groups → post now or schedule once → serial worker with jitter → live queue view.
+The workload is small, and the spec was trimmed accordingly. **Not in v1:** group tags ("groups of groups"), a separate `run_log` table, video upload, skipping a single group mid-batch. Video upload has since been built at the user's request (2026-10-15); see "Videos" under the Automation Engine rules. See the Scope Control table in `README.md` for the reasoning. Do not reintroduce the ones still cut without asking. Each was cut on purpose. v1 was: compose → pick groups → post now or schedule once → serial worker with jitter → live queue view (the Dashboard since 2026-10-14).
 
-Recurring scheduling was cut from v1 on the same grounds and has since been **built at the user's request** (daily, as many times a day as wanted since 2026-10-18; it was in their original requirements). Group tags were built too, as group sets (2026-10-15); see "Group sets" above. Pausing was cut too and has since been built: one pause for all posting, on the Settings screen, which holds a batch mid-way (see the Worker rules). Skipping one group mid-batch is still cut. The Queue can only cancel a whole batch.
+Recurring scheduling was cut from v1 on the same grounds and has since been **built at the user's request** (daily, as many times a day as wanted since 2026-10-18; it was in their original requirements). Group tags were built too, as group sets (2026-10-15); see "Group sets" above. Pausing was cut too and has since been built: one pause for all posting, on the Settings screen, which holds a batch mid-way (see the Worker rules). Skipping one group mid-batch is still cut, and so is the `run_log` table. The Dashboard's "Going out" list can only cancel a whole batch.
 
 ## Selector Strategy
 
@@ -528,7 +560,7 @@ The composer trigger carries **no aria-label in any language** and is matched on
 
 **The member count is read in the same visit as the name**, verified live on 2026-10-14 on an English account and a two-member group only. It is the link to the group's member list (`a[href*="/members"]` inside `[role="main"]`) that has no `aria-label`; the labelled one beside it is "See everyone". The text is stored as Facebook wrote it ("2 members", or the account's own language), so nothing is translated. Facebook's "Your groups" list shows no count, only "You last visited...", so every group's page is opened once, all in one tab that goes from group to group and is closed when the sweep ends (the user's request, 2026-10-14; it was a new tab per group). One tab is not fewer visits to Facebook. `GroupRepo.missing_details` is groups with no name, or no count, and a page that loaded with no count waits `MEMBERS_RETRY` (1 day) before it is opened again. A page that never loaded is not recorded, and is tried at the next chance.
 
-**Fixing a name lookup does not fix the names already stored.** `GroupRepo.missing_names` only finds *empty* ones, so a wrong name is never looked at again and would sit in the Groups list for ever. Migration 008 clears `groups.name` so the Groups screen re-fetches; until it does, `display_name` falls back to the identifier, which is what a newly added group shows anyway. Safe because nothing decides anything on `name`. The repeat guard, the cooldown and the queue all key on `group_id`.
+**Fixing a name lookup does not fix the names already stored.** `GroupRepo.missing_names` only finds *empty* ones, so a wrong name is never looked at again and would sit in the Groups list for ever. Migration 008 clears `groups.name` so the Groups screen re-fetches; until it does, `display_name` falls back to the identifier, which is what a newly added group shows anyway. Safe because nothing decides anything on `name`. The queue and the posting history both key on `group_id`.
 
 **Read every string off the live site, never translate one.** Russian's post button is `Отправить` ("send"), while the obvious translation, and what research suggested, is `Опубликовать`. Shipping the plausible word would have failed at the Post click, which is the one step that cannot safely be retried. **The pending banner caught the same trap twice more**, verified 2026-08-18: the live Hebrew is `בהמתנה` where the natural translation gives `ממתין`, and the live Russian is `подтверждения` ("confirmation") where the natural translation gives `одобрения` ("approval"), a word that appears nowhere on the page. Two of the three shipped only because the researched list happened to include the right variant alongside the wrong one. To add a language: `main.py probe` a real group, dump the composer, paste what Facebook returns.
 

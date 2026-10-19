@@ -69,11 +69,11 @@ def open_login_window() -> None:
 def switch_account() -> None:
     """End the current Facebook session and offer the login form again.
 
-    The client keeps everything except who they post as. The groups, the
-    templates, the schedules and the whole posting history live in the
-    database, and nothing in it is tied to an account -- the login cookie is
-    only ever read as a yes/no and never stored -- so switching account is
-    exactly this and nothing more.
+    The browser half only. Nothing in the database is tied to an account --
+    the login cookie is only ever read as a yes/no and never stored -- so the
+    templates, the schedules and the posting history stay. The groups list is
+    replaced with the next account's groups once it is logged in, by the
+    Groups screen (`GroupRepo.replace_with`), not here.
 
     Raises FBPosterError with something the user can act on if it cannot be
     arranged. The caller shows it as-is.

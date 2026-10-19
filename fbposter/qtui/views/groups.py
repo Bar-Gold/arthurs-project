@@ -50,6 +50,10 @@ LOOKING_UP = "Looking up the group's name…"
 # Facebook. A setting, not memory, so a read that fails is tried again at the
 # next connection, including after a restart.
 IMPORT_PENDING_KEY = "groups_import_pending"
+# Set when the user switches Facebook account, and cleared once the list has
+# been replaced with the new account's groups (`GroupRepo.replace_with`). While
+# it is set, a read replaces the list instead of adding to it.
+REPLACE_PENDING_KEY = "groups_replace_pending"
 IMPORT_LABEL = "Get my groups from Facebook"
 IMPORTING_LABEL = "Getting your groups…"
 SEARCH_PLACEHOLDER = "Search your groups"
@@ -67,6 +71,20 @@ def set_label(group_set) -> str:
 def in_sets(names) -> str:
     """Beside a group a picked set brings: which set it comes from."""
     return "in " + ", ".join(names)
+
+
+def taken_out_of(schedules: int, batches: int, sets: int) -> str:
+    """"2 repeating posts, 1 queued post and 1 group set", or "" for none."""
+    parts = [
+        f"{count} {noun}{'s' if count != 1 else ''}"
+        for count, noun in (
+            (schedules, "repeating post"), (batches, "queued post"), (sets, "group set")
+        )
+        if count
+    ]
+    if len(parts) > 1:
+        return f"{', '.join(parts[:-1])} and {parts[-1]}"
+    return parts[0] if parts else ""
 
 
 def matches(group, query: str) -> bool:
@@ -319,24 +337,8 @@ class GroupsView(QWidget):
         # puts the group back into exactly what it was taken out of; "Bring
         # back" later does not.
         undo = lambda: self._restore_group(group_id, removal, was_selected)  # noqa: E731
-        taken_from = []
-        if removal.schedules:
-            taken_from.append(
-                f"{removal.schedules} repeating post{'s' if removal.schedules != 1 else ''}"
-            )
-        if removal.batches:
-            taken_from.append(
-                f"{removal.batches} queued post{'s' if removal.batches != 1 else ''}"
-            )
-        if removal.sets:
-            taken_from.append(
-                f"{removal.sets} group set{'s' if removal.sets != 1 else ''}"
-            )
-        if taken_from:
-            listed = (
-                f"{', '.join(taken_from[:-1])} and {taken_from[-1]}"
-                if len(taken_from) > 1 else taken_from[0]
-            )
+        listed = taken_out_of(removal.schedules, removal.batches, removal.sets)
+        if listed:
             # Said here because bringing the group back does not undo it.
             self.app.toast(
                 f"Group removed, and taken out of {listed}. It can "
@@ -406,6 +408,11 @@ class GroupsView(QWidget):
         is never added back (`GroupRepo.import_found`). The automatic run after
         the first login says nothing when it fails: it is tried again at the
         next connection, and the client never asked for it.
+
+        After an account switch (`REPLACE_PENDING_KEY`) the read replaces the
+        list instead (`_replace_with_found`), and a failure is said even on the
+        automatic run: the user switched, and is looking at the old account's
+        groups with no other way to know why.
         """
         finder = self.app.group_finder
         if self._importing or finder is None:
@@ -422,15 +429,18 @@ class GroupsView(QWidget):
 
         def done(result):
             self._importing = False
+            replacing = self.app.settings_repo.get(REPLACE_PENDING_KEY) == "1"
             if result is None:
-                if not automatic:
+                if not automatic or replacing:
                     self.notify(
                         "Chrome isn't connected, so your groups could not be read.",
                         "warning",
                     )
             elif not result.ok:
-                if not automatic:
+                if not automatic or replacing:
                     self.notify(result.error, "error")
+            elif replacing:
+                self._replace_with_found(result)
             else:
                 self._add_found(result, automatic)
             self.refresh_import_button()
@@ -470,6 +480,60 @@ class GroupsView(QWidget):
         self.notify(message, "warning" if short else "success")
         # A group whose name could not be read off the list gets the usual
         # lookup, one at a time.
+        self._fetch_missing_names()
+
+    def _replace_with_found(self, result) -> None:
+        """After an account switch: the list becomes the new account's groups.
+
+        All or nothing. Only a read that got every group the page counts may
+        remove anything, because a group missed by the read would be removed
+        from a list it belongs on. A short read changes nothing and leaves the
+        switch pending, so the next connection or the button tries again.
+        """
+        if not result.complete:
+            if result.expected is None:
+                why = "Facebook did not say how many groups this account is in"
+            else:
+                why = (
+                    f"Facebook lists {result.expected} groups and only "
+                    f"{len(result.groups)} could be read"
+                )
+            self.notify(
+                f"{why}, so your groups were not changed yet. "
+                f"Press {IMPORT_LABEL} to try again.",
+                "warning",
+            )
+            return
+        replacement = self.app.group_repo.replace_with(
+            (found.ref.identifier, found.ref.url, found.name) for found in result.groups
+        )
+        self.app.settings_repo.set(REPLACE_PENDING_KEY, "0")
+        self.app.settings_repo.set(IMPORT_PENDING_KEY, "0")
+        for group in replacement.added + replacement.brought_back:
+            self.app.set_group_selected(group.id, True)
+        for group_id in replacement.removals:
+            self.app.set_group_selected(group_id, False)
+        self.refresh()
+
+        came = len(replacement.added) + len(replacement.brought_back)
+        went = len(replacement.removals)
+        if not came and not went:
+            message = "Your groups already match the Facebook account you are logged in as."
+        else:
+            message = (
+                "Your groups now match the Facebook account you are logged in as: "
+                f"{came} added, {went} removed."
+            )
+        removals = replacement.removals.values()
+        listed = taken_out_of(
+            len({row[0] for r in removals for row in r.schedule_rows}),
+            len({task_id for r in removals for task_id in r.batch_ids}),
+            len({row[0] for r in removals for row in r.set_rows}),
+        )
+        if listed:
+            # Only what was made since the switch: it deleted the rest.
+            message += f" The removed ones were taken out of {listed}."
+        self.notify(message, "success")
         self._fetch_missing_names()
 
     # -- names and member counts --------------------------------------------

@@ -35,9 +35,11 @@ from PySide6.QtWidgets import (
 from fbposter import login, onboarding
 from fbposter.onboarding import RowState, SetupStep
 from fbposter.connection import ConnectionResult, ConnectionState
+from fbposter.db.repo import start_new_account
 
 from .. import icons, theme
 from ..widgets import card, clear, row
+from .groups import IMPORT_PENDING_KEY, REPLACE_PENDING_KEY
 
 # Drawn, not typed: a filled tick for done, a ringed dot for the step you are
 # on, an empty ring for one still to come (icons.py). They were the characters
@@ -265,8 +267,24 @@ class WelcomeView(QWidget):
 
     def _on_done(self, _result) -> None:
         self._busy = False
+        cleared = ""
         if self._switching:
             self._switching = False
+            # Only once the sign-out has worked: a failed one changes nothing.
+            # A new account starts with nothing of the old one's but the
+            # templates (the user's choices, 2026-10-19): no posts waiting or
+            # repeating, no group sets, no history, no draft. With nothing
+            # queued, nothing goes out as the new account to the old groups.
+            reset = start_new_account(self.app.db)
+            self.app.views["create"].clear()
+            self.app.views["group_sets"].close_editor()
+            cleared = onboarding.switch_cleared(reset.waiting, reset.repeating, reset.sets)
+            # The old account is signed out, so the list is replaced with the
+            # next account's groups the first time a connection comes back
+            # (the user's choice, 2026-10-19). Stored, so it survives a restart
+            # before they log in.
+            self.app.settings_repo.set(REPLACE_PENDING_KEY, "1")
+            self.app.settings_repo.set(IMPORT_PENDING_KEY, "1")
             # The cookies are gone, so what the last check said is now false.
             # Recording it here rather than waiting for the round trip keeps
             # the pill and this screen honest while the login form is already
@@ -279,7 +297,7 @@ class WelcomeView(QWidget):
             self._opened_login = True
         if self.step is SetupStep.LOGGED_OUT:
             self.app.toast(
-                "Chrome is open. Log into Facebook there, then press Check again.",
+                f"{cleared}Chrome is open. Log into Facebook there, then press Check again.",
                 "info",
             )
         self.recheck()

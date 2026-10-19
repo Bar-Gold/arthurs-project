@@ -119,13 +119,16 @@ SWITCH_HEADLINE = "Switch to a different Facebook account?"
 SWITCH_DETAIL = (
     "Posting as somebody else? This signs the current account out of the app's "
     "own Chrome window and opens the Facebook login, so you can sign in as "
-    "another one. Your groups, templates, repeating posts and posting history "
-    "all stay exactly as they are."
+    "another one. The new account starts fresh: once you are in, the groups "
+    "are its own, the Dashboard starts from zero, and no posting history is "
+    "carried over. Your templates stay."
 )
 SWITCH_WARNING = (
-    "You will need the other account's password to hand. Nothing is deleted, "
-    "and the Chrome you browse in yourself is not touched, only the separate "
-    "window this app posts through."
+    "You will need the other account's password to hand. Everything from this "
+    "account is deleted: posts waiting to go out, repeating posts, group sets, "
+    "the post you are writing and the posting history. Only your templates "
+    "are kept. The Chrome you browse in yourself is not touched, only the "
+    "separate window this app posts through."
 )
 SWITCH_CONFIRM = "Yes, sign out and switch"
 SWITCH_CANCEL = "Cancel"
@@ -138,6 +141,21 @@ SWITCH_BUSY = (
 # What the pill says the moment the cookies are gone, before any check has had
 # time to come back and say the same thing.
 SWITCH_DONE = "Signed out. Log in as the other account in the Chrome window."
+
+
+def switch_cleared(waiting: int, repeating: int, sets: int) -> str:
+    """What the switch deleted, said ahead of the login prompt; "" for none."""
+    parts = [
+        f"{count} {noun}{'s' if count != 1 else ''}"
+        for count, noun in (
+            (waiting, "waiting post"), (repeating, "repeating post"), (sets, "group set")
+        )
+        if count
+    ]
+    if not parts:
+        return ""
+    said = f"{', '.join(parts[:-1])} and {parts[-1]}" if len(parts) > 1 else parts[0]
+    return f"Deleted {said}. "
 
 
 def plan(chrome_installed: bool, result: ConnectionResult | None) -> SetupStep:

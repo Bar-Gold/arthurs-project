@@ -109,6 +109,13 @@ class FoundGroups:
     def ok(self) -> bool:
         return not self.error
 
+    @property
+    def complete(self) -> bool:
+        """Every group the heading counts was read. Without a count there is
+        no knowing, so no: replacing the list on a partial read would remove
+        groups the account is in."""
+        return self.ok and self.expected is not None and len(self.groups) >= self.expected
+
 
 class GroupFinder(Protocol):
     """One method, so the window can be tested without a browser."""

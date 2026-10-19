@@ -182,12 +182,36 @@ class TestChangingWhichAccountItPostsAs:
         assert not any(step.value.startswith("switch") for step in SetupStep)
 
     def test_the_promise_is_stated(self):
-        """The whole reason this is safe to press is that nothing but the
-        Facebook session changes, and the user has no way to know that unless
-        the screen says so."""
+        """The groups change to the new account's (the user's choice,
+        2026-10-19) and the history stays, and the user has no way to know
+        either unless the screen says so."""
         detail = onboarding.SWITCH_DETAIL.lower()
         assert "groups" in detail
         assert "history" in detail
+
+    def test_the_warning_says_what_goes(self):
+        """Everything but the templates (the user's choices, 2026-10-19).
+        Asked before, not found after."""
+        warning = onboarding.SWITCH_WARNING.lower()
+        assert "deleted" in warning
+        for thing in ("waiting", "repeating posts", "group sets", "history"):
+            assert thing in warning, thing
+        assert "templates are kept" in warning
+
+    def test_the_dashboard_starting_again_is_stated(self):
+        assert "dashboard" in onboarding.SWITCH_DETAIL.lower()
+
+    @pytest.mark.parametrize(
+        "counts,said",
+        [
+            ((0, 0, 0), ""),
+            ((1, 0, 0), "Deleted 1 waiting post. "),
+            ((0, 2, 0), "Deleted 2 repeating posts. "),
+            ((3, 1, 2), "Deleted 3 waiting posts, 1 repeating post and 2 group sets. "),
+        ],
+    )
+    def test_what_was_deleted_is_said(self, counts, said):
+        assert onboarding.switch_cleared(*counts) == said
 
     def test_the_warning_says_what_they_will_need(self):
         assert "password" in onboarding.SWITCH_WARNING.lower()
