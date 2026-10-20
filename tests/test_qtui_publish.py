@@ -16,6 +16,8 @@ from datetime import timedelta
 from pathlib import Path
 
 import pytest
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QFrame, QLabel
 
 from fbposter import clock, recurrence
 from fbposter.db.models import (
@@ -24,7 +26,13 @@ from fbposter.db.models import (
     TASK_PENDING,
     utcnow,
 )
-from fbposter.qtui.views.publish import NOW, ONCE, REPEAT
+from fbposter.qtui.views.publish import (
+    NOW,
+    ONCE,
+    RECIPIENTS_MAX_HEIGHT,
+    RECIPIENTS_MAX_HEIGHT_REPEAT,
+    REPEAT,
+)
 
 HEBREW = "אני מוכר אופניים חשמליים Xiaomi M365 במחיר 1800 שקל"
 BODY = "Selling a road bike, 54cm frame."
@@ -358,6 +366,77 @@ class TestWhatIsGoingOut:
         qt_app.views["groups"].set_all(False)
         publish.on_show()
         assert publish.recipient_box.count() == 1  # the "no groups" note
+        assert publish.recipient_count.text() == ""
+
+    def test_a_hairline_separates_the_rows(self, views):
+        """Every row but the first has a divider above it (the user's request,
+        2026-10-19: the names ran into each other)."""
+        _compose, publish = views
+        publish.on_show()
+        rows = [publish.recipient_box.itemAt(i).widget()
+                for i in range(publish.recipient_box.count())]
+        dividers = [
+            sum(1 for frame in row.findChildren(QFrame, options=Qt.FindDirectChildrenOnly)
+                if frame.objectName() == "Divider")
+            for row in rows
+        ]
+        assert dividers == [0, 1, 1]
+
+    def test_the_count_is_beside_the_heading(self, views):
+        _compose, publish = views
+        publish.on_show()
+        assert publish.recipient_count.text() == "3 groups"
+
+    def test_a_hebrew_name_starts_at_the_left_like_the_rest(self, qt_app, views):
+        """Left to itself a Hebrew name went to the far right of its row, so a
+        list mixing the two zigzagged from side to side."""
+        _compose, publish = views
+        hebrew = qt_app.group_repo.add_from_url(
+            "https://www.facebook.com/groups/demo9", name="מוכרים-קונים כרטיסים להופעות"
+        )
+        qt_app.set_group_selected(hebrew.id, True)
+        publish.on_show()
+        names = [label for label in publish.recipients.findChildren(QLabel)
+                 if label.objectName() != "Muted"]
+        assert "מוכרים-קונים כרטיסים להופעות" in [label.text() for label in names]
+        for label in names:
+            assert label.alignment() & Qt.AlignAbsolute, label.text()
+            assert label.alignment() & Qt.AlignLeft, label.text()
+
+
+class TestALongListScrolls:
+    """A client sends one post to 40-80 groups. Laid out bare, 45 names were
+    squeezed into the window and drawn over each other."""
+
+    @pytest.fixture
+    def many(self, qt_app):
+        for index in range(45):
+            group = qt_app.group_repo.add_from_url(
+                f"https://www.facebook.com/groups/many{index}", name=f"Group {index}"
+            )
+            qt_app.set_group_selected(group.id, True)
+        qt_app.show_view("publish")
+        return qt_app.views["publish"]
+
+    def test_it_stops_growing_and_scrolls(self, many):
+        area = many.recipient_area
+        assert sum(area.row_heights()) > RECIPIENTS_MAX_HEIGHT
+        assert area.sizeHint().height() == RECIPIENTS_MAX_HEIGHT
+        assert area.minimumSizeHint().height() < RECIPIENTS_MAX_HEIGHT
+
+    def test_repeat_gives_it_less_room(self, many):
+        """Repeat has its wordings and repeating posts under the list."""
+        many.set_mode(REPEAT)
+        assert many.recipient_area.sizeHint().height() == RECIPIENTS_MAX_HEIGHT_REPEAT
+        many.set_mode(NOW)
+        assert many.recipient_area.sizeHint().height() == RECIPIENTS_MAX_HEIGHT
+
+    def test_a_short_list_is_as_tall_as_its_rows(self, views):
+        """No empty space under the last group."""
+        _compose, publish = views
+        publish.on_show()
+        area = publish.recipient_area
+        assert 0 < area.sizeHint().height() == sum(area.row_heights()) < RECIPIENTS_MAX_HEIGHT
 
     def test_it_reads_committed_state_not_the_live_editor(self, views):
         """capture() runs on show, so an uncommitted keystroke is not lost."""

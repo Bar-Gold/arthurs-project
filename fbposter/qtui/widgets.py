@@ -46,6 +46,17 @@ UNDO_MIN_MS = 10_000
 TRACKING = {"Title": -0.5, "Brand": -0.3, "CardTitle": -0.2}
 
 
+def literal(text: str) -> str:
+    """Text for a button or checkbox, with every "&" shown as itself.
+
+    Qt reads "&" in a button's label as "underline the next letter for a
+    keyboard shortcut" and draws no "&" at all, so a group called "buy & sell"
+    showed as "buy  sell". "&&" is how Qt spells one "&". Anything the user or
+    Facebook named (a group, a set) goes through this.
+    """
+    return text.replace("&", "&&")
+
+
 def set_note_lines(
     label: QLabel, facts: Sequence[str], warnings: Sequence[str] = ()
 ) -> None:

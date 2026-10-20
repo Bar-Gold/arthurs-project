@@ -127,6 +127,8 @@ Write-Head "Checking what actually landed in the bundle."
 $checks = @{
     "Playwright driver (node.exe)" = "_internal\playwright\driver\node.exe"
     "Checkbox tick (check.svg)"    = "_internal\fbposter\qtui\assets\check.svg"
+    "Dark-mode tick"               = "_internal\fbposter\qtui\assets\check-dark.svg"
+    "Title font (Bellefair)"       = "_internal\fbposter\qtui\assets\fonts\Bellefair-Regular.ttf"
     # One of the twelve arrows stands for the set: they are collected together,
     # and --selftest below checks every one of them.
     "Arrow icons (chevron-*.svg)"  = "_internal\fbposter\qtui\assets\chevron-up-light.svg"

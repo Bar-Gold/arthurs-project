@@ -80,7 +80,7 @@ powershell -ExecutionPolicy Bypass -File packaging\build.ps1 -SkipInstaller  # .
 
 `status` exits 0 when logged in, 1 when not, 2 on error (Chrome not running, etc.).
 
-There is no linter or formatter configured, and no pytest config file. The suite is the whole check. Baseline: **1849 tests, 75-240s**. The spread is machine load, not the suite; the Qt GUI files are much of it. A run of *five minutes or more* means something is reaching the network; see the `SilentNamer` note below.
+There is no linter or formatter configured, and no pytest config file. The suite is the whole check. Baseline: **1882 tests, 75-240s**. The spread is machine load, not the suite; the Qt GUI files are much of it. A run of *five minutes or more* means something is reaching the network; see the `SilentNamer` note below.
 
 **Do not add `playwright install`.** It is unnecessary and was verified so against Chrome 150: the app attaches to the user's real Chrome over CDP and never launches Playwright's bundled Chromium, so the driver shipped inside the pip package is all that is required.
 
@@ -324,7 +324,7 @@ Nothing in the suite opens Chrome, hits Facebook, or waits out a real delay. Kee
 
 ### Handing this to a non-technical user
 
-The app ships to a client as `dist\FacebookAutoPoster-Setup-x.y.z.exe`. How that is built, and the five things a frozen build loses without a word, are in **`packaging/CLAUDE.md`**. What stays here is the app side, and the one packaging fact that shapes app code: **the packaged app has no console, so `print()` reaches nobody.** Anything the user must see goes through the window.
+The app ships to a client as `dist\FacebookAutoPoster-Setup-x.y.z.exe`. How that is built, and the six things a frozen build loses without a word, are in **`packaging/CLAUDE.md`**. What stays here is the app side, and the one packaging fact that shapes app code: **the packaged app has no console, so `print()` reaches nobody.** Anything the user must see goes through the window.
 
 **The app used to answer "what now?" with terminal commands.** `connection.py` said *"Start it with 'main.py launch'"* and `automation/detect.py` said *"Run 'main.py setup' and sign in again"*, both of which reach the user through the connection pill. They are good developer instructions and useless to somebody holding an `.exe` with no console behind it. `tests/test_onboarding.py::TestNothingTellsTheUserToOpenATerminal` greps the wizard copy, the halt messages and the connection details so a third one cannot be written.
 

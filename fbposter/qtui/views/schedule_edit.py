@@ -49,7 +49,7 @@ from fbposter.db.repo import KEEP
 from fbposter.text import strip_invisible
 
 from .. import theme
-from ..widgets import card, clear, row, set_note_lines
+from ..widgets import card, clear, literal, row, set_note_lines
 from .compose import ATTACH_LABEL, MEDIA_FILTER, NO_ATTACHMENTS, check_attachments
 from .groups import SET_COLUMNS, in_sets, set_label
 from .publish import (
@@ -286,7 +286,7 @@ class ScheduleEditView(QWidget):
             clear(self.set_grid)
             self._set_boxes = {}
             for index, group_set in enumerate(sets):
-                box = QCheckBox(set_label(group_set))
+                box = QCheckBox(literal(set_label(group_set)))
                 box.setChecked(group_set.id in schedule.set_ids)
                 box.toggled.connect(lambda _on: self.refresh_covered())
                 self.set_grid.addWidget(box, index // SET_COLUMNS, index % SET_COLUMNS)
@@ -302,7 +302,7 @@ class ScheduleEditView(QWidget):
                 line = row()
                 layout = QHBoxLayout(line)
                 layout.setContentsMargins(0, 0, 0, 0)
-                box = QCheckBox(group.display_name)
+                box = QCheckBox(literal(group.display_name))
                 box.setChecked(group.id in schedule.group_ids)
                 box.toggled.connect(lambda on, gid=group.id: self._toggle_own(gid, on))
                 layout.addWidget(box, 1)

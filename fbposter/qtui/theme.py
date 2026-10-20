@@ -1,8 +1,10 @@
 """Colour, type and spacing for the Qt UI.
 
-The same Facebook-derived palette as the Tk theme, resolved to one set of
-values at startup rather than carried as (light, dark) pairs: Qt styles through
-a stylesheet, and a stylesheet is a string, so the mode has to be chosen before
+Navy and gold (the user's choice, 2026-10-20, replacing the Facebook blue it
+started from): a deep navy sidebar in both modes, warm ivory pages, navy
+buttons in light mode and gold ones in dark. Resolved to one set of values at
+startup rather than carried as (light, dark) pairs: Qt styles through a
+stylesheet, and a stylesheet is a string, so the mode has to be chosen before
 it is built.
 """
 
@@ -14,7 +16,10 @@ from pathlib import Path
 # too -- a backslash is an escape character inside a stylesheet, so a native
 # path silently fails to load and the tick just never appears.
 ASSETS = Path(__file__).parent / "assets"
+# The tick is white on the navy box in light mode and navy on the gold box in
+# dark mode: white on gold is under 2:1.
 CHECK_ICON = (ASSETS / "check.svg").as_posix()
+CHECK_ICON_DARK = (ASSETS / "check-dark.svg").as_posix()
 
 # The arrows on steppers, drop-downs and the calendar. An SVG cannot take its
 # colour from the palette, so each one exists per mode -- and the up/down pair
@@ -28,6 +33,13 @@ ICON_NAMES = (
 
 FONT_FAMILY = "Segoe UI"
 FONT_MONO = "Consolas"
+# Page titles, the Home headline and the name in the sidebar, and nothing
+# else: labels, buttons and numbers stay in the UI face. Bellefair is a
+# high-contrast serif that also has Hebrew, which the Posting tips title needs
+# (2026-10-20). It ships in assets/fonts with its licence (SIL OFL), and has
+# one weight, so the rules that use it set 400: Qt would fake a bold.
+FONT_DISPLAY = "Bellefair"
+FONT_FILES = (ASSETS / "fonts" / "Bellefair-Regular.ttf",)
 
 # Body was 13px, and run() then shrank the application font by another 2pt on
 # top of it -- small enough to squint at, and below the 12px floor that counts
@@ -38,8 +50,13 @@ SIZE_HEADING = 17
 SIZE_BODY = 15
 SIZE_SMALL = 13
 SIZE_STAT = 28
+# A page title, in the serif. A serif at regular weight needs a few pixels
+# more than the semibold sans did to carry the same weight.
+SIZE_DISPLAY = 30
+# The name beside the logo in the sidebar.
+SIZE_BRAND = 22
 # The Home page's one headline, the largest type in the window.
-SIZE_HOME = 30
+SIZE_HOME = 40
 
 PAD_XS = 4
 PAD_S = 8
@@ -73,87 +90,129 @@ ARROW_SIZE = 16
 
 RADIUS = 8
 RADIUS_S = 6
+# Cards and the banner: a softer corner than the controls inside them.
+RADIUS_L = 12
 SIDEBAR_WIDTH = 232
 WINDOW_MIN = (980, 660)
 WINDOW_DEFAULT = (1120, 760)
 
+# The sidebar is deep navy in both modes, so it has colours of its own: the
+# page's text colours are dark in light mode and would vanish on it. Every
+# status shown there (the connection, "Posting is paused") has a sidebar
+# version, light enough for navy. Gold marks the screen you are on.
+SIDEBAR_LIGHT = {
+    "SIDEBAR_BG": "#101B30",
+    "SIDEBAR_BORDER": "#26324D",
+    "SIDEBAR_TEXT": "#E8E3D9",
+    "SIDEBAR_MUTED": "#A4ACBD",
+    "SIDEBAR_HOVER": "#1A2640",
+    "SIDEBAR_PRESSED": "#23304D",
+    "SIDEBAR_ACTIVE_BG": "#1F2C48",
+    "SIDEBAR_ACTIVE": "#E0C27F",
+    "SIDEBAR_SUCCESS": "#6FD394",
+    "SIDEBAR_WARNING": "#F3B860",
+    "SIDEBAR_DANGER": "#FF8A97",
+    "SIDEBAR_NEUTRAL": "#A4ACBD",
+}
+
+# A shade darker than the page in dark mode, so it still reads as its own
+# column.
+SIDEBAR_DARK = dict(SIDEBAR_LIGHT, **{
+    "SIDEBAR_BG": "#0A1120",
+    "SIDEBAR_BORDER": "#1E2944",
+    "SIDEBAR_HOVER": "#141E34",
+    "SIDEBAR_PRESSED": "#1C2843",
+    "SIDEBAR_ACTIVE_BG": "#18233C",
+})
+
 LIGHT = {
-    "WINDOW_BG": "#F0F2F5",
+    **SIDEBAR_LIGHT,
+    "WINDOW_BG": "#F6F3EE",
     "SURFACE": "#FFFFFF",
-    "SIDEBAR_BG": "#FFFFFF",
-    "BORDER": "#DADDE1",
-    "TEXT": "#1C1E21",
-    "TEXT_MUTED": "#65676B",
+    "BORDER": "#E3DCD0",
+    "TEXT": "#161D2B",
+    "TEXT_MUTED": "#5C6270",
     "TEXT_ON_ACCENT": "#FFFFFF",
-    # Darker than Facebook's own #1877F2, which puts white text at 4.23:1 --
-    # under the 4.5:1 floor. This one clears it at 5.18:1 and still reads as
-    # the same blue.
-    "ACCENT": "#0C68DE",
-    "ACCENT_HOVER": "#0A57BA",
+    # Navy: white text on it is over 12:1.
+    "ACCENT": "#1C2E52",
+    "ACCENT_HOVER": "#2A406B",
     # Pressed goes darker again, so a click shows the moment it lands.
-    "ACCENT_PRESSED": "#094A9E",
+    "ACCENT_PRESSED": "#111E38",
     # Accent used *as text*. Separate from the fill because the two have
-    # opposite requirements in dark mode, where the fill must be dark enough
-    # for white text and the text must be light enough for a dark surface.
-    "ACCENT_TEXT": "#0C68DE",
-    "NAV_ACTIVE_BG": "#E7F3FF",
+    # opposite requirements in dark mode, where the fill is gold and carries
+    # navy text, and the text must be light enough for a dark surface. A
+    # touch bluer than the body text here, so a chosen tab still reads as
+    # chosen.
+    "ACCENT_TEXT": "#1F3A6B",
+    # The champagne tint behind a chosen tab or step.
+    "NAV_ACTIVE_BG": "#F3ECDD",
+    # The outline of a chosen tab or step. Deep enough for 3:1 on white.
+    "GOLD": "#A88440",
+    # The logo's own gold, the same in both modes. Decoration only, never
+    # text.
+    "BRAND": "#C9A45C",
     # Neutral states for everything that is not the accent. Hover used to be
-    # the pale blue of the selected nav item, so hovering any button made it
-    # look chosen.
-    "HOVER_BG": "#F2F3F5",
-    "PRESSED_BG": "#E4E6EB",
-    "BORDER_STRONG": "#BCC0C4",
-    "SUCCESS": "#1B7F3B",
-    "WARNING": "#9E5E00",
-    # Deeper than the #D32F45 it was, which read 4.39:1 on the window colour
-    # -- where every error toast is written -- and could not sit on any tint.
-    "DANGER": "#C0283C",
+    # the pale tint of the selected tab, so hovering any button made it look
+    # chosen.
+    "HOVER_BG": "#F2EEE7",
+    "PRESSED_BG": "#E8E1D5",
+    "BORDER_STRONG": "#C5BBAB",
+    "SUCCESS": "#1D7A42",
+    "WARNING": "#A0520C",
+    "DANGER": "#B4283B",
     # Behind a destructive action the moment you reach for it.
-    "DANGER_SOFT": "#FDECEE",
-    "DANGER_PRESSED_BG": "#FADCE0",
-    "NEUTRAL": "#6A6D71",
+    "DANGER_SOFT": "#FBEDEE",
+    "DANGER_PRESSED_BG": "#F6DCDF",
+    "NEUTRAL": "#676C77",
+    # A post held for an admin, on the Dashboard's charts. Not the accent:
+    # in dark mode that is gold, and stood beside "Might have posted" in
+    # orange the two read as one.
+    "INFO": "#2E4D86",
     # The tints behind a status badge, each pale enough to keep its own colour
     # of text above 4.5:1. The accent's tint is NAV_ACTIVE_BG.
-    "SUCCESS_SOFT": "#EDF7F0",
-    "WARNING_SOFT": "#FCF0DC",
-    "NEUTRAL_SOFT": "#EBEDF0",
+    "SUCCESS_SOFT": "#EAF4EC",
+    "WARNING_SOFT": "#FBEEDF",
+    "NEUTRAL_SOFT": "#EEEAE3",
     # A joined toggle: the track, and the raised segment that is chosen.
-    "SEGMENT_TRACK": "#E4E6EB",
+    "SEGMENT_TRACK": "#EDE8DF",
     "SEGMENT_ON": "#FFFFFF",
 }
 
 DARK = {
-    "WINDOW_BG": "#18191A",
-    "SURFACE": "#242526",
-    "SIDEBAR_BG": "#1C1D1E",
-    "BORDER": "#3A3B3C",
-    "TEXT": "#E4E6EB",
-    "TEXT_MUTED": "#B0B3B8",
-    "TEXT_ON_ACCENT": "#FFFFFF",
-    # The fill has to be dark enough to carry white text (4.64:1); hover goes
-    # darker still rather than lighter, because lightening it drops white
-    # below the floor.
-    "ACCENT": "#006CFA",
-    "ACCENT_HOVER": "#0059CC",
-    "ACCENT_PRESSED": "#004AAD",
-    # ...while accent-coloured *text* has to be light enough to sit on a dark
-    # surface. One value cannot do both jobs here.
-    "ACCENT_TEXT": "#5CA3FF",
-    "NAV_ACTIVE_BG": "#263951",
-    "HOVER_BG": "#2F3031",
-    "PRESSED_BG": "#3A3B3C",
-    "BORDER_STRONG": "#55575A",
-    "SUCCESS": "#45BD62",
-    "WARNING": "#FFC933",
-    "DANGER": "#FF5C7C",
-    "DANGER_SOFT": "#3B2227",
-    "DANGER_PRESSED_BG": "#46252C",
-    "NEUTRAL": "#8A8C8F",
-    "SUCCESS_SOFT": "#1E3325",
-    "WARNING_SOFT": "#3A3122",
-    "NEUTRAL_SOFT": "#3A3B3C",
-    "SEGMENT_TRACK": "#303132",
-    "SEGMENT_ON": "#4A4B4D",
+    **SIDEBAR_DARK,
+    "WINDOW_BG": "#0F1729",
+    "SURFACE": "#162036",
+    "BORDER": "#29354F",
+    "TEXT": "#ECE7DD",
+    "TEXT_MUTED": "#A7AFC0",
+    # Gold buttons carry navy text: white on gold is under 2:1.
+    "TEXT_ON_ACCENT": "#0F1729",
+    "ACCENT": "#CDA65E",
+    # Hover goes lighter rather than darker, because darkening gold takes
+    # the navy text below the floor.
+    "ACCENT_HOVER": "#D9B676",
+    "ACCENT_PRESSED": "#BC944C",
+    "ACCENT_TEXT": "#DDBD7C",
+    "NAV_ACTIVE_BG": "#2A2D33",
+    "GOLD": "#CDA65E",
+    "BRAND": "#C9A45C",
+    "HOVER_BG": "#1D2841",
+    "PRESSED_BG": "#26324D",
+    "BORDER_STRONG": "#46557A",
+    "SUCCESS": "#5CC985",
+    "WARNING": "#F2A85A",
+    "DANGER": "#FF7D8E",
+    "DANGER_SOFT": "#3A2230",
+    "DANGER_PRESSED_BG": "#472836",
+    "NEUTRAL": "#9098AA",
+    "INFO": "#7EA2E0",
+    "SUCCESS_SOFT": "#1B3330",
+    "WARNING_SOFT": "#3A2F27",
+    "NEUTRAL_SOFT": "#26324D",
+    # Darker than the page and the cards, so the track reads as sunken on
+    # both. The page colour itself left it invisible on the page.
+    "SEGMENT_TRACK": "#0A1120",
+    "SEGMENT_ON": "#2A3654",
 }
 
 # A status badge's text colour, by the colour token a status is given, and the
@@ -209,6 +268,28 @@ def icon(name: str) -> str:
     return icon_path(name).as_posix()
 
 
+def check_icon() -> str:
+    """The checkbox tick for the active mode."""
+    return CHECK_ICON_DARK if MODE == "dark" else CHECK_ICON
+
+
+def load_fonts() -> list[str]:
+    """Register the bundled fonts with Qt, and return the families loaded.
+
+    Needs a QApplication. A font that will not load is left out rather than
+    raised: Qt then draws the titles in the UI face, which is plainer, not
+    broken.
+    """
+    from PySide6.QtGui import QFontDatabase
+
+    families: list[str] = []
+    for path in FONT_FILES:
+        font_id = QFontDatabase.addApplicationFont(str(path))
+        if font_id != -1:
+            families.extend(QFontDatabase.applicationFontFamilies(font_id))
+    return families
+
+
 def stylesheet() -> str:
     """One stylesheet for the whole window.
 
@@ -229,12 +310,12 @@ def stylesheet() -> str:
     }}
     QFrame#Sidebar {{
         background: {c["SIDEBAR_BG"]};
-        border-right: 1px solid {c["BORDER"]};
+        border-right: 1px solid {c["SIDEBAR_BORDER"]};
     }}
     QFrame#Card {{
         background: {c["SURFACE"]};
         border: 1px solid {c["BORDER"]};
-        border-radius: {RADIUS}px;
+        border-radius: {RADIUS_L}px;
     }}
     QFrame#Divider {{ background: {c["BORDER"]}; border: none; }}
     /* Without this a label inside a card paints the window colour behind
@@ -243,7 +324,11 @@ def stylesheet() -> str:
        inside a card, and the Publish one drew a grey slab across the white
        "When" panel wherever its page did not cover it. */
     QLabel, QCheckBox, QWidget#Row, QStackedWidget {{ background: transparent; }}
-    QLabel#Title {{ font-size: {SIZE_TITLE}px; font-weight: 600; }}
+    QLabel#Title {{
+        font-family: "{FONT_DISPLAY}";
+        font-size: {SIZE_DISPLAY}px;
+        font-weight: 400;
+    }}
     QLabel#Subtitle, QLabel#Muted {{ color: {c["TEXT_MUTED"]}; font-size: {SIZE_SMALL}px; }}
     /* A heading is never smaller than what it heads. At SIZE_SMALL it was,
        and "Going out" sat above a list of names two pixels larger than itself,
@@ -252,8 +337,11 @@ def stylesheet() -> str:
     /* The name of a card that holds settings of its own (Settings), one step
        up from the setting names inside it, which are body text. */
     QLabel#CardTitle {{ font-size: {SIZE_HEADING}px; font-weight: 600; }}
-    QLabel#Brand {{ font-size: {SIZE_HEADING}px; font-weight: 600; }}
-    QLabel#HomeTitle {{ font-size: {SIZE_HOME}px; font-weight: 600; }}
+    QLabel#HomeTitle {{
+        font-family: "{FONT_DISPLAY}";
+        font-size: {SIZE_HOME}px;
+        font-weight: 400;
+    }}
     QLabel#HomeLine {{ color: {c["TEXT_MUTED"]}; font-size: {SIZE_BODY}px; }}
     /* A Dashboard number, and a Dashboard tile that holds words instead. */
     QLabel#StatValue {{ font-size: {SIZE_STAT}px; font-weight: 600; }}
@@ -305,19 +393,39 @@ def stylesheet() -> str:
         background: {c["BORDER"]};
         color: {c["TEXT_MUTED"]};
     }}
+    /* The sidebar is navy in both modes, so everything on it takes the
+       SIDEBAR_ colours, and the screen you are on is lit in gold. */
+    QFrame#Sidebar QFrame#Divider {{ background: {c["SIDEBAR_BORDER"]}; }}
     QPushButton#Nav {{
         background: transparent;
         border: none;
         text-align: left;
         padding: 10px 12px;
         min-height: {CONTROL_HEIGHT - 14}px;
-        color: {c["TEXT"]};
+        color: {c["SIDEBAR_TEXT"]};
     }}
-    QPushButton#Nav:hover {{ background: {c["HOVER_BG"]}; }}
+    QPushButton#Nav:hover {{ background: {c["SIDEBAR_HOVER"]}; }}
     QPushButton#Nav:checked {{
-        background: {c["NAV_ACTIVE_BG"]};
-        color: {c["ACCENT_TEXT"]};
+        background: {c["SIDEBAR_ACTIVE_BG"]};
+        color: {c["SIDEBAR_ACTIVE"]};
         font-weight: 600;
+    }}
+    /* "Check connection" and the repair button under it: outlined in the
+       sidebar's own border, never filled, so they stay quieter than the
+       screen's one filled button. */
+    QPushButton#SidebarButton {{
+        background: transparent;
+        border: 1px solid {c["SIDEBAR_BORDER"]};
+        color: {c["SIDEBAR_TEXT"]};
+    }}
+    QPushButton#SidebarButton:hover {{
+        background: {c["SIDEBAR_HOVER"]};
+        border-color: {c["SIDEBAR_MUTED"]};
+    }}
+    QPushButton#SidebarButton:disabled {{
+        background: transparent;
+        border-color: {c["SIDEBAR_BORDER"]};
+        color: {c["SIDEBAR_MUTED"]};
     }}
     /* "Posting is paused": shown only while it is true. Warning-coloured
        text on the sidebar, laid out like a nav item so it reads as somewhere
@@ -327,41 +435,43 @@ def stylesheet() -> str:
         border: none;
         text-align: left;
         padding: 10px 12px;
-        color: {c["WARNING"]};
+        color: {c["SIDEBAR_WARNING"]};
         font-weight: 600;
     }}
-    QPushButton#PausedNotice:hover {{ background: {c["HOVER_BG"]}; }}
+    QPushButton#PausedNotice:hover {{ background: {c["SIDEBAR_HOVER"]}; }}
     /* The logo at the top of the sidebar leads Home, the way a website's
-       does. Drawn like the label it replaced: no border, no fill at rest. */
+       does. Drawn like the label it replaced: no border, no fill at rest.
+       The name is set in the title serif, like a wordmark. */
     QPushButton#Brand {{
         background: transparent;
         border: none;
         text-align: left;
         padding: 4px;
-        color: {c["TEXT"]};
-        font-size: {SIZE_HEADING}px;
-        font-weight: 600;
+        color: {c["SIDEBAR_TEXT"]};
+        font-family: "{FONT_DISPLAY}";
+        font-size: {SIZE_BRAND}px;
+        font-weight: 400;
     }}
-    QPushButton#Brand:hover {{ background: {c["HOVER_BG"]}; }}
+    QPushButton#Brand:hover {{ background: {c["SIDEBAR_HOVER"]}; }}
     /* The wording tabs on Compose, one per group. The chosen one is tinted
-       and outlined in the accent rather than filled with it: a filled one
-       stood beside the screen's filled "Next" button as a second call to
-       action, and only "Next" is one. */
+       champagne and outlined in gold rather than filled: a filled one stood
+       beside the screen's filled "Next" button as a second call to action,
+       and only "Next" is one. */
     QPushButton#Tab {{ padding: 6px 12px; }}
     QPushButton#Tab:checked {{
         background: {c["NAV_ACTIVE_BG"]};
-        border-color: {c["ACCENT"]};
+        border-color: {c["GOLD"]};
         color: {c["ACCENT_TEXT"]};
         font-weight: 600;
     }}
-    QPushButton#Tab:checked:hover {{ border-color: {c["ACCENT_HOVER"]}; }}
+    QPushButton#Tab:checked:hover {{ border-color: {c["ACCENT"]}; }}
     /* The step bar of Create a post. Drawn like a tab, but the step you are
        on is not set bold: bold is wider than the width the button was sized
        for, and cut "Choose the groups" short. */
     QPushButton#Step {{ padding: 6px 12px; }}
     QPushButton#Step:checked {{
         background: {c["NAV_ACTIVE_BG"]};
-        border-color: {c["ACCENT"]};
+        border-color: {c["GOLD"]};
         color: {c["ACCENT_TEXT"]};
     }}
 
@@ -433,11 +543,16 @@ def stylesheet() -> str:
         border: 2px solid {c["TEXT_ON_ACCENT"]};
         padding: 10px 17px;
     }}
+    /* On the navy sidebar the ring is gold: navy on navy is no ring. */
     QPushButton#Nav:focus, QPushButton#PausedNotice:focus {{
-        border: 2px solid {c["ACCENT"]};
+        border: 2px solid {c["SIDEBAR_ACTIVE"]};
         padding: 9px 11px;
     }}
-    QPushButton#Brand:focus {{ border: 2px solid {c["ACCENT"]}; padding: 2px; }}
+    QPushButton#Brand:focus {{ border: 2px solid {c["SIDEBAR_ACTIVE"]}; padding: 2px; }}
+    QPushButton#SidebarButton:focus {{
+        border: 2px solid {c["SIDEBAR_ACTIVE"]};
+        padding: 6px 13px;
+    }}
     /* Home's one call to action, a size up from every other Primary. */
     QPushButton#Primary[hero="true"] {{ font-size: {SIZE_HEADING}px; padding: 14px 40px; }}
     QPushButton#Primary[hero="true"]:focus {{ padding: 13px 39px; }}
@@ -445,11 +560,18 @@ def stylesheet() -> str:
 
     QPushButton:pressed {{ background: {c["PRESSED_BG"]}; border-color: {c["BORDER_STRONG"]}; }}
     QPushButton#Primary:pressed {{ background: {c["ACCENT_PRESSED"]}; }}
-    QPushButton#Nav:pressed {{ background: {c["PRESSED_BG"]}; }}
-    QPushButton#Brand:pressed {{ background: {c["PRESSED_BG"]}; }}
-    /* The warning colour is under 4.5:1 on the pressed grey, so for the
-       moment of the press the text goes plain. */
-    QPushButton#PausedNotice:pressed {{ background: {c["PRESSED_BG"]}; color: {c["TEXT"]}; }}
+    QPushButton#Nav:pressed {{ background: {c["SIDEBAR_PRESSED"]}; }}
+    QPushButton#Brand:pressed {{ background: {c["SIDEBAR_PRESSED"]}; }}
+    QPushButton#SidebarButton:pressed {{
+        background: {c["SIDEBAR_PRESSED"]};
+        border-color: {c["SIDEBAR_MUTED"]};
+    }}
+    /* For the moment of the press the warning goes plain, as it had to on
+       the old pressed grey. */
+    QPushButton#PausedNotice:pressed {{
+        background: {c["SIDEBAR_PRESSED"]};
+        color: {c["SIDEBAR_TEXT"]};
+    }}
     QPushButton#Step:checked:pressed, QPushButton#Tab:checked:pressed {{
         background: {c["PRESSED_BG"]};
         border-color: {c["ACCENT_PRESSED"]};
@@ -465,7 +587,7 @@ def stylesheet() -> str:
     QFrame#Toast {{
         background: {c["SURFACE"]};
         border: 1px solid {c["BORDER"]};
-        border-radius: {RADIUS}px;
+        border-radius: {RADIUS_L}px;
     }}
     QFrame#ToastBar {{ background: {c["ACCENT"]}; border: none; border-radius: 2px; }}
     QFrame#ToastBar[level="success"] {{ background: {c["SUCCESS"]}; }}
@@ -694,7 +816,7 @@ def stylesheet() -> str:
     QCheckBox::indicator:checked {{
         background: {c["ACCENT"]};
         border-color: {c["ACCENT"]};
-        image: url({CHECK_ICON});
+        image: url({check_icon()});
     }}
     QCheckBox::indicator:checked:hover {{
         background: {c["ACCENT_HOVER"]};

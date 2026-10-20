@@ -324,10 +324,16 @@ class TestPublishingWithASet:
         assert stored.set_ids == [made.id]
         assert stored.recipient_ids == [g.id for g in groups[:3]]
 
-    def test_going_out_names_the_set(self, qt_app, ready):
+    def test_going_out_names_the_set_beside_its_groups(self, qt_app, ready, groups):
+        """Each group a set brings says so on its own row, as on Groups; the
+        group ticked by hand says nothing."""
         _made, publish = ready
         publish.refresh_recipients()
-        assert "Group sets: Tel Aviv" in labels(publish.recipients)
+        shown = labels(publish.recipients)
+        assert shown.count("in Tel Aviv") == 2
+        assert [g.display_name for g in groups[:3]] == [
+            text for text in shown if text.startswith("Demo")
+        ]
 
     def test_the_repeat_summary_says_the_post_follows_it(self, ready):
         _made, publish = ready

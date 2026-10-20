@@ -20,7 +20,7 @@ queue and the gap between posts apply unchanged.
 
 from __future__ import annotations
 
-from PySide6.QtCore import QDate, QDateTime, QTime, Qt, Signal
+from PySide6.QtCore import QDate, QDateTime, QSize, QTime, Qt, Signal
 from PySide6.QtGui import QColor, QTextCharFormat
 from PySide6.QtWidgets import (
     QButtonGroup,
@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDateEdit,
     QDateTimeEdit,
+    QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -58,6 +59,15 @@ WORDING_MIN_HEIGHT = 80
 DEFAULT_TIMES = ("09:00", "18:00", "21:00")
 SNIPPET_CHARS = 90
 
+# The "Going out" list: one row per group with a hairline between them, in a
+# list that scrolls past its height. A client sends one post to 40-80 groups,
+# and laid out bare the names were squeezed on top of each other. Repeat has
+# its wordings and repeating posts under the list, so it gets less room.
+RECIPIENT_ROW_PAD = 7
+RECIPIENTS_MAX_HEIGHT = 440
+RECIPIENTS_MAX_HEIGHT_REPEAT = 200
+RECIPIENTS_MIN_ROWS = 3
+
 NOW = "now"
 ONCE = "once"
 REPEAT = "repeat"
@@ -79,6 +89,48 @@ MINUTE_STEP = 15
 HOURS = tuple(range(24))
 MINUTES = tuple(range(0, 60, MINUTE_STEP))
 TIME_LIST_WIDTH = 96
+
+
+class RecipientList(QScrollArea):
+    """The "Going out" list: as tall as its rows, up to `room`, then it scrolls.
+
+    It measures the rows itself, at the width they are drawn. A layout counts
+    a widget it has just been given as empty until Qt gets round to showing
+    it, so the scroll area's own guess was 0 and the list was given its
+    minimum; and a name that can wrap is only as tall as its width says.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.room = RECIPIENTS_MAX_HEIGHT
+        # Never taller than its rows, and free to shrink down to a few of them.
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+
+    def row_heights(self) -> list[int]:
+        holder = self.widget()
+        if holder is None:
+            return []
+        layout = holder.layout()
+        margins = layout.contentsMargins()
+        width = max(1, self.viewport().width() - margins.left() - margins.right())
+        heights = []
+        for index in range(layout.count()):
+            widget = layout.itemAt(index).widget()
+            heights.append(widget.heightForWidth(width) if widget.hasHeightForWidth()
+                           else widget.sizeHint().height())
+        return heights
+
+    def sizeHint(self) -> QSize:
+        return QSize(super().sizeHint().width(), min(sum(self.row_heights()), self.room))
+
+    def minimumSizeHint(self) -> QSize:
+        shown = sum(self.row_heights()[:RECIPIENTS_MIN_ROWS])
+        return QSize(super().minimumSizeHint().width(), min(shown, self.room))
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if event.size().width() != event.oldSize().width():
+            self.updateGeometry()
 
 
 def next_slot(moment: QDateTime) -> QDateTime:
@@ -493,19 +545,30 @@ class PublishView(QWidget):
         column.setSpacing(theme.PAD_XS)
         parent.addLayout(column, 1)
 
+        heading = QHBoxLayout()
         going = QLabel("Going out")
         going.setObjectName("SectionHeading")
-        column.addWidget(going)
+        heading.addWidget(going)
+        heading.addStretch(1)
+        self.recipient_count = QLabel("")
+        self.recipient_count.setObjectName("Muted")
+        heading.addWidget(self.recipient_count)
+        column.addLayout(heading)
 
         self.recipients = card()
         recipients_layout = QVBoxLayout(self.recipients)
-        recipients_layout.setContentsMargins(
-            theme.PAD_M, theme.PAD_S, theme.PAD_M, theme.PAD_S
-        )
-        recipients_layout.setSpacing(theme.PAD_XS)
-        self.recipient_box = QVBoxLayout()
-        self.recipient_box.setSpacing(theme.PAD_XS)
-        recipients_layout.addLayout(self.recipient_box)
+        recipients_layout.setContentsMargins(theme.PAD_M, theme.PAD_XS, theme.PAD_XS, theme.PAD_XS)
+        self.recipient_area = RecipientList()
+        self.recipient_area.setWidgetResizable(True)
+        self.recipient_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        holder = row()
+        self.recipient_box = QVBoxLayout(holder)
+        # The scroll bar's room on the right, so the names never run under it.
+        self.recipient_box.setContentsMargins(0, 0, theme.PAD_S, 0)
+        self.recipient_box.setSpacing(0)
+        self.recipient_box.setAlignment(Qt.AlignTop)
+        self.recipient_area.setWidget(holder)
+        recipients_layout.addWidget(self.recipient_area)
         column.addWidget(self.recipients)
 
         self.preview_note = QLabel("")
@@ -576,19 +639,63 @@ class PublishView(QWidget):
         self.filler = QWidget()
         column.addWidget(self.filler, 1)
 
-    def _recipient_plan(self, selected) -> list[tuple[int, str, bool]]:
-        """The rows as (id, name, reworded) -- what to draw, not the drawing.
+    def _recipient_plan(self, selected) -> list[tuple[int, str, bool, tuple[str, ...]]]:
+        """The rows as (id, name, reworded, sets) -- what to draw, not the
+        drawing. `sets` names the picked group sets that bring the group.
 
         One query for every group rather than one per recipient. This runs on
         every refresh, ahead of the guard, so it is the read that never gets
         skipped; it is still a fresh read, just not a round trip per row.
         """
         names = {group.id: group.display_name for group in self.app.group_repo.list()}
+        covered = self.app.covered_by_sets()
         return [
-            (group_id, names[group_id], self.compose.has_rewrite(group_id))
+            (group_id, names[group_id], self.compose.has_rewrite(group_id),
+             tuple(covered.get(group_id, ())))
             for group_id in selected
             if group_id in names
         ]
+
+    @staticmethod
+    def _recipient_row(name: str, reworded: bool, sets: tuple[str, ...], first: bool) -> QWidget:
+        """One group: its name, then why it is there (a set) and whether it has
+        its own wording, with a hairline above every row but the first."""
+        holder = row()
+        outer = QVBoxLayout(holder)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        if not first:
+            line = QFrame()
+            line.setObjectName("Divider")
+            line.setFixedHeight(1)
+            outer.addWidget(line)
+        content = QHBoxLayout()
+        content.setContentsMargins(0, RECIPIENT_ROW_PAD, 0, RECIPIENT_ROW_PAD)
+        content.setSpacing(theme.PAD_M)
+        label = QLabel(name)
+        label.setWordWrap(True)
+        # Every name starts at the left, as on the Groups screen. Left to
+        # itself a Hebrew name went to the far right of its row, so a list
+        # mixing the two zigzagged from side to side.
+        label.setAlignment(Qt.AlignLeft | Qt.AlignAbsolute | Qt.AlignVCenter)
+        content.addWidget(label, 1)
+        notes = [f"in {', '.join(sets)}"] if sets else []
+        if reworded:
+            notes.append("reworded")
+        if notes:
+            tag = QLabel(" · ".join(notes))
+            tag.setObjectName("Muted")
+            content.addWidget(tag)
+        outer.addLayout(content)
+        return holder
+
+    def _fit_recipients(self) -> None:
+        """Repeat has its wordings and repeating posts under the list, so the
+        list gets less room there."""
+        self.recipient_area.room = (
+            RECIPIENTS_MAX_HEIGHT_REPEAT if self.mode == REPEAT else RECIPIENTS_MAX_HEIGHT
+        )
+        self.recipient_area.updateGeometry()
 
     def refresh_recipients(self) -> None:
         selected = self.selected_group_ids()
@@ -616,27 +723,20 @@ class PublishView(QWidget):
         self._recipients_shown = plan
 
         clear(self.recipient_box)
+        rows = plan[1]
+        count = len(rows)
+        self.recipient_count.setText(f"{count} group{'s' if count != 1 else ''}" if count else "")
         if not selected:
             note = QLabel("No groups picked. Choose them in step 2.")
             note.setObjectName("Muted")
             note.setWordWrap(True)
+            note.setContentsMargins(0, RECIPIENT_ROW_PAD, 0, RECIPIENT_ROW_PAD)
             self.recipient_box.addWidget(note)
-        if sets:
-            source = QLabel(f"Group sets: {', '.join(sets)}")
-            source.setObjectName("Muted")
-            source.setWordWrap(True)
-            self.recipient_box.addWidget(source)
-        plan = plan[1]
-        for group_id, name, reworded in plan:
-            holder = row()
-            line = QHBoxLayout(holder)
-            line.setContentsMargins(0, 0, 0, 0)
-            line.addWidget(QLabel(name), 1)
-            if reworded:
-                tag = QLabel("reworded")
-                tag.setObjectName("Muted")
-                line.addWidget(tag)
-            self.recipient_box.addWidget(holder)
+        for index, (_group_id, name, reworded, brought_by) in enumerate(rows):
+            self.recipient_box.addWidget(
+                self._recipient_row(name, reworded, brought_by, first=index == 0)
+            )
+        self.recipient_area.updateGeometry()
 
     # -- right column: when ------------------------------------------------
     def _build_right(self, parent: QHBoxLayout) -> None:
@@ -799,6 +899,7 @@ class PublishView(QWidget):
         repeating = mode == REPEAT
         self.repeat_extras.setVisible(repeating)
         self.filler.setVisible(not repeating)
+        self._fit_recipients()
         self.refresh_summary()
 
     # -- wordings (Repeat only) --------------------------------------------

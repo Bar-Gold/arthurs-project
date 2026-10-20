@@ -28,7 +28,7 @@ from PySide6.QtWidgets import (
 
 
 from .. import theme
-from ..widgets import card, clear, row
+from ..widgets import card, clear, literal, row
 from .groups import GroupRow, matches
 
 # How many group names a set's card spells out before "and N more".
@@ -312,7 +312,7 @@ class GroupSetsView(QWidget):
         self.empty_note.setWordWrap(True)
         self.editor_rows.addWidget(self.empty_note)
         for group in groups:
-            box = QCheckBox(group.display_name)
+            box = QCheckBox(literal(group.display_name))
             box.setStyleSheet("font-weight: 600;")
             box.setChecked(group.id in ticked)
             box.toggled.connect(lambda _on: self.refresh_ticked())

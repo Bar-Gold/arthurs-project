@@ -83,7 +83,7 @@ TARGET_LABELS = {
 # then what is unsure, then what did not. Each names a colour token.
 OUTCOMES = (
     (TARGET_DONE, "Posted", "SUCCESS"),
-    (TARGET_AWAITING_APPROVAL, "Waiting for admin approval", "ACCENT"),
+    (TARGET_AWAITING_APPROVAL, "Waiting for admin approval", "INFO"),
     (TARGET_UNCONFIRMED, "Might have posted", "WARNING"),
     (TARGET_FAILED, "Not posted", "DANGER"),
     (TARGET_SKIPPED, "Skipped", "BORDER_STRONG"),
@@ -195,8 +195,9 @@ class DayBars(QWidget):
         last = len(self.days) - 1
 
         accent = QColor(theme.C["ACCENT"])
-        faded = QColor(accent)
-        faded.setAlphaF(0.45)
+        # The days before today in a quiet neutral, so today stands out. The
+        # accent faded was a muddy brown over navy once the accent was gold.
+        faded = QColor(theme.C["BORDER_STRONG"])
         text = QColor(theme.C["TEXT"])
         muted = QColor(theme.C["TEXT_MUTED"])
 

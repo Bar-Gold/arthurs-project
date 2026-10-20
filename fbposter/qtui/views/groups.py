@@ -40,7 +40,7 @@ from fbposter.connection import ConnectionState
 from fbposter.text import strip_invisible
 
 from .. import theme
-from ..widgets import card, clear, row
+from ..widgets import card, clear, literal, row
 
 # What a row says while its group's name is being fetched. It used to show the
 # group's number instead, which is meaningless to the person who pasted a link.
@@ -651,7 +651,7 @@ class GroupsView(QWidget):
             clear(self.set_grid)
             self._set_boxes = {}
             for index, group_set in enumerate(sets):
-                box = QCheckBox(set_label(group_set))
+                box = QCheckBox(literal(set_label(group_set)))
                 box.setToolTip(tips[group_set.id])
                 box.toggled.connect(lambda on, sid=group_set.id: self.toggle_set(sid, on))
                 self.set_grid.addWidget(box, index // SET_COLUMNS, index % SET_COLUMNS)
@@ -750,7 +750,7 @@ class GroupsView(QWidget):
     def _row(self, group) -> QWidget:
         label = self._label(group)
         covered = self._covered.get(group.id)
-        box = QCheckBox(label)
+        box = QCheckBox(literal(label))
         box.setChecked(group.id in self.app.selected_groups or bool(covered))
         box.setStyleSheet(
             f"color: {theme.C['TEXT_MUTED']};" if label == LOOKING_UP

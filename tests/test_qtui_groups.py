@@ -494,3 +494,58 @@ class TestTheOnceDatePicker:
         publish.set_mode("now")
         publish.set_mode(ONCE)
         assert abs(publish.schedule_entry.dateTime().secsTo(first)) < 60
+
+
+class TestAnAmpersandIsShown:
+    """Qt reads "&" in a button's label as a keyboard-shortcut marker and
+    draws nothing for it: a group called "Real estate - buy & sell" showed
+    as "buy  sell" (reported 2026-10-20). Every label made from a name the
+    user or Facebook chose has to show it."""
+
+    NAME = "Real estate - buy & sell"
+
+    @staticmethod
+    def shows_the_ampersand(button) -> bool:
+        # "&&" is one "&" drawn as itself, and no letter becomes a shortcut.
+        from PySide6.QtGui import QKeySequence
+
+        return "& sell" in button.text().replace("&&", "&") and QKeySequence.mnemonic(
+            button.text()
+        ).isEmpty()
+
+    @pytest.fixture
+    def named(self, qt_app):
+        group = qt_app.group_repo.add_from_url(URL.format(9), name=self.NAME)
+        return group
+
+    def test_the_helper(self):
+        from fbposter.qtui.widgets import literal
+
+        assert literal("a & b") == "a && b"
+        assert literal("plain") == "plain"
+
+    def test_on_the_groups_list(self, qt_app, named):
+        qt_app.show_view("groups")
+        box = qt_app.views["groups"]._checkboxes[named.id]
+        assert self.shows_the_ampersand(box)
+
+    def test_on_a_set_box(self, qt_app, named):
+        made = qt_app.group_set_repo.create("Buy & sell", [named.id])
+        qt_app.show_view("groups")
+        box = qt_app.views["groups"]._set_boxes[made.id]
+        assert box.text() == "Buy && sell (1)"
+
+    def test_on_a_compose_wording_tab(self, qt_app):
+        # Short, because a tab cuts a long name before its "&".
+        short = qt_app.group_repo.add_from_url(URL.format(8), name="buy & sell")
+        qt_app.selected_groups.add(short.id)
+        qt_app.show_view("compose")
+        compose = qt_app.views["compose"]
+        tabs = [compose.tab_bar.itemAt(i).widget() for i in range(compose.tab_bar.count())]
+        assert any(self.shows_the_ampersand(tab) for tab in tabs if tab is not None)
+
+    def test_in_the_group_set_editor(self, qt_app, named):
+        view = qt_app.views["group_sets"]
+        qt_app.show_view("group_sets")
+        view.open_editor()
+        assert self.shows_the_ampersand(view._boxes[named.id])

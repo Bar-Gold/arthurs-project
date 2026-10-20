@@ -45,7 +45,7 @@ from fbposter import media
 from fbposter.text import strip_invisible
 
 from .. import theme
-from ..widgets import card, clear, row, segmented
+from ..widgets import card, clear, literal, row, segmented
 
 # Pictures and videos together (video since 2026-10-15). The video suffixes
 # are the ones the group composer itself accepts, read live (media.py).
@@ -503,7 +503,7 @@ class ComposeView(QWidget):
                 button.setChecked(target == self._editing)
 
     def _add_tab(self, target: int | None, label: str) -> None:
-        button = QPushButton(label)
+        button = QPushButton(literal(label))
         button.setObjectName("Tab")
         button.setCheckable(True)
         button.setChecked(target == self._editing)

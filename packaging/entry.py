@@ -76,6 +76,11 @@ def selftest(show_dialog: bool = True) -> int:
         icon = Path(theme.CHECK_ICON)
         check("Qt theme loads", True)
         check("Checkbox tick (check.svg)", icon.exists(), str(icon))
+        dark_icon = Path(theme.CHECK_ICON_DARK)
+        check("Dark-mode tick (check-dark.svg)", dark_icon.exists(), str(dark_icon))
+        # Without it the titles fall back to the UI face: plainer, not broken.
+        fonts = [p.name for p in theme.FONT_FILES if not p.exists()]
+        check("Title font (Bellefair)", not fonts, ", ".join(fonts))
         arrows = [
             theme.icon_path(name, mode)
             for name in theme.ICON_NAMES

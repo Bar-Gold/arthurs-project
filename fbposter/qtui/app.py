@@ -372,6 +372,7 @@ class App(QMainWindow):
         # that sits on every screen. Filled, it outranked the step it was
         # sitting next to on all four.
         self.check_button = QPushButton("Check connection")
+        self.check_button.setObjectName("SidebarButton")
         self.check_button.clicked.connect(self.check_connection)
         inner.addWidget(self.check_button)
 
@@ -382,6 +383,7 @@ class App(QMainWindow):
         # for is ever going to do. When there is nothing wrong it is hidden;
         # changing account lives on the Settings screen.
         self.fix_button = QPushButton()
+        self.fix_button.setObjectName("SidebarButton")
         self.fix_button.setVisible(False)
         self.fix_button.clicked.connect(lambda: self.show_view("welcome"))
         inner.addWidget(self.fix_button)
@@ -701,7 +703,8 @@ class App(QMainWindow):
                         announce: bool = True) -> None:
         self.connection_state = state
         key, label, level = PILL_STATES[state]
-        colour = theme.C[key]
+        # The sidebar's own shade of the colour: it sits on navy.
+        colour = theme.C[f"SIDEBAR_{key}"]
         self.pill_dot.setPixmap(icons.pixmap("dot", colour, 12))
         self.pill_label.setText(label)
         self.pill_label.setStyleSheet(f"color: {colour};")
@@ -1078,6 +1081,7 @@ def run() -> int:
         return 1
 
     theme.activate()
+    theme.load_fonts()
     # The style before the stylesheet: the stylesheet wraps whatever style is
     # installed when it is set.
     application.setStyle(AppStyle())

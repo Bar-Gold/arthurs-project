@@ -47,7 +47,6 @@ class TestContrast:
         [
             ("TEXT", "WINDOW_BG"),
             ("TEXT", "SURFACE"),
-            ("TEXT", "SIDEBAR_BG"),
             ("TEXT_MUTED", "WINDOW_BG"),
             ("TEXT_MUTED", "SURFACE"),
             ("TEXT_ON_ACCENT", "ACCENT"),
@@ -57,14 +56,8 @@ class TestContrast:
             # The accent as text, which is a different value from the fill.
             ("ACCENT_TEXT", "SURFACE"),
             ("ACCENT_TEXT", "NAV_ACTIVE_BG"),
-            ("ACCENT_TEXT", "SIDEBAR_BG"),
-            # The connection pill, which was the quietest failure of the lot.
-            ("NEUTRAL", "SIDEBAR_BG"),
+            ("ACCENT_TEXT", "WINDOW_BG"),
             ("NEUTRAL", "SURFACE"),
-            # "Posting is paused", and the same line as you reach for it.
-            # Pressed, it turns TEXT: WARNING is 4.15:1 on the pressed grey.
-            ("WARNING", "SIDEBAR_BG"),
-            ("WARNING", "HOVER_BG"),
             # The toast line sits on the window colour, in every level's
             # colour. DANGER failed here at 4.39:1 and nothing checked it.
             ("SUCCESS", "WINDOW_BG"),
@@ -88,10 +81,24 @@ class TestContrast:
             ("TEXT_MUTED", "SEGMENT_TRACK"),
             ("TEXT", "SEGMENT_TRACK"),
             ("TEXT", "SEGMENT_ON"),
-            # The connection's words now sit on the sidebar itself, no longer
-            # on a card inside it.
-            ("SUCCESS", "SIDEBAR_BG"),
-            ("DANGER", "SIDEBAR_BG"),
+            # The navy sidebar (2026-10-20) has colours of its own, because
+            # the page's are dark in light mode. Its names, at rest, hovered,
+            # pressed, and the one you are on in gold.
+            ("SIDEBAR_TEXT", "SIDEBAR_BG"),
+            ("SIDEBAR_TEXT", "SIDEBAR_HOVER"),
+            ("SIDEBAR_TEXT", "SIDEBAR_PRESSED"),
+            ("SIDEBAR_MUTED", "SIDEBAR_BG"),
+            ("SIDEBAR_ACTIVE", "SIDEBAR_BG"),
+            ("SIDEBAR_ACTIVE", "SIDEBAR_ACTIVE_BG"),
+            # The connection's words, which sit on the sidebar itself. The
+            # pill was the quietest failure of the lot.
+            ("SIDEBAR_SUCCESS", "SIDEBAR_BG"),
+            ("SIDEBAR_DANGER", "SIDEBAR_BG"),
+            ("SIDEBAR_NEUTRAL", "SIDEBAR_BG"),
+            # "Posting is paused", and the same line as you reach for it.
+            # Pressed, it turns SIDEBAR_TEXT.
+            ("SIDEBAR_WARNING", "SIDEBAR_BG"),
+            ("SIDEBAR_WARNING", "SIDEBAR_HOVER"),
         ],
     )
     def test_text_is_readable(self, palette_name, fg, bg):
@@ -117,11 +124,31 @@ class TestContrast:
         assert ratio >= MIN_CONTRAST_LARGE
 
     @pytest.mark.parametrize("palette_name", ["LIGHT", "DARK"])
-    @pytest.mark.parametrize("bg", ["WINDOW_BG", "SURFACE", "SIDEBAR_BG"])
+    @pytest.mark.parametrize("bg", ["WINDOW_BG", "SURFACE"])
     def test_the_focus_ring_clears_the_indicator_bar(self, palette_name, bg):
         """WCAG 2.2 wants 3:1 for a focus indicator against what is next to it."""
         palette = getattr(theme, palette_name)
         assert contrast(palette["ACCENT"], palette[bg]) >= MIN_CONTRAST_LARGE
+
+    @pytest.mark.parametrize("palette_name", ["LIGHT", "DARK"])
+    @pytest.mark.parametrize("bg", ["SIDEBAR_BG", "SIDEBAR_ACTIVE_BG"])
+    def test_the_sidebar_focus_ring_is_gold(self, palette_name, bg):
+        """The sidebar is navy in both modes, where a navy ring is no ring."""
+        palette = getattr(theme, palette_name)
+        assert contrast(palette["SIDEBAR_ACTIVE"], palette[bg]) >= MIN_CONTRAST_LARGE
+        theme.activate(dark=palette_name == "DARK")
+        sheet = theme.stylesheet()
+        theme.activate(dark=False)
+        nav_focus = sheet.split("QPushButton#Nav:focus")[1][:200]
+        assert palette["SIDEBAR_ACTIVE"] in nav_focus
+
+    @pytest.mark.parametrize("palette_name", ["LIGHT", "DARK"])
+    @pytest.mark.parametrize("fg", ["GOLD", "INFO"])
+    def test_the_gold_outline_and_the_chart_colour_show(self, palette_name, fg):
+        """The chosen tab's outline and the "waiting for an admin" share of
+        the Dashboard's bar are drawn, not written: 3:1 is their floor."""
+        palette = getattr(theme, palette_name)
+        assert contrast(palette[fg], palette["SURFACE"]) >= MIN_CONTRAST_LARGE
 
     @pytest.mark.parametrize("palette_name", ["LIGHT", "DARK"])
     def test_the_primary_focus_ring_shows_against_its_own_fill(self, palette_name):
@@ -165,6 +192,64 @@ class TestTypography:
 
     def test_the_scale_is_ordered(self):
         assert theme.SIZE_SMALL < theme.SIZE_BODY < theme.SIZE_HEADING < theme.SIZE_TITLE
+        assert theme.SIZE_TITLE <= theme.SIZE_DISPLAY < theme.SIZE_HOME
+
+
+class TestTheTitleFont:
+    """Page titles are in a serif of their own (the user's choice, 2026-10-20)."""
+
+    def test_the_font_and_its_licence_ship_with_the_app(self):
+        for path in theme.FONT_FILES:
+            assert path.is_file(), path
+            assert (path.parent / "OFL.txt").is_file()
+
+    def test_it_loads_and_covers_hebrew(self, qt_application):
+        """The Posting tips title is Hebrew when the tips are."""
+        from PySide6.QtGui import QFontDatabase
+
+        assert theme.FONT_DISPLAY in theme.load_fonts()
+        systems = QFontDatabase.writingSystems(theme.FONT_DISPLAY)
+        assert QFontDatabase.WritingSystem.Hebrew in systems
+
+    def test_only_the_titles_use_it(self):
+        """Labels, buttons and numbers stay in the UI face: a display serif
+        on a button is decoration in the way of the task."""
+        theme.activate(dark=False)
+        sheet = theme.stylesheet()
+        theme.activate(dark=False)
+        rules = [block for block in sheet.split("}") if theme.FONT_DISPLAY in block]
+        selectors = sorted(block.split("{")[0].strip().split("*/")[-1].strip() for block in rules)
+        assert selectors == ["QLabel#HomeTitle", "QLabel#Title", "QPushButton#Brand"]
+
+    def test_it_is_never_made_bold(self):
+        """It has one weight; Qt would fake a bold by smearing it."""
+        theme.activate(dark=False)
+        for block in theme.stylesheet().split("}"):
+            if theme.FONT_DISPLAY in block:
+                assert "font-weight: 400" in block
+
+    def test_the_app_registers_it_at_start(self):
+        import inspect
+
+        from fbposter.qtui import app as app_module
+
+        assert "theme.load_fonts()" in inspect.getsource(app_module.run)
+
+
+class TestTheTickSuitsTheFill:
+    def test_each_mode_has_its_own_tick(self):
+        """White on the navy box, navy on the gold one."""
+        from pathlib import Path
+
+        for dark, path in ((False, theme.CHECK_ICON), (True, theme.CHECK_ICON_DARK)):
+            theme.activate(dark=dark)
+            assert Path(path).is_file()
+            assert "\\" not in path
+            checked = theme.stylesheet().split("QCheckBox::indicator:checked")[1][:200]
+            assert path in checked
+        theme.activate(dark=False)
+        assert "#FFFFFF" in Path(theme.CHECK_ICON).read_text()
+        assert theme.DARK["TEXT_ON_ACCENT"] in Path(theme.CHECK_ICON_DARK).read_text()
 
     def test_the_application_font_does_not_override_the_stylesheet(self):
         """Two sources of truth for size, and the smaller one was winning."""

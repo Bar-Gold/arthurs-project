@@ -89,12 +89,12 @@ SHAPES = {
     "dot": '<circle cx="12" cy="12" r="6" fill="{colour}" stroke="none"/>',
 }
 
-# The app's own icon, the one on the installer and the taskbar: a white paper
-# plane on a blue tile. Its colours are fixed, like any logo.
+# The app's own icon: a navy paper plane on a gold tile (2026-10-20; it was
+# white on blue, and the installer and taskbar icon still are).
 BRAND = (
     '<rect x="1" y="1" width="22" height="22" rx="6" fill="{accent}"/>'
-    '<path d="M18.2 6 5.6 10.7l4.7 1.6z" fill="#FFFFFF"/>'
-    '<path d="M18.2 6 11.1 13.1l1.9 5.2z" fill="#FFFFFF" fill-opacity="0.85"/>'
+    '<path d="M18.2 6 5.6 10.7l4.7 1.6z" fill="{mark}"/>'
+    '<path d="M18.2 6 11.1 13.1l1.9 5.2z" fill="{mark}" fill-opacity="0.85"/>'
 )
 
 NAV_ICON_SIZE = 18
@@ -146,25 +146,25 @@ def brand(size: int = 24, width: int | None = None) -> QPixmap:
     """The app's mark. `width`, when wider than `size`, leaves empty room to
     its right: the sidebar's logo button uses it for the gap before its name,
     which Qt otherwise fixes at 4px (see NAV_ICON_GAP)."""
-    accent = theme.C["ACCENT"]
+    body = BRAND.replace("{accent}", theme.C["BRAND"]).replace("{mark}", theme.C["SIDEBAR_BG"])
 
     def document(px: int, wide: int) -> bytes:
         return (
             f'<svg xmlns="http://www.w3.org/2000/svg" width="{wide}" height="{px}" '
-            f'viewBox="0 0 {24 * wide / px:g} 24">{BRAND.replace("{accent}", accent)}</svg>'
+            f'viewBox="0 0 {24 * wide / px:g} 24">{body}</svg>'
         ).encode()
 
     return _render(document, size, width)
 
 
 def nav_icon(name: str) -> QIcon:
-    """A sidebar icon: muted at rest, the accent while its screen is open.
+    """A sidebar icon: muted at rest, gold while its screen is open.
 
     A checkable button draws its icon's On state while checked, so the icon
     changes colour with the label and nothing has to keep the two in step.
     """
     icon = QIcon()
-    for colour, state in (("TEXT_MUTED", QIcon.Off), ("ACCENT_TEXT", QIcon.On)):
+    for colour, state in (("SIDEBAR_MUTED", QIcon.Off), ("SIDEBAR_ACTIVE", QIcon.On)):
         drawn = pixmap(name, theme.C[colour], NAV_ICON_SIZE, NAV_ICON_BOX.width())
         icon.addPixmap(drawn, QIcon.Normal, state)
     return icon
