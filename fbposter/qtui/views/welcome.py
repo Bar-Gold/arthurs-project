@@ -24,6 +24,7 @@ because this is the thread painting the window.
 
 from __future__ import annotations
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -38,7 +39,7 @@ from fbposter.connection import ConnectionResult, ConnectionState
 from fbposter.db.repo import start_new_account
 
 from .. import icons, theme
-from ..widgets import card, clear, row
+from ..widgets import RowList, badge, card, card_title, clear, row
 from .groups import IMPORT_PENDING_KEY, REPLACE_PENDING_KEY
 
 # Drawn, not typed: a filled tick for done, a ringed dot for the step you are
@@ -50,10 +51,11 @@ MARKS = {
     RowState.CURRENT: ("current", "ACCENT_TEXT"),
     RowState.TODO: ("todo", "BORDER_STRONG"),
 }
-# The words of a step still to come. Its ring is fainter than the words, which
-# still have to be read.
-MARK_TEXT = {RowState.TODO: "TEXT_MUTED"}
 MARK_SIZE = 20
+# The screen is a centred column, as Home is (2026-10-20): it is the first
+# thing a client sees, and it was a form pinned to the top left.
+COLUMN_WIDTH = 560
+LOGO_SIZE = 64
 
 
 class WelcomeView(QWidget):
@@ -82,33 +84,45 @@ class WelcomeView(QWidget):
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(theme.PAD_XS)
+        # A little above the middle, where the eye settles, as on Home.
+        outer.addStretch(3)
+
+        column = row()
+        column.setFixedWidth(COLUMN_WIDTH)
+        stack = QVBoxLayout(column)
+        stack.setContentsMargins(0, 0, 0, 0)
+        stack.setSpacing(0)
+
+        logo = QLabel()
+        logo.setPixmap(icons.brand(LOGO_SIZE))
+        logo.setFixedSize(LOGO_SIZE, LOGO_SIZE)
+        stack.addWidget(logo, 0, Qt.AlignHCenter)
+        stack.addSpacing(theme.PAD_L)
 
         heading = QLabel(self.title)
-        heading.setObjectName("Title")
-        outer.addWidget(heading)
+        heading.setObjectName("HomeTitle")
+        heading.setAlignment(Qt.AlignCenter)
+        stack.addWidget(heading)
+        stack.addSpacing(theme.PAD_S)
         sub = QLabel(self.subtitle)
-        sub.setObjectName("Subtitle")
+        sub.setObjectName("HomeLine")
+        sub.setAlignment(Qt.AlignCenter)
         sub.setWordWrap(True)
-        outer.addWidget(sub)
-        outer.addSpacing(theme.HEADER_GAP)
+        stack.addWidget(sub)
+        stack.addSpacing(theme.HEADER_GAP + theme.PAD_S)
 
-        self.checklist_card = card()
-        self.checklist_box = QVBoxLayout(self.checklist_card)
-        self.checklist_box.setContentsMargins(
-            theme.PAD_L, theme.PAD_M, theme.PAD_L, theme.PAD_M
-        )
-        self.checklist_box.setSpacing(theme.PAD_S)
-        outer.addWidget(self.checklist_card)
-        outer.addSpacing(theme.PAD_M)
+        # The three steps, numbered, in one box with a hairline between them.
+        self.checklist_card = RowList()
+        self.checklist_box = self.checklist_card.box
+        stack.addWidget(self.checklist_card)
+        stack.addSpacing(theme.PAD_M)
 
         self.step_card = card()
         step_box = QVBoxLayout(self.step_card)
         step_box.setContentsMargins(theme.PAD_L, theme.PAD_L, theme.PAD_L, theme.PAD_L)
         step_box.setSpacing(theme.PAD_S)
 
-        self.step_headline = QLabel()
-        self.step_headline.setObjectName("SectionHeading")
+        self.step_headline = card_title("")
         self.step_headline.setWordWrap(True)
         step_box.addWidget(self.step_headline)
 
@@ -136,11 +150,17 @@ class WelcomeView(QWidget):
         button_row.addStretch(1)
         step_box.addWidget(buttons)
 
-        outer.addWidget(self.step_card)
-
-        # Slack below everything, never above: anchoring the card to the bottom
-        # of the window puts a void between what you read and what you press.
-        outer.addStretch(1)
+        stack.addWidget(self.step_card)
+        # Centred by stretches either side rather than an alignment flag: an
+        # aligned item is given its size hint, worked out before the wrapped
+        # text in the step card had its width, and the card was cut short
+        # through its buttons.
+        middle = QHBoxLayout()
+        middle.addStretch(1)
+        middle.addWidget(column)
+        middle.addStretch(1)
+        outer.addLayout(middle)
+        outer.addStretch(4)
 
         self.refresh(force=True)
 
@@ -181,21 +201,27 @@ class WelcomeView(QWidget):
 
     def _draw(self) -> None:
         clear(self.checklist_box)
-        for label, state in onboarding.checklist(self.step):
+        for number, (label, state) in enumerate(onboarding.checklist(self.step), 1):
             mark, colour = MARKS[state]
             holder = row()
             line = QHBoxLayout(holder)
-            line.setContentsMargins(0, 0, 0, 0)
+            line.setContentsMargins(theme.PAD_L, theme.PAD_M, theme.PAD_L, theme.PAD_M)
             line.setSpacing(theme.PAD_M)
             icon = QLabel()
             icon.setPixmap(icons.pixmap(mark, theme.C[colour], MARK_SIZE))
             line.addWidget(icon)
+            figure = QLabel(str(number))
+            figure.setObjectName("StepNumber")
+            line.addWidget(figure)
             words = QLabel(label)
-            # Colour only. The "Muted" object name would have done the greying
-            # for free, but it also drops the font to SIZE_SMALL, which would
-            # have made the three rows of one list different sizes.
-            words.setStyleSheet(f"color: {theme.C[MARK_TEXT.get(state, colour)]};")
+            # Drawn by its state (theme.py): the one being asked about in the
+            # accent, a step still to come greyed. Not "Muted", which would
+            # also drop it to the small size.
+            words.setObjectName("StepWords")
+            words.setProperty("state", state.value)
             line.addWidget(words, 1)
+            if state is RowState.CURRENT:
+                line.addWidget(badge("Now", "ACCENT_TEXT"))
             self.checklist_box.addWidget(holder)
 
         guide = onboarding.guidance(self.step)

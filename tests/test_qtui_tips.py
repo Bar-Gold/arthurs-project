@@ -83,7 +83,8 @@ class TestWhatItShows:
         shown = labels(screen)
         page = tips.PAGES[code]
         for number, tip in enumerate(page.tips, 1):
-            assert f"{number}. {tip.title}" in shown
+            assert str(number) in shown
+            assert tip.title in shown
             assert tip.body in shown
         assert page.intro in shown
         assert page.sources in shown
@@ -91,8 +92,17 @@ class TestWhatItShows:
     def test_switching_back_and_forth_leaves_one_set_of_cards(self, screen):
         for code in ("en", "ru", "he", "en"):
             screen.choose(code)
-        titles = [text for text in labels(screen) if text.startswith("1. ")]
-        assert titles == [f"1. {tips.PAGES['en'].tips[0].title}"]
+        firsts = [tip.title for page in tips.PAGES.values() for tip in page.tips[:1]]
+        titles = [text for text in labels(screen) if text in firsts]
+        assert titles == [tips.PAGES["en"].tips[0].title]
+
+    def test_each_number_is_its_own_gold_figure(self, screen):
+        """In the title serif and gold, apart from the title, so the eye can
+        run down the list by number."""
+        screen.choose("en")
+        figures = [label.text() for label in screen.findChildren(QLabel)
+                   if label.objectName() == "TipNumber"]
+        assert figures == [str(n) for n in range(1, len(tips.PAGES["en"].tips) + 1)]
 
     def test_the_screens_it_names_are_real(self, qt_app):
         """It tells the client to press Pause posting on Settings and to add

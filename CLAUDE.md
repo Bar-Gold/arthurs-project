@@ -84,7 +84,7 @@ powershell -ExecutionPolicy Bypass -File packaging\build.ps1 -SkipInstaller  # .
 
 `status` exits 0 when logged in, 1 when not, 2 on error (Chrome not running, etc.).
 
-There is no linter or formatter configured, and no pytest config file. The suite is the whole check. Baseline: **1882 tests, 75-240s**. The spread is machine load, not the suite; the Qt GUI files are much of it. A run of *five minutes or more* means something is reaching the network; see the `SilentNamer` note in `.claude/rules/ui.md`.
+There is no linter or formatter configured, and no pytest config file. The suite is the whole check. Baseline: **1890 tests, 75-240s**. The spread is machine load, not the suite; the Qt GUI files are much of it. A run of *five minutes or more* means something is reaching the network; see the `SilentNamer` note in `.claude/rules/ui.md`.
 
 **Do not add `playwright install`.** It is unnecessary and was verified so against Chrome 150: the app attaches to the user's real Chrome over CDP and never launches Playwright's bundled Chromium, so the driver shipped inside the pip package is all that is required.
 

@@ -16,6 +16,7 @@ from __future__ import annotations
 from PySide6.QtCore import QRectF, Qt
 from PySide6.QtGui import QColor, QFont, QPainter
 from PySide6.QtWidgets import (
+    QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -95,6 +96,11 @@ SNIPPET_CHARS = 60
 NAME_CHARS = 48
 RECENT_LIMIT = 15
 TILE_COLUMNS = 4
+# The four numbers that lead the page, big, and the four in the strip under
+# them (the user's choice, 2026-10-20). Eight boxes of one size gave every
+# number the same weight, so none of them led.
+LEAD_TILES = ("today", "week", "success", "next")
+STRIP_TILES = ("month", "all_time", "repeating", "wordings")
 CHART_HEIGHT = 170
 OUTCOME_BAR_HEIGHT = 14
 SWATCH_SIZE = 10
@@ -211,7 +217,8 @@ class DayBars(QWidget):
                 painter.setPen(Qt.NoPen)
                 painter.setBrush(accent if index == last else faded)
                 painter.drawRoundedRect(rect, 3, 3)
-                painter.setPen(text)
+                # Muted like the day under it; today's in full, as its bar is.
+                painter.setPen(text if index == last else muted)
                 painter.drawText(
                     QRectF(centre - slot / 2, rect.top() - line - 2, slot, line),
                     Qt.AlignCenter, str(count),
@@ -285,20 +292,25 @@ class Swatch(QWidget):
 
 
 class Tile:
-    """One number on the Dashboard: a caption, the number, a line under it."""
+    """One number on the Dashboard: a caption, the number, a line under it.
 
-    def __init__(self, caption: str, big: bool = True) -> None:
-        self.frame = card()
+    A lead tile is a card of its own. A `small` one is a cell of the strip
+    under them, a size down, and is drawn by the strip's card.
+    """
+
+    def __init__(self, caption: str, big: bool = True, small: bool = False) -> None:
+        self.frame = row() if small else card()
         layout = QVBoxLayout(self.frame)
-        layout.setContentsMargins(theme.PAD_M, theme.PAD_M, theme.PAD_M, theme.PAD_M)
-        layout.setSpacing(theme.PAD_XS)
+        pad = theme.PAD_S if small else theme.PAD_M
+        layout.setContentsMargins(theme.PAD_M, pad, theme.PAD_M, pad)
+        layout.setSpacing(2 if small else theme.PAD_XS)
         self.caption = QLabel(caption)
         self.caption.setObjectName("Muted")
         layout.addWidget(self.caption)
         self.value = QLabel("")
         # A sentence such as "Tomorrow 09:00" does not fit at the size of a
         # number in a quarter of the window.
-        self.value.setObjectName("StatValue" if big else "StatText")
+        self.value.setObjectName("StatSmall" if small else "StatValue" if big else "StatText")
         layout.addWidget(self.value)
         self.detail = QLabel("")
         self.detail.setObjectName("Muted")
@@ -372,22 +384,36 @@ class DashboardView(QWidget):
         self.tiles = {
             "today": Tile("Posted today"),
             "week": Tile("Last 7 days"),
-            "month": Tile("Last 30 days"),
-            "all_time": Tile("All time"),
             "success": Tile("Success rate"),
             "next": Tile("Next scheduled", big=False),
-            "repeating": Tile("Repeating posts"),
-            "wordings": Tile("Different wordings"),
+            "month": Tile("Last 30 days", small=True),
+            "all_time": Tile("All time", small=True),
+            "repeating": Tile("Repeating posts", small=True),
+            "wordings": Tile("Different wordings", small=True),
         }
         self.tiles["wordings"].frame.setToolTip("Different texts sent in the last 7 days.")
 
         grid = QGridLayout()
         grid.setSpacing(theme.PAD_S)
-        for index, tile in enumerate(self.tiles.values()):
-            grid.addWidget(tile.frame, index // TILE_COLUMNS, index % TILE_COLUMNS)
+        for index, key in enumerate(LEAD_TILES):
+            grid.addWidget(self.tiles[key].frame, 0, index)
         for column in range(TILE_COLUMNS):
             grid.setColumnStretch(column, 1)
         self.column.addLayout(grid)
+
+        # One card, its four cells apart by a hairline.
+        strip = card()
+        cells = QHBoxLayout(strip)
+        cells.setContentsMargins(0, theme.PAD_S, 0, theme.PAD_S)
+        cells.setSpacing(0)
+        for index, key in enumerate(STRIP_TILES):
+            if index:
+                line = QFrame()
+                line.setObjectName("Divider")
+                line.setFixedWidth(1)
+                cells.addWidget(line)
+            cells.addWidget(self.tiles[key].frame, 1)
+        self.column.addWidget(strip)
 
     def _build_chart(self) -> None:
         self._heading(f"Posts per day, last {stats.CHART_DAYS} days")
@@ -615,7 +641,7 @@ class DashboardView(QWidget):
         header = QHBoxLayout()
         header.setSpacing(theme.PAD_S)
         title = QLabel(snippet_of(task))
-        title.setStyleSheet("font-weight: 600;")
+        title.setObjectName("Strong")
         title.setWordWrap(True)
         header.addWidget(title, 1)
         words, colour = task_label(task, targets)

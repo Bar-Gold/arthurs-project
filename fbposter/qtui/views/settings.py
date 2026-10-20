@@ -129,7 +129,9 @@ class SettingsView(QWidget):
         heading: str, aside: QWidget | None = None, action: QWidget | None = None
     ) -> tuple[QWidget, QVBoxLayout]:
         """A card with its heading: `aside` (a status badge) beside it, and
-        `action` (a button) at the far end of the same line."""
+        `action` (a button) at the far end of the same line. A hairline under
+        the heading in every card: only "This PC" had one, so the three cards
+        were built three ways."""
         box = card()
         inner = QVBoxLayout(box)
         inner.setContentsMargins(theme.PAD_L, theme.PAD_L, theme.PAD_L, theme.PAD_L)
@@ -145,6 +147,7 @@ class SettingsView(QWidget):
         if action is not None:
             top.addWidget(action)
         inner.addLayout(top)
+        SettingsView._divider(inner)
         return box, inner
 
     @staticmethod
@@ -202,7 +205,7 @@ class SettingsView(QWidget):
         self.switch_button.clicked.connect(self.begin_switch)
         box, inner = self._card("Facebook account", action=self.switch_button)
         self.account_heading = QLabel("")
-        self.account_heading.setStyleSheet("font-weight: 600;")
+        self.account_heading.setObjectName("Strong")
         self.account_heading.setWordWrap(True)
         inner.addWidget(self.account_heading)
         self.account_detail = self._muted()
@@ -231,7 +234,6 @@ class SettingsView(QWidget):
         # flipped, with nothing to save.
         self.autostart_box = Switch(AUTOSTART_LABEL)
         self.autostart_box.clicked.connect(self.set_autostart)
-        self._divider(inner)
         inner.addWidget(self._setting(
             AUTOSTART_LABEL, self.autostart_box, self._muted(AUTOSTART_HELP)
         ))

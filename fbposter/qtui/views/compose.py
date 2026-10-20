@@ -45,7 +45,7 @@ from fbposter import media
 from fbposter.text import strip_invisible
 
 from .. import theme
-from ..widgets import card, clear, literal, row, segmented
+from ..widgets import card, card_title, clear, literal, row, segmented
 
 # Pictures and videos together (video since 2026-10-15). The video suffixes
 # are the ones the group composer itself accepts, read live (media.py).
@@ -191,11 +191,13 @@ class ComposeView(QWidget):
         top.addStretch(1)
 
         self.tab_scroll = QScrollArea()
+        # Its sideways bar is drawn as a thin line (theme.py, #TabStrip).
+        self.tab_scroll.setObjectName("TabStrip")
         self.tab_scroll.setWidgetResizable(True)
         self.tab_scroll.setFrameShape(QFrame.NoFrame)
         self.tab_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.tab_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        self.tab_scroll.setFixedHeight(theme.CONTROL_HEIGHT + theme.PAD_M)
+        self.tab_scroll.setFixedHeight(theme.CONTROL_HEIGHT + theme.PAD_S)
         tab_holder = QWidget()
         self.tab_bar = QHBoxLayout(tab_holder)
         self.tab_bar.setContentsMargins(0, 0, 0, 0)
@@ -220,6 +222,8 @@ class ComposeView(QWidget):
         holder = card()
         holder_layout = QVBoxLayout(holder)
         holder_layout.setContentsMargins(theme.PAD_M, theme.PAD_M, theme.PAD_M, theme.PAD_M)
+        # Preview takes the box edge to edge; see set_mode.
+        self.editor_layout = holder_layout
 
         self.slot = QStackedWidget()
         self.editor = QTextEdit()
@@ -232,7 +236,10 @@ class ComposeView(QWidget):
         self.slot.addWidget(self.preview)
         holder_layout.addWidget(self.slot, 1)
 
-        footer = QHBoxLayout()
+        # Writing aids, so Preview stands them down with the rest.
+        self.editor_footer = row()
+        footer = QHBoxLayout(self.editor_footer)
+        footer.setContentsMargins(0, 0, 0, 0)
         self.counter = QLabel("0 characters")
         self.counter.setObjectName("Muted")
         footer.addWidget(self.counter)
@@ -244,7 +251,7 @@ class ComposeView(QWidget):
         self.variation_note = QLabel("Vary the wording between groups.")
         self.variation_note.setObjectName("Muted")
         footer.addWidget(self.variation_note)
-        holder_layout.addLayout(footer)
+        holder_layout.addWidget(self.editor_footer)
         column.addWidget(holder, 1)
 
         # The attach button and the file list are one unit, so Preview can
@@ -289,9 +296,7 @@ class ComposeView(QWidget):
         templates = card()
         inner = QVBoxLayout(templates)
         inner.setContentsMargins(theme.PAD_M, theme.PAD_M, theme.PAD_M, theme.PAD_M)
-        label = QLabel("Templates")
-        label.setObjectName("SectionHeading")
-        inner.addWidget(label)
+        inner.addWidget(card_title("Templates"))
         reuse = QLabel("Reuse a saved post")
         reuse.setObjectName("Muted")
         inner.addWidget(reuse)
@@ -329,9 +334,7 @@ class ComposeView(QWidget):
         recipients_layout.setContentsMargins(
             theme.PAD_M, theme.PAD_M, theme.PAD_M, theme.PAD_M
         )
-        send_to = QLabel("Sending to")
-        send_to.setObjectName("SectionHeading")
-        recipients_layout.addWidget(send_to)
+        recipients_layout.addWidget(card_title("Sending to"))
         self.recipient_summary = QLabel("")
         self.recipient_summary.setObjectName("Muted")
         self.recipient_summary.setWordWrap(True)
@@ -524,6 +527,11 @@ class ComposeView(QWidget):
             self.capture()
         self.sidebar_holder.setVisible(not preview)
         self.attach_holder.setVisible(not preview)
+        self.editor_footer.setVisible(not preview)
+        # The preview's ground fills the box to its border, rather than sitting
+        # in it as a band with white all round.
+        edge = 1 if preview else theme.PAD_M
+        self.editor_layout.setContentsMargins(edge, edge, edge, edge)
         self.slot.setCurrentWidget(self.preview if preview else self.editor)
         if preview:
             self.refresh_preview()
@@ -952,8 +960,13 @@ class PostPreview(QWidget):
 
     def __init__(self) -> None:
         super().__init__()
+        # The page colour behind the post, as a feed sets its posts on a grey
+        # ground. It used to be a band only as tall as the post, with the
+        # rest of the box white under it.
+        self.setObjectName("PreviewCanvas")
+        self.setAttribute(Qt.WA_StyledBackground, True)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setContentsMargins(0, theme.PAD_L, 0, theme.PAD_L)
         self.area = QScrollArea()
         self.area.setWidgetResizable(True)
         self.area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -1015,6 +1028,7 @@ class PostPreview(QWidget):
             note = QLabel("Nothing to preview yet. Write something on the Write tab.")
             note.setObjectName("Muted")
             note.setWordWrap(True)
+            note.setAlignment(Qt.AlignCenter)
             self.body.addWidget(note)
             self.body.addStretch(1)
             return
@@ -1027,6 +1041,8 @@ class PostPreview(QWidget):
         row.addWidget(self._post(heading, subheading, text, media))
         row.addStretch(1)
         holder = QWidget()
+        # Transparent like row(), so the canvas shows through.
+        holder.setObjectName("Row")
         holder.setLayout(row)
         self.body.addWidget(holder)
         self.body.addStretch(1)

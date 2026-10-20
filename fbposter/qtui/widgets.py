@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QProxyStyle,
     QPushButton,
     QSizePolicy,
+    QVBoxLayout,
     QWidget,
 )
 
@@ -157,6 +158,81 @@ def card(parent: QWidget | None = None) -> QFrame:
     frame = QFrame(parent)
     frame.setObjectName("Card")
     return frame
+
+
+class RowList(QFrame):
+    """A list in one box, with a hairline between its rows.
+
+    Every list of groups is drawn this way (the user's choice, 2026-10-20):
+    Groups, the Group sets editor, the repeating-post editor and "Going out"
+    used to be four different looks, two of them a separate box per row.
+
+    The hairlines are painted here, between whichever rows are showing, rather
+    than being widgets of their own: a search hides rows, and a line that
+    belonged to a hidden row would otherwise be left on screen, or sit along
+    the top of the box above the first row still shown.
+
+    `framed=False` draws the lines only, for a list that already sits inside a
+    card. `inset` keeps them clear of the box's edges, in line with the text.
+    """
+
+    def __init__(self, framed: bool = True, inset: int = theme.PAD_M,
+                 parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("List" if framed else "Row")
+        self.inset = inset
+        self.box = QVBoxLayout(self)
+        self.box.setContentsMargins(0, 0, 0, 0)
+        self.box.setSpacing(0)
+
+    def add(self, widget: QWidget) -> QWidget:
+        self.box.addWidget(widget)
+        return widget
+
+    def rows(self) -> list[QWidget]:
+        """Every row, shown or not, in order."""
+        found = (self.box.itemAt(index).widget() for index in range(self.box.count()))
+        return [widget for widget in found if widget is not None]
+
+    def shown_rows(self) -> list[QWidget]:
+        return [widget for widget in self.rows() if not widget.isHidden()]
+
+    def lines(self) -> int:
+        """How many hairlines are drawn: one between each two rows shown."""
+        return max(0, len(self.shown_rows()) - 1)
+
+    def clear(self) -> None:
+        clear(self.box)
+
+    def paintEvent(self, event) -> None:  # noqa: N802 - Qt's name
+        super().paintEvent(event)
+        shown = self.shown_rows()
+        if len(shown) < 2:
+            return
+        painter = QPainter(self)
+        painter.setPen(QPen(QColor(theme.C["BORDER"]), 1))
+        for below in shown[1:]:
+            top = below.geometry().top()
+            painter.drawLine(below.geometry().left() + self.inset, top,
+                             below.geometry().right() - self.inset, top)
+        painter.end()
+
+
+def back_link(text: str) -> QPushButton:
+    """"Back" in the flow: words with no box (the user's choice, 2026-10-20),
+    so the filled button for the next step stands alone."""
+    button = QPushButton(text)
+    button.setObjectName("BackLink")
+    return button
+
+
+def card_title(text: str) -> QLabel:
+    """The name of a card, one step above what is in it. One size for every
+    card in the window: Templates and When were body size, Settings' titles a
+    step up, so the same kind of heading came in two sizes."""
+    label = QLabel(text)
+    label.setObjectName("CardTitle")
+    return label
 
 
 def badge(text: str, tone: str) -> QLabel:

@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QFrame, QLabel
+from PySide6.QtWidgets import QLabel
 
 from fbposter import clock, recurrence
 from fbposter.db.models import (
@@ -107,8 +107,17 @@ class TestTheThreeModes:
     def test_the_repeat_controls_only_show_in_repeat_mode(self, views):
         _compose, publish = views
         publish.set_mode(NOW)
-        assert not publish.wording_area.isVisible()
+        assert not publish.add_wording_button.isVisibleTo(publish)
         publish.set_mode(REPEAT)
+        assert publish.add_wording_button.isVisibleTo(publish)
+
+    def test_the_wordings_box_shows_only_once_there_is_one(self, views):
+        """Empty, it held a blank gap open above the repeating posts."""
+        _compose, publish = views
+        publish.set_mode(REPEAT)
+        assert not publish.wording_area.isVisibleTo(publish)
+        publish.add_wording("Another way to say it")
+        publish.refresh_summary()
         assert publish.wording_area.isVisibleTo(publish)
 
     def test_only_the_once_mode_produces_a_scheduled_time(self, views):
@@ -369,18 +378,15 @@ class TestWhatIsGoingOut:
         assert publish.recipient_count.text() == ""
 
     def test_a_hairline_separates_the_rows(self, views):
-        """Every row but the first has a divider above it (the user's request,
-        2026-10-19: the names ran into each other)."""
+        """A line between each two rows (the user's request, 2026-10-19: the
+        names ran into each other), drawn by the shared list, as every group
+        list is since 2026-10-20."""
+        from fbposter.qtui.widgets import RowList
+
         _compose, publish = views
         publish.on_show()
-        rows = [publish.recipient_box.itemAt(i).widget()
-                for i in range(publish.recipient_box.count())]
-        dividers = [
-            sum(1 for frame in row.findChildren(QFrame, options=Qt.FindDirectChildrenOnly)
-                if frame.objectName() == "Divider")
-            for row in rows
-        ]
-        assert dividers == [0, 1, 1]
+        assert isinstance(publish.recipient_list, RowList)
+        assert publish.recipient_list.lines() == 2
 
     def test_the_count_is_beside_the_heading(self, views):
         _compose, publish = views
@@ -577,7 +583,7 @@ class TestTheRotationNote:
 class TestTheSnippet:
     def test_a_whole_post_has_no_ellipsis(self, views):
         _compose, publish = views
-        assert publish.preview_note.text() == f"“{BODY}”"
+        assert publish.preview_note.text() == BODY
 
     def test_a_long_post_says_it_was_cut(self, qt_app, views):
         compose, publish = views
@@ -585,7 +591,7 @@ class TestTheSnippet:
         compose._show("word " * 60)
         compose.capture()
         qt_app.show_view("publish")
-        assert publish.preview_note.text().endswith("…”")
+        assert publish.preview_note.text().endswith("…")
 
 
 class TestPicturesOnly:

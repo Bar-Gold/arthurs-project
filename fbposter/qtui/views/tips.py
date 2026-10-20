@@ -29,6 +29,9 @@ from fbposter import tips
 from .. import theme
 from ..widgets import card, clear, segmented
 
+# Wide enough for "10" in the title serif, so every title starts in line.
+TIP_NUMBER_WIDTH = 36
+
 
 class TipsView(QWidget):
     title = "Posting tips"
@@ -119,15 +122,27 @@ class TipsView(QWidget):
 
     @staticmethod
     def _card(number: int, tip) -> QWidget:
+        """A tip: its number in gold at the leading edge (the right, in
+        Hebrew), its title and its words beside it. The number had been typed
+        into the title, where it read as one more word."""
         box = card()
-        layout = QVBoxLayout(box)
-        layout.setContentsMargins(theme.PAD_M, theme.PAD_S, theme.PAD_M, theme.PAD_S)
-        layout.setSpacing(theme.PAD_XS)
-        title = QLabel(f"{number}. {tip.title}")
+        line = QHBoxLayout(box)
+        line.setContentsMargins(theme.PAD_M, theme.PAD_S, theme.PAD_L, theme.PAD_M)
+        line.setSpacing(theme.PAD_M)
+        figure = QLabel(str(number))
+        figure.setObjectName("TipNumber")
+        figure.setFixedWidth(TIP_NUMBER_WIDTH)
+        figure.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
+        line.addWidget(figure, 0, Qt.AlignTop)
+        words = QVBoxLayout()
+        words.setContentsMargins(0, theme.PAD_S, 0, 0)
+        words.setSpacing(theme.PAD_XS)
+        title = QLabel(tip.title)
         title.setObjectName("SectionHeading")
         title.setWordWrap(True)
-        layout.addWidget(title)
+        words.addWidget(title)
         body = QLabel(tip.body)
         body.setWordWrap(True)
-        layout.addWidget(body)
+        words.addWidget(body)
+        line.addLayout(words, 1)
         return box

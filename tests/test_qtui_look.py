@@ -307,6 +307,68 @@ class TestTheSettingsPage:
         assert settings.confirm_row.isHidden()
 
 
+class TestThePolishPass:
+    """The polish pass of 2026-10-20: the user chose one look for every list
+    of groups, quiet Back links, and a Dashboard led by four numbers."""
+
+    def test_a_list_draws_a_line_only_between_rows_shown(self, qt_application):
+        from PySide6.QtWidgets import QLabel
+
+        from fbposter.qtui.widgets import RowList
+
+        rows = RowList()
+        labels = [rows.add(QLabel(f"Row {n}")) for n in range(4)]
+        assert rows.lines() == 3
+        labels[0].hide()
+        labels[2].hide()
+        assert rows.lines() == 1, "a hidden row takes its line with it"
+
+    def test_every_group_list_is_one_box(self, qt_app, groups):
+        from fbposter.qtui.widgets import RowList
+
+        view = qt_app.views["groups"]
+        view.refresh(force=True)
+        assert isinstance(view.group_list, RowList)
+        assert all(row.parentWidget() is view.group_list for row in view._rows.values())
+        assert {row.objectName() for row in view._rows.values()} == {"ListRow"}
+
+        sets = qt_app.views["group_sets"]
+        sets.open_editor()
+        assert all(row.parentWidget() is sets.editor_list
+                   for row in sets._editor_rows.values())
+
+    def test_a_search_that_matches_nothing_draws_no_empty_box(self, qt_app, groups):
+        view = qt_app.views["groups"]
+        view.refresh(force=True)
+        view.search.setText("nothing is called this")
+        assert view.group_list.isHidden()
+        view.search.clear()
+        assert not view.group_list.isHidden()
+
+    def test_back_is_a_link_not_a_button(self, qt_app):
+        from PySide6.QtWidgets import QPushButton
+
+        for key in ("groups", "publish", "schedule_edit"):
+            backs = [b for b in qt_app.views[key].findChildren(QPushButton)
+                     if b.text().startswith("←")]
+            assert backs, key
+            assert {b.objectName() for b in backs} == {"BackLink"}, key
+
+    def test_the_dashboard_leads_with_four_numbers(self, qt_app):
+        from fbposter.qtui.views.dashboard import LEAD_TILES, STRIP_TILES
+
+        tiles = qt_app.views["dashboard"].tiles
+        assert set(LEAD_TILES) | set(STRIP_TILES) == set(tiles)
+        assert all(tiles[key].frame.objectName() == "Card" for key in LEAD_TILES)
+        assert all(tiles[key].value.objectName() == "StatSmall" for key in STRIP_TILES)
+
+    def test_no_screen_sets_its_own_bold(self):
+        views = ROOT / "fbposter" / "qtui" / "views"
+        for path in views.glob("*.py"):
+            source = path.read_text(encoding="utf-8")
+            assert 'setStyleSheet("font-weight: 600;")' not in source, path.name
+
+
 class TestNoLongDashes:
     """The user asked for every long dash to go (2026-10-12): they read as
     machine-written. A sentence that wants one wants a full stop, a comma, a

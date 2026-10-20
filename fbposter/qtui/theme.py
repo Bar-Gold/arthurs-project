@@ -312,7 +312,9 @@ def stylesheet() -> str:
         background: {c["SIDEBAR_BG"]};
         border-right: 1px solid {c["SIDEBAR_BORDER"]};
     }}
-    QFrame#Card {{
+    /* A list (widgets.RowList) is drawn as a card: one box, its rows inside
+       with a hairline between them. Every list of groups uses it. */
+    QFrame#Card, QFrame#List {{
         background: {c["SURFACE"]};
         border: 1px solid {c["BORDER"]};
         border-radius: {RADIUS_L}px;
@@ -322,8 +324,15 @@ def stylesheet() -> str:
        itself and shows up as a grey band across the surface. QStackedWidget is
        here for the same reason and was missing: both mode switchers live
        inside a card, and the Publish one drew a grey slab across the white
-       "When" panel wherever its page did not cover it. */
+       "When" panel wherever its page did not cover it. A list's rows are
+       here too, or each would paint over the box it sits in. */
     QLabel, QCheckBox, QWidget#Row, QStackedWidget {{ background: transparent; }}
+    QFrame#ListRow {{ background: transparent; border: none; }}
+    /* A name that leads its card (a set, a repeating post, a batch). One
+       rule, where each screen used to set its own bold. */
+    QLabel#Strong {{ font-weight: 600; }}
+    /* A group whose name is still being looked up. */
+    QCheckBox#Pending {{ color: {c["TEXT_MUTED"]}; }}
     QLabel#Title {{
         font-family: "{FONT_DISPLAY}";
         font-size: {SIZE_DISPLAY}px;
@@ -346,6 +355,28 @@ def stylesheet() -> str:
     /* A Dashboard number, and a Dashboard tile that holds words instead. */
     QLabel#StatValue {{ font-size: {SIZE_STAT}px; font-weight: 600; }}
     QLabel#StatText {{ font-size: {SIZE_HEADING}px; font-weight: 600; }}
+    /* The Dashboard's second row of numbers: one strip, a step down. */
+    QLabel#StatSmall {{ font-size: {SIZE_HEADING}px; font-weight: 600; }}
+    /* A tip's number on Posting tips, in the title serif and gold: detail
+       that lets the eye run down the list, never a status. */
+    QLabel#TipNumber {{
+        font-family: "{FONT_DISPLAY}";
+        font-size: {SIZE_DISPLAY}px;
+        font-weight: 400;
+        color: {c["GOLD"]};
+    }}
+    /* A setup step on Welcome: its number, and its words by its state. The
+       ring of a step still to come is fainter than its words, which still
+       have to be read. */
+    QLabel#StepNumber {{ color: {c["TEXT_MUTED"]}; font-weight: 600; }}
+    QLabel#StepWords[state="current"] {{ color: {c["ACCENT_TEXT"]}; font-weight: 600; }}
+    QLabel#StepWords[state="todo"] {{ color: {c["TEXT_MUTED"]}; }}
+    /* The post as Preview shows it sits on the page colour, the way a feed
+       sets its posts on a grey ground. It fills the whole box. */
+    QWidget#PreviewCanvas {{
+        background: {c["WINDOW_BG"]};
+        border-radius: {RADIUS_L - 1}px;
+    }}
 
     /* A status: what happened to a post, or whether a repeating post is on.
        It used to be coloured words, the same size and weight as the grey
@@ -513,6 +544,17 @@ def stylesheet() -> str:
     }}
     QPushButton#Link:hover {{ background: {c["DANGER_SOFT"]}; color: {c["DANGER"]}; }}
     QPushButton#Link:focus {{ border: 2px solid {c["ACCENT"]}; padding: 5px 8px; }}
+    /* "Back" in the flow: words, no box, so the one filled button beside or
+       above it stands alone (the user's choice, 2026-10-20). Grey like a
+       caption until the pointer reaches it. */
+    QPushButton#BackLink {{
+        background: transparent;
+        border: none;
+        color: {c["TEXT_MUTED"]};
+        padding: 7px 10px;
+    }}
+    QPushButton#BackLink:hover {{ background: {c["HOVER_BG"]}; color: {c["TEXT"]}; }}
+    QPushButton#BackLink:focus {{ border: 2px solid {c["ACCENT"]}; padding: 5px 8px; }}
     /* "Post anyway": a deliberate step outside the rules. Outlined rather than
        filled -- the one filled button on a screen is the next step in the
        flow, and this is the opposite of that. Its own :focus rule, because the
@@ -578,6 +620,7 @@ def stylesheet() -> str:
     }}
     QPushButton#Segment:pressed {{ background: {c["PRESSED_BG"]}; color: {c["TEXT"]}; }}
     QPushButton#Link:pressed {{ background: {c["DANGER_PRESSED_BG"]}; color: {c["DANGER"]}; }}
+    QPushButton#BackLink:pressed {{ background: {c["PRESSED_BG"]}; color: {c["TEXT"]}; }}
     QPushButton#Danger:pressed {{ background: {c["DANGER_PRESSED_BG"]}; }}
 
     /* The status banner under the screen. The bar at its edge says what kind
@@ -795,6 +838,11 @@ def stylesheet() -> str:
     QScrollBar::handle:pressed {{ background: {c["TEXT_MUTED"]}; }}
     QScrollBar::add-line, QScrollBar::sub-line {{ height: 0; width: 0; }}
     QScrollBar::add-page, QScrollBar::sub-page {{ background: transparent; }}
+    /* The strip of wording tabs on Compose scrolls sideways once there are
+       more groups than fit. Its bar is a thin line: at full size it read as
+       a beige slab under the tabs. */
+    QScrollArea#TabStrip QScrollBar:horizontal {{ height: 4px; }}
+    QScrollArea#TabStrip QScrollBar::handle:horizontal {{ border-radius: 2px; }}
     QCheckBox {{ spacing: 8px; }}
     /* Left to the platform, the two states did not look like one control:
        unchecked drew an empty rounded box, checked drew a bare grey tick with

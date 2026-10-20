@@ -213,13 +213,17 @@ class TestTheTitleFont:
 
     def test_only_the_titles_use_it(self):
         """Labels, buttons and numbers stay in the UI face: a display serif
-        on a button is decoration in the way of the task."""
+        on a button is decoration in the way of the task. The tip numbers on
+        Posting tips are the one figure in it (2026-10-20): they are read as
+        headings of a sort, never worked with."""
         theme.activate(dark=False)
         sheet = theme.stylesheet()
         theme.activate(dark=False)
         rules = [block for block in sheet.split("}") if theme.FONT_DISPLAY in block]
         selectors = sorted(block.split("{")[0].strip().split("*/")[-1].strip() for block in rules)
-        assert selectors == ["QLabel#HomeTitle", "QLabel#Title", "QPushButton#Brand"]
+        assert selectors == [
+            "QLabel#HomeTitle", "QLabel#TipNumber", "QLabel#Title", "QPushButton#Brand"
+        ]
 
     def test_it_is_never_made_bold(self):
         """It has one weight; Qt would fake a bold by smearing it."""

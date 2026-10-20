@@ -49,9 +49,9 @@ from fbposter.db.repo import KEEP
 from fbposter.text import strip_invisible
 
 from .. import theme
-from ..widgets import card, clear, literal, row, set_note_lines
+from ..widgets import RowList, back_link, card, clear, literal, row, set_note_lines
 from .compose import ATTACH_LABEL, MEDIA_FILTER, NO_ATTACHMENTS, check_attachments
-from .groups import SET_COLUMNS, in_sets, set_label
+from .groups import SET_COLUMNS, GroupRow, in_sets, set_label
 from .publish import (
     DEFAULT_TIMES,
     RIGHT_COLUMN_SCROLLBAR,
@@ -87,6 +87,7 @@ class ScheduleEditView(QWidget):
         self._group_boxes: dict[int, QCheckBox] = {}
         # Beside each group: which ticked set brings it, when one does.
         self._group_notes: dict[int, QLabel] = {}
+        self._group_rows: dict[int, GroupRow] = {}
         # The groups ticked by hand. A box a set has ticked shows the set's
         # tick, so this is what it goes back to when the set is unticked.
         self._own: set[int] = set()
@@ -171,14 +172,10 @@ class ScheduleEditView(QWidget):
         groups_label = QLabel("Groups")
         groups_label.setObjectName("SectionHeading")
         column.addWidget(groups_label)
-        groups_card = card()
-        groups_layout = QVBoxLayout(groups_card)
-        groups_layout.setContentsMargins(theme.PAD_M, theme.PAD_S, theme.PAD_M, theme.PAD_S)
-        groups_layout.setSpacing(theme.PAD_XS)
-        self.group_box = QVBoxLayout()
-        self.group_box.setSpacing(theme.PAD_XS)
-        groups_layout.addLayout(self.group_box)
-        column.addWidget(groups_card)
+        # One box, a hairline between the groups, as on the Groups screen.
+        self.group_list = RowList()
+        self.group_box = self.group_list.box
+        column.addWidget(self.group_list)
         column.addSpacing(theme.PAD_S)
 
         pictures_header = QHBoxLayout()
@@ -257,7 +254,7 @@ class ScheduleEditView(QWidget):
         self.save_button.clicked.connect(lambda: self.save())
         column.addWidget(self.save_button)
 
-        self.back_button = QPushButton("← Back without saving")
+        self.back_button = back_link("← Back without saving")
         self.back_button.clicked.connect(lambda: self.leave())
         column.addWidget(self.back_button)
 
@@ -298,14 +295,17 @@ class ScheduleEditView(QWidget):
             self._group_boxes = {}
             self._group_notes = {}
             self._own = set(schedule.group_ids)
+            self._group_rows = {}
             for group in active:
-                line = row()
-                layout = QHBoxLayout(line)
-                layout.setContentsMargins(0, 0, 0, 0)
                 box = QCheckBox(literal(group.display_name))
                 box.setChecked(group.id in schedule.group_ids)
                 box.toggled.connect(lambda on, gid=group.id: self._toggle_own(gid, on))
+                # A click anywhere on the row ticks it, as on the Groups screen.
+                line = GroupRow(box)
+                layout = QHBoxLayout(line)
+                layout.setContentsMargins(theme.PAD_M, theme.PAD_S, theme.PAD_M, theme.PAD_S)
                 layout.addWidget(box, 1)
+                self._group_rows[group.id] = line
                 note = QLabel("")
                 note.setObjectName("Muted")
                 note.setVisible(False)
@@ -316,6 +316,7 @@ class ScheduleEditView(QWidget):
             if not active:
                 note = QLabel("No groups yet. Get them in Create a post, step 2.")
                 note.setObjectName("Muted")
+                note.setContentsMargins(theme.PAD_M, theme.PAD_S, theme.PAD_M, theme.PAD_S)
                 self.group_box.addWidget(note)
             self.refresh_covered()
 
@@ -410,6 +411,10 @@ class ScheduleEditView(QWidget):
             box.setChecked(bool(names) or group_id in self._own)
             box.blockSignals(False)
             box.setEnabled(not names)
+            line = self._group_rows.get(group_id)
+            if line is not None:
+                # The set unpicks it, so the row is not a button then.
+                line.setCursor(Qt.ArrowCursor if names else Qt.PointingHandCursor)
             note = self._group_notes.get(group_id)
             if note is not None:
                 note.setText(in_sets(names) if names else "")

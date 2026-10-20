@@ -28,7 +28,7 @@ from PySide6.QtWidgets import (
 
 
 from .. import theme
-from ..widgets import card, clear, literal, row
+from ..widgets import RowList, card, clear, literal, row
 from .groups import GroupRow, matches
 
 # How many group names a set's card spells out before "and N more".
@@ -67,6 +67,7 @@ class GroupSetsView(QWidget):
         self._boxes: dict[int, QCheckBox] = {}
         self._editor_rows: dict[int, QWidget] = {}
         self._editor_groups: dict[int, object] = {}
+        self.editor_list: RowList | None = None
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -177,7 +178,7 @@ class GroupSetsView(QWidget):
         header = QHBoxLayout()
         header.setSpacing(theme.PAD_S)
         title = QLabel(group_set.name)
-        title.setStyleSheet("font-weight: 600;")
+        title.setObjectName("Strong")
         header.addWidget(title)
         count = QLabel(group_count(len(group_set.group_ids)))
         count.setObjectName("Muted")
@@ -311,22 +312,23 @@ class GroupSetsView(QWidget):
         self.empty_note.setObjectName("Muted")
         self.empty_note.setWordWrap(True)
         self.editor_rows.addWidget(self.empty_note)
+        # One box, a hairline between the groups, as on the Groups screen.
+        self.editor_list = RowList()
         for group in groups:
             box = QCheckBox(literal(group.display_name))
-            box.setStyleSheet("font-weight: 600;")
             box.setChecked(group.id in ticked)
             box.toggled.connect(lambda _on: self.refresh_ticked())
             holder = GroupRow(box)
             layout = QHBoxLayout(holder)
-            layout.setContentsMargins(theme.PAD_M, theme.PAD_S, theme.PAD_S, theme.PAD_S)
+            layout.setContentsMargins(theme.PAD_M, theme.PAD_S, theme.PAD_M, theme.PAD_S)
             layout.addWidget(box, 1)
             if group.members:
                 members = QLabel(group.members)
                 members.setObjectName("Muted")
                 layout.addWidget(members)
-            self.editor_rows.addWidget(holder)
             self._boxes[group.id] = box
-            self._editor_rows[group.id] = holder
+            self._editor_rows[group.id] = self.editor_list.add(holder)
+        self.editor_rows.addWidget(self.editor_list)
         self.editor_rows.addStretch(1)
         self.apply_search()
         self.refresh_ticked()
@@ -372,6 +374,8 @@ class GroupSetsView(QWidget):
         elif not shown:
             self.empty_note.setText(f"No group matches \"{query.strip()}\".")
         self.empty_note.setVisible(not shown)
+        self.editor_list.setVisible(bool(shown))
+        self.editor_list.update()
 
     # -- saving --------------------------------------------------------------
     def save(self) -> bool:

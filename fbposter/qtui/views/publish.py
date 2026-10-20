@@ -29,7 +29,6 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDateEdit,
     QDateTimeEdit,
-    QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -37,7 +36,6 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
-    QStackedWidget,
     QStyledItemDelegate,
     QTextEdit,
     QVBoxLayout,
@@ -49,7 +47,17 @@ from fbposter.text import strip_invisible
 from fbposter.db.models import SCHEDULE_ACTIVE, SCHEDULE_PAUSED, utcnow
 
 from .. import theme
-from ..widgets import badge, card, clear, row, segmented, set_note_lines
+from ..widgets import (
+    RowList,
+    back_link,
+    badge,
+    card,
+    card_title,
+    clear,
+    row,
+    segmented,
+    set_note_lines,
+)
 from .compose import media_only
 
 RIGHT_COLUMN_WIDTH = 340
@@ -545,6 +553,20 @@ class PublishView(QWidget):
         column.setSpacing(theme.PAD_XS)
         parent.addLayout(column, 1)
 
+        # What is going out, then where. The words used to float under the
+        # list in quotes, with nothing to say what they were.
+        post_heading = QLabel("The post")
+        post_heading.setObjectName("SectionHeading")
+        column.addWidget(post_heading)
+        post_card = card()
+        post_layout = QVBoxLayout(post_card)
+        post_layout.setContentsMargins(theme.PAD_M, theme.PAD_S, theme.PAD_M, theme.PAD_S)
+        self.preview_note = QLabel("")
+        self.preview_note.setWordWrap(True)
+        post_layout.addWidget(self.preview_note)
+        column.addWidget(post_card)
+        column.addSpacing(theme.PAD_S)
+
         heading = QHBoxLayout()
         going = QLabel("Going out")
         going.setObjectName("SectionHeading")
@@ -561,20 +583,15 @@ class PublishView(QWidget):
         self.recipient_area = RecipientList()
         self.recipient_area.setWidgetResizable(True)
         self.recipient_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        holder = row()
-        self.recipient_box = QVBoxLayout(holder)
+        # The lines only: the card around the scroll area is the box.
+        self.recipient_list = RowList(framed=False, inset=0)
+        self.recipient_box = self.recipient_list.box
         # The scroll bar's room on the right, so the names never run under it.
         self.recipient_box.setContentsMargins(0, 0, theme.PAD_S, 0)
-        self.recipient_box.setSpacing(0)
         self.recipient_box.setAlignment(Qt.AlignTop)
-        self.recipient_area.setWidget(holder)
+        self.recipient_area.setWidget(self.recipient_list)
         recipients_layout.addWidget(self.recipient_area)
         column.addWidget(self.recipients)
-
-        self.preview_note = QLabel("")
-        self.preview_note.setObjectName("Muted")
-        self.preview_note.setWordWrap(True)
-        column.addWidget(self.preview_note)
 
         # Everything below is Repeat-only, and lives in one container so that
         # hiding it collapses cleanly. Hiding the widgets one by one left their
@@ -625,6 +642,9 @@ class PublishView(QWidget):
 
         self.schedule_area = QScrollArea()
         self.schedule_area.setWidgetResizable(True)
+        # Never sideways: a card too wide for the column was cut off at its
+        # right edge, Edit half shown and Delete out of sight.
+        self.schedule_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         schedule_holder = QWidget()
         self.schedule_box = QVBoxLayout(schedule_holder)
         self.schedule_box.setContentsMargins(0, 0, 0, 0)
@@ -657,19 +677,11 @@ class PublishView(QWidget):
         ]
 
     @staticmethod
-    def _recipient_row(name: str, reworded: bool, sets: tuple[str, ...], first: bool) -> QWidget:
+    def _recipient_row(name: str, reworded: bool, sets: tuple[str, ...]) -> QWidget:
         """One group: its name, then why it is there (a set) and whether it has
-        its own wording, with a hairline above every row but the first."""
+        its own wording. The list draws the hairline between rows."""
         holder = row()
-        outer = QVBoxLayout(holder)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(0)
-        if not first:
-            line = QFrame()
-            line.setObjectName("Divider")
-            line.setFixedHeight(1)
-            outer.addWidget(line)
-        content = QHBoxLayout()
+        content = QHBoxLayout(holder)
         content.setContentsMargins(0, RECIPIENT_ROW_PAD, 0, RECIPIENT_ROW_PAD)
         content.setSpacing(theme.PAD_M)
         label = QLabel(name)
@@ -686,7 +698,6 @@ class PublishView(QWidget):
             tag = QLabel(" · ".join(notes))
             tag.setObjectName("Muted")
             content.addWidget(tag)
-        outer.addLayout(content)
         return holder
 
     def _fit_recipients(self) -> None:
@@ -707,12 +718,18 @@ class PublishView(QWidget):
         flat = " ".join(body.split())
         snippet = flat[:SNIPPET_CHARS] + ("…" if len(flat) > SNIPPET_CHARS else "")
         if snippet:
-            note = f"“{snippet}”"
+            note = snippet
         elif self.compose.attachments:
             note = f"{media_only(self.compose.attachments)}."
         else:
             note = "Nothing written yet. Start in step 1."
         self.preview_note.setText(note)
+        # Grey when it is a note about the post rather than the post itself.
+        muted = "" if snippet else "Muted"
+        if self.preview_note.objectName() != muted:
+            self.preview_note.setObjectName(muted)
+            self.preview_note.style().unpolish(self.preview_note)
+            self.preview_note.style().polish(self.preview_note)
 
         # None never equals a tuple, so the first call always draws -- including
         # the empty case, which has its own "no groups picked" note.
@@ -732,10 +749,8 @@ class PublishView(QWidget):
             note.setWordWrap(True)
             note.setContentsMargins(0, RECIPIENT_ROW_PAD, 0, RECIPIENT_ROW_PAD)
             self.recipient_box.addWidget(note)
-        for index, (_group_id, name, reworded, brought_by) in enumerate(rows):
-            self.recipient_box.addWidget(
-                self._recipient_row(name, reworded, brought_by, first=index == 0)
-            )
+        for _group_id, name, reworded, brought_by in rows:
+            self.recipient_box.addWidget(self._recipient_row(name, reworded, brought_by))
         self.recipient_area.updateGeometry()
 
     # -- right column: when ------------------------------------------------
@@ -759,9 +774,7 @@ class PublishView(QWidget):
         picker_layout = QVBoxLayout(picker)
         picker_layout.setContentsMargins(theme.PAD_M, theme.PAD_M, theme.PAD_M, theme.PAD_M)
         picker_layout.setSpacing(theme.PAD_S)
-        label = QLabel("When")
-        label.setObjectName("SectionHeading")
-        picker_layout.addWidget(label)
+        picker_layout.addWidget(card_title("When"))
 
         choices = ((NOW, "Now"), (ONCE, "Once"), (REPEAT, "Repeat"))
         toggle, buttons = segmented([text for _key, text in choices], expand=True)
@@ -773,13 +786,17 @@ class PublishView(QWidget):
             self.mode_buttons[key] = button
         picker_layout.addWidget(toggle)
 
-        # One slot, three sets of controls -- the same trick Compose uses for
-        # Write/Preview, so the column does not jump around as modes change.
-        self.slot = QStackedWidget()
-        self.slot.addWidget(self._build_now_panel())
-        self.slot.addWidget(self._build_once_panel())
-        self.slot.addWidget(self._build_repeat_panel())
-        picker_layout.addWidget(self.slot)
+        # Three sets of controls, one shown at a time; a hidden one takes no
+        # room at all. A QStackedWidget sized itself from the tallest page's
+        # wrapped text whatever its size policies said, which left a void
+        # under the one line of Now.
+        self.panels = {
+            NOW: self._build_now_panel(),
+            ONCE: self._build_once_panel(),
+            REPEAT: self._build_repeat_panel(),
+        }
+        for panel in self.panels.values():
+            picker_layout.addWidget(panel)
         column.addWidget(picker)
 
         # The summary and the button that acts on it sit directly under the
@@ -798,7 +815,7 @@ class PublishView(QWidget):
         self.go_button.clicked.connect(lambda: self.publish())
         column.addWidget(self.go_button)
 
-        back = QPushButton("← Back: choose the groups")
+        back = back_link("← Back: choose the groups")
         back.clicked.connect(lambda: self.app.show_view("groups"))
         column.addWidget(back)
 
@@ -881,20 +898,9 @@ class PublishView(QWidget):
         if mode == ONCE and was != ONCE:
             # Fresh every time it is opened; see ScheduleEntry.reset.
             self.schedule_entry.reset()
-        self.slot.setCurrentIndex({NOW: 0, ONCE: 1, REPEAT: 2}[mode])
+        for key, panel in self.panels.items():
+            panel.setVisible(key == mode)
         self.go_button.setText(BUTTON_LABELS[mode])
-
-        # A QStackedWidget is as tall as its tallest page, which left a large
-        # void under the one-line Now panel. Ignoring the height of every page
-        # but the current one makes the card fit what is actually showing.
-        for index in range(self.slot.count()):
-            page = self.slot.widget(index)
-            page.setSizePolicy(
-                QSizePolicy.Preferred,
-                QSizePolicy.Preferred if index == self.slot.currentIndex()
-                else QSizePolicy.Ignored,
-            )
-        self.slot.adjustSize()
 
         repeating = mode == REPEAT
         self.repeat_extras.setVisible(repeating)
@@ -1042,6 +1048,8 @@ class PublishView(QWidget):
 
         wordings = self.wordings()
         self.wording_hint.setVisible(not self._wordings)
+        # Empty, the box only held a blank gap open above the repeating posts.
+        self.wording_area.setVisible(bool(self._wordings))
         # Said only when there is a rotation to speak of: with no alternates
         # the hint above says it, and "1 wording in rotation" is not one.
         extra = len(self.alternates())
@@ -1226,32 +1234,25 @@ class PublishView(QWidget):
         layout.setContentsMargins(theme.PAD_M, theme.PAD_S, theme.PAD_M, theme.PAD_S)
         layout.setSpacing(theme.PAD_XS)
 
-        # The name and whether it is on, then what can be done to it. The
-        # state used to sit among the buttons, in coloured words the same size
-        # as "Delete" beside it.
+        # The name and whether it is on, then what it does, then what can be
+        # done to it. The state used to sit among the buttons, in coloured
+        # words the same size as "Delete" beside it; and the buttons shared
+        # the name's line, which ran the card off the column's right edge in
+        # a narrow window.
         header = QHBoxLayout()
         header.setSpacing(theme.PAD_S)
         title = QLabel(schedule.display_name)
-        title.setStyleSheet("font-weight: 600;")
-        header.addWidget(title)
+        title.setObjectName("Strong")
+        title.setWordWrap(True)
+        header.addWidget(title, 1)
         header.addWidget(
             badge(
                 "Active" if schedule.active else "Paused",
                 "SUCCESS" if schedule.active else "TEXT_MUTED",
-            )
+            ),
+            0,
+            Qt.AlignTop,
         )
-        header.addStretch(1)
-
-        toggle = QPushButton("Pause" if schedule.active else "Resume")
-        toggle.clicked.connect(lambda _c, s=schedule.id: self.toggle_schedule(s))
-        header.addWidget(toggle)
-        edit = QPushButton("Edit")
-        edit.clicked.connect(lambda _c, s=schedule.id: self.edit_schedule(s))
-        header.addWidget(edit)
-        remove = QPushButton("Delete")
-        remove.setObjectName("Link")
-        remove.clicked.connect(lambda _c, s=schedule.id: self.delete_schedule(s))
-        header.addWidget(remove)
         layout.addLayout(header)
 
         try:
@@ -1285,4 +1286,20 @@ class PublishView(QWidget):
             first = QLabel(snippet)
             first.setWordWrap(True)
             layout.addWidget(first)
+
+        actions = QHBoxLayout()
+        actions.setContentsMargins(0, theme.PAD_XS, 0, 0)
+        actions.setSpacing(theme.PAD_S)
+        toggle = QPushButton("Pause" if schedule.active else "Resume")
+        toggle.clicked.connect(lambda _c, s=schedule.id: self.toggle_schedule(s))
+        actions.addWidget(toggle)
+        edit = QPushButton("Edit")
+        edit.clicked.connect(lambda _c, s=schedule.id: self.edit_schedule(s))
+        actions.addWidget(edit)
+        actions.addStretch(1)
+        remove = QPushButton("Delete")
+        remove.setObjectName("Link")
+        remove.clicked.connect(lambda _c, s=schedule.id: self.delete_schedule(s))
+        actions.addWidget(remove)
+        layout.addLayout(actions)
         return box

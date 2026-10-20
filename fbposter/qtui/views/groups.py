@@ -40,7 +40,7 @@ from fbposter.connection import ConnectionState
 from fbposter.text import strip_invisible
 
 from .. import theme
-from ..widgets import card, clear, literal, row
+from ..widgets import RowList, back_link, card, clear, literal, row
 
 # What a row says while its group's name is being fetched. It used to show the
 # group's number instead, which is meaningless to the person who pasted a link.
@@ -99,17 +99,19 @@ def matches(group, query: str) -> bool:
 
 
 class GroupRow(QFrame):
-    """A group's card, which ticks and unticks it wherever it is clicked.
+    """A group's row in a list, which ticks and unticks it wherever it is
+    clicked.
 
     The user's request (2026-10-14): the little box alone was too small a
     target. A click on the box itself is the box's own, and one on "Remove" is
-    the button's; Qt passes every other click on the card up to here. The box
-    still takes the keyboard focus, so Tab and Space work as before.
+    the button's; Qt passes every other click on the row up to here. The box
+    still takes the keyboard focus, so Tab and Space work as before. It was a
+    card of its own until every group list became one box (2026-10-20).
     """
 
     def __init__(self, box: QCheckBox) -> None:
         super().__init__()
-        self.setObjectName("Card")
+        self.setObjectName("ListRow")
         self.box = box
         self.setCursor(Qt.PointingHandCursor)
 
@@ -121,7 +123,7 @@ class GroupRow(QFrame):
             super().mousePressEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802 - Qt's name
-        # Only a release still over the card, as for any button: dragging off
+        # Only a release still over the row, as for any button: dragging off
         # it is how a person takes a click back. `toggle()` ignores a box being
         # disabled, so that is checked here: a group a picked set brings is
         # not ticked or unticked on its own.
@@ -162,6 +164,8 @@ class GroupsView(QWidget):
         self.removed_heading: QLabel | None = None
         # Made by refresh(); None until the list is first drawn.
         self.empty_note: QLabel | None = None
+        self.group_list: RowList | None = None
+        self.removed_list: RowList | None = None
         # True while the groups are being read off Facebook.
         self._importing = False
         # The group set boxes, and the sets they were drawn from. Picking one
@@ -258,7 +262,7 @@ class GroupsView(QWidget):
         outer.addLayout(removed_line)
 
         footer = QHBoxLayout()
-        back = QPushButton("← Back: write the post")
+        back = back_link("← Back: write the post")
         back.clicked.connect(lambda: self.app.show_view("compose"))
         footer.addWidget(back)
         footer.addStretch(1)
@@ -689,16 +693,18 @@ class GroupsView(QWidget):
         self._removed_rows = {}
         self._removed_groups = {group.id: group for group in removed}
         self.removed_heading = None
+        self.removed_list = None
 
         # One note for both empty cases, worded by apply_search.
         self.empty_note = QLabel("")
         self.empty_note.setObjectName("Muted")
         self.empty_note.setWordWrap(True)
         self.rows.addWidget(self.empty_note)
+        # One box, a hairline between the groups (2026-10-20).
+        self.group_list = RowList()
         for group in groups:
-            row = self._row(group)
-            self._rows[group.id] = row
-            self.rows.addWidget(row)
+            self._rows[group.id] = self.group_list.add(self._row(group))
+        self.rows.addWidget(self.group_list)
 
         self.removed_toggle.setVisible(bool(removed))
         self.removed_toggle.setText(
@@ -709,10 +715,10 @@ class GroupsView(QWidget):
             self.removed_heading.setObjectName("SectionHeading")
             self.rows.addSpacing(theme.PAD_M)
             self.rows.addWidget(self.removed_heading)
+            self.removed_list = RowList()
             for group in removed:
-                row = self._removed_row(group)
-                self._removed_rows[group.id] = row
-                self.rows.addWidget(row)
+                self._removed_rows[group.id] = self.removed_list.add(self._removed_row(group))
+            self.rows.addWidget(self.removed_list)
 
         self.rows.addStretch(1)
         self.apply_search()
@@ -740,6 +746,13 @@ class GroupsView(QWidget):
             any_removed = any_removed or visible
         if self.removed_heading is not None:
             self.removed_heading.setVisible(any_removed)
+        # An empty box is not drawn at all, and the hairlines are redrawn
+        # between the rows still showing.
+        self.group_list.setVisible(bool(shown))
+        self.group_list.update()
+        if self.removed_list is not None:
+            self.removed_list.setVisible(any_removed)
+            self.removed_list.update()
 
         if not self._groups:
             self.empty_note.setText(f"No groups yet. Press {IMPORT_LABEL}.")
@@ -752,16 +765,14 @@ class GroupsView(QWidget):
         covered = self._covered.get(group.id)
         box = QCheckBox(literal(label))
         box.setChecked(group.id in self.app.selected_groups or bool(covered))
-        box.setStyleSheet(
-            f"color: {theme.C['TEXT_MUTED']};" if label == LOOKING_UP
-            else "font-weight: 600;"
-        )
+        if label == LOOKING_UP:
+            box.setObjectName("Pending")
         box.toggled.connect(lambda on, gid=group.id: self.toggle(gid, on))
         self._checkboxes[group.id] = box
 
         holder = GroupRow(box)
         layout = QHBoxLayout(holder)
-        layout.setContentsMargins(theme.PAD_M, theme.PAD_S, theme.PAD_S, theme.PAD_S)
+        layout.setContentsMargins(theme.PAD_M, theme.PAD_XS, theme.PAD_S, theme.PAD_XS)
         layout.addWidget(box, 1)
 
         if covered:
@@ -792,9 +803,10 @@ class GroupsView(QWidget):
         return holder
 
     def _removed_row(self, group) -> QWidget:
-        holder = card()
+        holder = QFrame()
+        holder.setObjectName("ListRow")
         layout = QHBoxLayout(holder)
-        layout.setContentsMargins(theme.PAD_M, theme.PAD_S, theme.PAD_S, theme.PAD_S)
+        layout.setContentsMargins(theme.PAD_M, theme.PAD_XS, theme.PAD_S, theme.PAD_XS)
         name = QLabel(group.display_name)
         name.setObjectName("Muted")
         layout.addWidget(name, 1)
