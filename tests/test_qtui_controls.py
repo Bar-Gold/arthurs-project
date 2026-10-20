@@ -279,12 +279,13 @@ class TestAppStyle:
         assert spin.cursor().shape() != Qt.PointingHandCursor
 
     def test_the_real_window_installs_it_before_the_stylesheet(self):
-        """The stylesheet wraps whatever style is installed when it is set."""
+        """The stylesheet wraps whatever style is installed when it is set,
+        and it is the window's, set as the window is built (App.__init__)."""
         from fbposter.qtui import app
 
         source = inspect.getsource(app.run)
         assert "setStyle(AppStyle())" in source
-        assert source.index("setStyle(AppStyle())") < source.index("setStyleSheet(")
+        assert source.index("setStyle(AppStyle())") < source.index("stylesheet=theme.stylesheet()")
 
 
 @pytest.fixture(params=[False, True], ids=["light", "dark"])

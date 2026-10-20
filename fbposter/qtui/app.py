@@ -149,8 +149,17 @@ class App(QMainWindow):
     _worker_event = Signal(object)
 
     def __init__(self, check_fn=check_connection, db: Database | None = None,
-                 group_namer=None, confirm_close=None, group_finder=None) -> None:
+                 group_namer=None, confirm_close=None, group_finder=None,
+                 stylesheet: str = "") -> None:
         super().__init__()
+        # The look is the window's own stylesheet, not the application's, and
+        # it is set before a single screen is built, because some controls
+        # size themselves as they are made. On the application, every Light or
+        # Dark switch took most of a second: Qt restyles a widget once for
+        # itself and once more for each widget it sits inside. On the window
+        # it restyles each one once. run() passes it; a test window has none.
+        if stylesheet:
+            self.setStyleSheet(stylesheet)
         self._check_fn = check_fn
         # The real one by default, which opens a modal dialog. closeEvent asks
         # only while a worker is attached, which a test window does not have
@@ -269,7 +278,7 @@ class App(QMainWindow):
 
     # -- layout ------------------------------------------------------------
     def _build_sidebar(self, layout: QHBoxLayout) -> None:
-        sidebar = QFrame()
+        sidebar = self.sidebar = QFrame()
         sidebar.setObjectName("Sidebar")
         sidebar.setFixedWidth(theme.SIDEBAR_WIDTH)
         column = QVBoxLayout(sidebar)
@@ -475,6 +484,8 @@ class App(QMainWindow):
 
     # -- navigation --------------------------------------------------------
     def show_view(self, key: str) -> None:
+        # Read before the screen changes: the switch itself moves focus.
+        keyboard_in_sidebar = self._focus_in_sidebar()
         if key == "create":
             # The sidebar item: back to whichever step the post was at.
             key = self.views["create"].current_key
@@ -485,14 +496,35 @@ class App(QMainWindow):
             self.current_view = key
             self._light(key)
             flow.go_to(key)
+            if not keyboard_in_sidebar:
+                self._park_focus()
             return
         view = self.views[key]
         self.stack.setCurrentWidget(view)
+        if not keyboard_in_sidebar:
+            self._park_focus()
         self.current_view = key
         self._light(key)
         on_show = getattr(view, "on_show", None)
         if on_show is not None:
             on_show()
+
+    def _focus_in_sidebar(self) -> bool:
+        focused = QApplication.focusWidget()
+        return focused is not None and self.sidebar.isAncestorOf(focused)
+
+    def _park_focus(self) -> None:
+        """Give keyboard focus to the page area, which draws no ring.
+
+        Left to Qt, focus went to the first button in the window as it opened,
+        the logo, and its gold ring showed whenever the window was in front
+        (the user's report, 2026-10-20). And when a screen with a field in
+        focus was hidden, Qt passed focus on to the next button, which then
+        wore the ring nobody had tabbed to. Tab still moves from here to the
+        logo, ring and all, so the keyboard loses nothing. A keyboard user
+        working the sidebar keeps their place there.
+        """
+        self.stack.setFocus(Qt.OtherFocusReason)
 
     def _light(self, key: str) -> None:
         lit = NAV_PARENT.get(key, key)
@@ -698,17 +730,16 @@ class App(QMainWindow):
     def apply_theme(self, dark: bool) -> None:
         """Light or dark, at once, without a restart (the Settings switch).
 
-        The stylesheet is rebuilt from the other palette, and Qt restyles
-        every widget from it. What it cannot reach is colour already drawn
+        The window's stylesheet is rebuilt from the other palette, and Qt
+        restyles every widget in it (see __init__ for why it is the window's).
+        What it cannot reach is colour already drawn
         into a picture or set on a text format, so each view that has some
         redraws it in `restyle()`.
         """
         if (theme.MODE == theme.DARK_MODE) == dark:
             return
         theme.activate(dark=dark)
-        application = QApplication.instance()
-        if application is not None:
-            application.setStyleSheet(theme.stylesheet())
+        self.setStyleSheet(theme.stylesheet())
         # The logo's mark is drawn in the sidebar's navy, a shade apart.
         self.brand_button.setIcon(QIcon(icons.brand(BRAND_SIZE, BRAND_SIZE + BRAND_GAP)))
         for view in self.views.values():
@@ -1111,14 +1142,14 @@ def run() -> int:
     theme.activate(dark=theme.is_dark(SettingsRepo(db).get(theme.THEME_KEY)))
     theme.load_fonts()
     # The style before the stylesheet: the stylesheet wraps whatever style is
-    # installed when it is set.
+    # installed when it is set, and the window sets it as it is built.
     application.setStyle(AppStyle())
-    application.setStyleSheet(theme.stylesheet())
     # Family only. Sizes belong to the stylesheet -- setting a point size here
     # as well meant two sources of truth, and the smaller one was winning.
     application.setFont(QFont(theme.FONT_FAMILY))
 
-    window = App(db=db)
+    # The stylesheet is the window's, not the application's: see App.__init__.
+    window = App(db=db, stylesheet=theme.stylesheet())
     # Only the real app looks inside its Chrome for a stuck tab (tabs.py), and
     # only it may restart one. Every window the suite builds keeps the inert
     # defaults, so no test can reach a Chrome running on the machine.

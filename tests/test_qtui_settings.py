@@ -375,33 +375,14 @@ class TestLightOrDark:
     Dark, no "same as Windows", and light until somebody picks dark. It
     changes the whole window at once, with no restart."""
 
-    class SheetRecorder:
-        """Stands in for the application where `App.apply_theme` hands it the
-        new stylesheet: records it, and restyles nothing.
-
-        In the app that call restyles the one window. In the suite it would
-        restyle every window every earlier test left behind (they are closed,
-        never deleted), and over a thousand of them that took minutes and
-        gigabytes. What Qt does with a stylesheet is Qt's to test; that the
-        right one reaches it is this file's."""
-
-        def __init__(self) -> None:
-            self.sheet = ""
-
-        def setStyleSheet(self, sheet: str) -> None:  # noqa: N802 - Qt's name
-            self.sheet = sheet
-
     @pytest.fixture
-    def application(self, monkeypatch):
-        from types import SimpleNamespace
-
-        from fbposter.qtui import app as app_module
+    def application(self):
+        """Puts the palette back to light for the tests after this one. The
+        stylesheet is the window's own (App.__init__), so a switch restyles
+        only the window under test, never every window the suite left behind."""
         from fbposter.qtui import theme
 
-        recorder = self.SheetRecorder()
-        monkeypatch.setattr(app_module, "QApplication",
-                            SimpleNamespace(instance=lambda: recorder))
-        yield recorder
+        yield
         theme.activate(dark=False)
 
     def test_nothing_stored_is_light(self):
@@ -424,7 +405,10 @@ class TestLightOrDark:
 
         source = inspect.getsource(app_module.run)
         assert "theme.THEME_KEY" in source
-        assert "App(db=db)" in source, "the window must use the database the choice came from"
+        assert "App(db=db, stylesheet=theme.stylesheet())" in source, (
+            "the window must use the database the choice came from, and carry the look itself"
+        )
+        assert "application.setStyleSheet" not in source, "on the application, a switch took most of a second"
 
     def test_choosing_dark_stores_it_and_turns_the_window_dark(self, qt_app, application):
         from fbposter.qtui import theme
@@ -435,14 +419,14 @@ class TestLightOrDark:
         settings.appearance_buttons["dark"].click()
         assert qt_app.settings_repo.get(theme.THEME_KEY) == "dark"
         assert theme.MODE == "dark"
-        assert theme.DARK["WINDOW_BG"] in application.sheet
+        assert theme.DARK["WINDOW_BG"] in qt_app.styleSheet()
         assert settings.appearance_buttons["dark"].isChecked()
         assert not settings.appearance_buttons["light"].isChecked()
 
         settings.appearance_buttons["light"].click()
         assert qt_app.settings_repo.get(theme.THEME_KEY) == "light"
         assert theme.MODE == "light"
-        assert theme.LIGHT["WINDOW_BG"] in application.sheet
+        assert theme.LIGHT["WINDOW_BG"] in qt_app.styleSheet()
 
     def test_pictures_drawn_in_the_old_colours_are_drawn_again(self, qt_app, application):
         """The step marks are pictures: the stylesheet cannot recolour them."""

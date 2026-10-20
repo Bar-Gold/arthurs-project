@@ -67,6 +67,59 @@ class TestWhereAmI:
         assert lit(qt_app) == ["create"]
 
 
+def in_front(qt_app):
+    """Shown and active, which is when Qt hands out focus and rings it."""
+    from PySide6.QtWidgets import QApplication
+
+    qt_app.show()
+    qt_app.activateWindow()
+    for _ in range(3):
+        QApplication.processEvents()
+    return QApplication
+
+
+class TestNoRingNobodyTabbedTo:
+    """The user's report (2026-10-20): the logo "sometimes" wore an outline.
+    It was the focus ring. Qt gave the first button in the window focus as it
+    opened, and passed focus on to the next button whenever a screen with a
+    field in focus was hidden."""
+
+    def test_the_window_opens_with_no_button_in_focus(self, qt_app):
+        application = in_front(qt_app)
+        assert application.focusWidget() is qt_app.stack
+
+    def test_a_hidden_field_does_not_hand_its_focus_to_a_button(self, qt_app):
+        from PySide6.QtWidgets import QAbstractButton, QTextEdit
+
+        application = in_front(qt_app)
+        qt_app.show_view("compose")
+        qt_app.views["compose"].findChildren(QTextEdit)[0].setFocus()
+        qt_app.nav_buttons["home"].click()
+        assert not isinstance(application.focusWidget(), QAbstractButton)
+
+    def test_tab_still_reaches_the_logo(self, qt_app):
+        """The ring is the keyboard's, and the keyboard keeps it."""
+        from PySide6.QtCore import Qt
+        from PySide6.QtTest import QTest
+
+        application = in_front(qt_app)
+        for _ in range(6):
+            QTest.keyClick(qt_app, Qt.Key_Tab)
+            if application.focusWidget() is qt_app.brand_button:
+                break
+        assert application.focusWidget() is qt_app.brand_button
+
+    def test_the_keyboard_keeps_its_place_in_the_sidebar(self, qt_app):
+        from PySide6.QtCore import Qt
+        from PySide6.QtTest import QTest
+
+        application = in_front(qt_app)
+        qt_app.nav_buttons["dashboard"].setFocus()
+        QTest.keyClick(qt_app.nav_buttons["dashboard"], Qt.Key_Space)
+        assert qt_app.current_view == "dashboard"
+        assert application.focusWidget() is qt_app.nav_buttons["dashboard"]
+
+
 class TestHowLongAMessageStays:
     def test_short_ones_get_the_minimum(self, qt_application):
         from fbposter.qtui.widgets import MESSAGE_MIN_MS, message_duration
