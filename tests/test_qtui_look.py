@@ -315,12 +315,15 @@ class TestNoLongDashes:
     @staticmethod
     def files():
         patterns = ("fbposter/**/*.py", "tests/*.py", "*.py", "**/*.md", "packaging/*.*",
-                    "scripts/*.*")
+                    "scripts/*.*", ".claude/rules/**/*.md")
         skip = {".venv", ".git", "build", "dist", ".agents", ".claude", "__pycache__"}
+        rules = ROOT / ".claude" / "rules"
         seen = set()
         for pattern in patterns:
             for path in ROOT.glob(pattern):
-                if path in seen or not path.is_file() or skip & set(path.parts):
+                if path in seen or not path.is_file():
+                    continue
+                if skip & set(path.relative_to(ROOT).parts) and rules not in path.parents:
                     continue
                 if path.suffix.lower() in (".ico", ".png", ".exe"):
                     continue
@@ -339,5 +342,6 @@ class TestNoLongDashes:
     def test_the_scan_covers_the_app_and_the_docs(self):
         names = {path.relative_to(ROOT).as_posix() for path in self.files()}
         for expected in ("CLAUDE.md", "README.md", "fbposter/qtui/CLAUDE.md",
-                         "packaging/CLAUDE.md", "fbposter/worker.py", "main.py"):
+                         "packaging/CLAUDE.md", ".claude/rules/worker.md",
+                         "fbposter/worker.py", "main.py"):
             assert expected in names

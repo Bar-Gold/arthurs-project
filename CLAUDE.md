@@ -4,36 +4,40 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Where to look
 
-Most of this file is a rule that already cost a live bug. They are grouped by what you are touching:
+Most of these rules already cost a live bug. This file holds what applies everywhere. The rest is in `.claude/rules/`, and each file there loads by itself when Claude reads or edits a file it lists at its top, tests included. When a rule names a section by its title, this table says which file holds it:
 
-| Touching | Read |
-| --- | --- |
-| anything | Repository Status, Architecture, Scope Discipline |
-| `worker.py`, scheduling | Rules for the Worker; Power; Repeating posts; Time |
-| `recurrence.py`, Publish, `tips.py`, `qtui/views/tips.py` | No posting rules, only tips; Repeating posts |
-| `automation/`, `strings.py` | Rules for the Automation Engine; Selector Strategy; Non-Interfering Operation |
-| `clock.py` | Time |
-| `text.py` | Invisible characters |
-| `chrome.py`, `keepalive.py`, `tabs.py`, `cdp.py`, `session.py` | Handing this to a non-technical user (the keep-alive and stuck-tab rules live there); Playwright is imported lazily; "Never call `browser.close()`" under the tests section |
-| `qtui/` | `fbposter/qtui/CLAUDE.md`. It loads on its own when you open a file there, but not from `tests/`, so open it before editing a `test_qtui_*` file |
-| `db/`, retention, removing groups | Database rules; the two retentions; Removing a group archives it |
-| `stats.py`, `qtui/views/dashboard.py` | The Dashboard |
-| `groupfinder.py`, `GroupRepo.import_found`, "Get my groups from Facebook" | Reading the client's groups off Facebook |
-| `GroupSetRepo`, `qtui/views/group_sets.py`, `Schedule.recipient_ids` | Group sets |
-| tests | How the tests avoid a browser and a real clock |
-| `onboarding.py`, `login.py`, `connection.py`, the wizard | Handing this to a non-technical user; Changing which Facebook account it posts as |
-| `always_on.py`, `power.py`, `scripts/` | Power (the Settings half is at its end) |
-| `packaging/` | `packaging/CLAUDE.md`. It loads on its own when you open a file there |
+| Rule file | Sections | Loads for |
+| --- | --- | --- |
+| `worker.md` | Rules for the Worker; Repeating posts | `worker.py`, `recurrence.py`, Publish, the repeating-post edit screen |
+| `power.md` | Power: sleep, shutdown, and an unattended laptop | `power.py`, `always_on.py`, `worker.py`, `scripts/`, Settings, `installer.iss` |
+| `automation.md` | Rules for the Automation Engine; Selector Strategy; Reading the client's groups off Facebook | `automation/`, `strings.py`, `groups.py`, `media.py` |
+| `chrome-and-login.md` | Handing this to a non-technical user; Changing which Facebook account it posts as; Never call `browser.close()` | `chrome.py`, `keepalive.py`, `tabs.py`, `cdp.py`, `session.py`, `login.py`, `onboarding.py`, `connection.py`, `single.py`, `config.py`, `main.py`, `qtui/app.py`, the wizard, Settings |
+| `data.md` | Database rules; Two retentions; Removing a group archives it; Group sets; The Dashboard replaced the Queue screen | `db/`, `stats.py`, the Dashboard, Groups and Group sets screens |
+| `ui.md` | Hebrew, and why the UI is Qt; UI rules | `qtui/` |
+| `testing.md` | How the tests avoid a browser and a real clock | `tests/` |
 
-Text that reaches a post also passes Invisible characters and Hebrew, whatever screen it came from.
+Two folders also have their own CLAUDE.md, which loads when a file in that folder is opened but not from `tests/`: `fbposter/qtui/CLAUDE.md` (the window: flow, redrawing, look; open it before editing a `test_qtui_*` file) and `packaging/CLAUDE.md` (the installer).
+
+Text that reaches a post also passes Invisible characters (below) and Hebrew (`ui.md`), whatever screen it came from.
+
+## Rules that hold everywhere
+
+Each is spelled out in its rule file. These are the ones no change may break:
+
+- **Never post twice.** A post is never retried once a composer was opened; the one exception is `ConnectionFailed` (`worker.md`). A duplicate is worse than a missing post.
+- **Never automate login, and never click through a checkpoint, CAPTCHA or warning.** Halt the batch and tell the user (`automation.md`).
+- **Never call `browser.close()`** on the user's Chrome (`chrome-and-login.md`).
+- **Never delete posting history to tidy up.** Removing a group archives it (`data.md`).
+- **Every wait is an absolute time in the database, never a `sleep()` countdown** (`worker.md`).
+- **Facebook's words live only in `strings.py`**, read off the live site and never translated, and selectors use roles and `aria-label`, never CSS classes (`automation.md`).
 
 ## Repository Status
 
 **All five phases are done; v1 is feature-complete.** Chrome debug-profile launcher and CDP session (1), the UI (2; CustomTkinter then, Qt now), SQLite persistence and the safety guards (3), the automation engine in `fbposter/automation/` (4), and the scheduler/worker in `fbposter/worker.py` (5).
 
-**The app now posts on its own.** Opening the GUI starts the worker, and any due batch will go out. `README.md` holds the full spec. Everything built since v1 is in `git log`; the rules each piece left behind are in the sections below.
+**The app now posts on its own.** Opening the GUI starts the worker, and any due batch will go out. `README.md` holds the full spec. Everything built since v1 is in `git log`; the rules each piece left behind are below and in `.claude/rules/`.
 
-**It is now shipped, not just run.** The app is packaged as an installer for a non-technical client: a first-run wizard replaces the terminal commands the app used to print, and `packaging/` builds a signed-nothing-but-working `Setup.exe`. The wizard also owns the one thing a finished setup might still need changing, which Facebook account it posts as. See "Handing this to a non-technical user".
+**It is now shipped, not just run.** The app is packaged as an installer for a non-technical client: a first-run wizard replaces the terminal commands the app used to print, and `packaging/` builds a signed-nothing-but-working `Setup.exe`. The wizard also owns the one thing a finished setup might still need changing, which Facebook account it posts as. See "Handing this to a non-technical user" (`chrome-and-login.md`).
 
 ## What This Is
 
@@ -80,7 +84,7 @@ powershell -ExecutionPolicy Bypass -File packaging\build.ps1 -SkipInstaller  # .
 
 `status` exits 0 when logged in, 1 when not, 2 on error (Chrome not running, etc.).
 
-There is no linter or formatter configured, and no pytest config file. The suite is the whole check. Baseline: **1882 tests, 75-240s**. The spread is machine load, not the suite; the Qt GUI files are much of it. A run of *five minutes or more* means something is reaching the network; see the `SilentNamer` note below.
+There is no linter or formatter configured, and no pytest config file. The suite is the whole check. Baseline: **1882 tests, 75-240s**. The spread is machine load, not the suite; the Qt GUI files are much of it. A run of *five minutes or more* means something is reaching the network; see the `SilentNamer` note in `.claude/rules/ui.md`.
 
 **Do not add `playwright install`.** It is unnecessary and was verified so against Chrome 150: the app attaches to the user's real Chrome over CDP and never launches Playwright's bundled Chromium, so the driver shipped inside the pip package is all that is required.
 
@@ -106,7 +110,7 @@ UI and worker communicate through a thread-safe queue. The tables as built are `
 
 Core: `config.py` (paths, port, Chrome flags), `chrome.py` (find/launch Chrome, probe the debug port), `session.py` (CDP attach, `c_user` cookie check), `connection.py` (the check behind the connection pill: `ConnectionState`, `check_connection`), `strings.py` (every Facebook URL and UI string, in all three languages), `clock.py` (Israel-time judgement), `power.py` (`SleepBlocker`, `on_battery`), `always_on.py` (the Settings screen's start-with-Windows and keep-awake switches, which run `setup_always_on.ps1`), `recurrence.py` (repeating-schedule timing, pure), `stats.py` (the Dashboard's numbers, pure too), `groups.py` (group-URL parsing), `text.py` (the invisible-character list, and `normalise`), `tips.py` (the Posting tips words in three languages, pure), `media.py` (picture or video, Facebook's 10 GB video limit, pure), `single.py` (the one-app mutex), `onboarding.py` (what setup step the user is on, pure), `login.py` (putting a visible Chrome in front of them), `keepalive.py` (when to restart a Chrome that has closed, pure), `tabs.py` (finding and closing a tab that has stopped answering, the last-resort restart, and closing Chrome when the app closes), `cdp.py` (a DevTools client on the standard library, for when Playwright is the thing hanging), `errors.py`, `worker.py` (`PostingWorker` and `LivePoster`).
 
-Scripts: `scripts/setup_always_on.ps1`: the laptop power plan and the logon task. See the Power section.
+Scripts: `scripts/setup_always_on.ps1`: the laptop power plan and the logon task. See `.claude/rules/power.md`.
 
 Packaging: `packaging/`: `fbposter.spec` (PyInstaller), `installer.iss` (Inno Setup), `build.ps1` (both, plus the suite), `entry.py`, `policy.txt` (the account blocking policy the installer asks the client to accept; `make_policy.py` turns it into `policy.rtf`). Its rules are in `packaging/CLAUDE.md`.
 
@@ -133,20 +137,6 @@ Every timestamp is stored and compared in UTC, but **every human judgement is ma
 
 `tzdata` is therefore a hard requirement, not a nicety: Windows ships no IANA time zone database, so without it `Asia/Jerusalem` does not resolve and `clock.posting_zone()` falls back to the machine's own zone.
 
-### Repeating posts
-
-A `schedules` row is a **definition**, never a queue entry. When one comes due the worker materialises an ordinary `tasks` row from it and gets out of the way, so the serial queue, the 2-4 minute gap and crash recovery all apply unchanged. **Do not add a second posting path**. It would have to re-earn every one of those properties.
-
-- **The wordings rotate; nothing refuses a repeat** (the user's choice, 2026-10-18; it was once a day from 2026-10-07, "never again" before that). `recurrence.pick_body(variants, offset, sent_today)` picks each group's text, and the offset is `run_count + position`: group 0 takes the next wording, group 1 the one after, and the whole cycle shifts every run. That is why one run never sends identical text to several groups when there are enough wordings. A wording the group has not had that Israel day (`GroupRepo.sent_on_day`) is preferred; when it has had them all, the rotation carries on regardless. With no wordings at all (pictures or a video alone) it returns `""`.
-- **Occurrences are wall-clock times in Israel, recomputed through `clock.py`.** "09:00" means nine in the morning across a daylight-saving change, which is a different number of seconds each time; `next_occurrence` walks days in local time rather than adding 24h. `tests/test_recurrence.py` pins the 23-hour step across the 2026 spring transition.
-- **Days are stored Monday-first and shown Sunday-first.** A schedule's `days` are `datetime.weekday()` numbers (0 is Monday), and every stored schedule already uses them, so never renumber them. Only the order on screen follows the Israeli week (`recurrence.WEEK_ORDER`, the user's choice, 2026-10-14).
-- **A missed slot is dropped, never fired late.** Same `MISSED_GRACE` as everywhere else. Waking the machine at 19:00 must not fire the 09:00 and 14:00 slots as a burst. That is exactly the activity pattern the schedule exists to avoid.
-- **A schedule never stacks a batch on top of an unfinished one of its own** (`TaskRepo.unfinished_for_schedule`); the occurrence is skipped instead. The user confirmed this on 2026-10-18 even with 80-group runs that take hours. A *different* batch waiting behind a long one is another matter: see the missed-slot rule under the Worker.
-- Resuming a paused schedule recomputes `next_run_at` rather than firing the slot that went by while it was paused.
-- **A schedule can be edited, and an edit changes only the definition** (`ScheduleRepo.update`, the `schedule_edit` view). Every part can change (name, wordings, groups, pictures, times, days), and nothing the worker keeps for itself does: not the state (saving never pauses or resumes), not `run_count` (it rotates the wordings), not `last_run_at`. `next_run_at` moves only when the times or days did, and only for an active schedule; unchanged times keep the slot, which the worker may have advanced since the screen opened. A batch it already queued is an ordinary task and goes out as it was. A removed group is not in the schedule at all (see "Removing a group archives it"), so the screen never writes one back. Saving judges nothing. All of that was the user's choice (2026-09-30).
-- **As many times a day as the user picks, and pictures or a video alone may repeat** (both 2026-10-18; it was at most three a day, and text was required). A new time row starts on the next of `DEFAULT_TIMES` not listed, then the first free hour after the last (`publish.next_time`), so a fourth row is not a copy of the third.
-- `recurrence.preview()` describes a rule and lists its next runs. It warns about nothing: there is nothing to warn about.
-
 ### No posting rules, only tips
 
 The user's choice, 2026-10-18. The clients are real-estate agents who post one listing to 40-80 groups, once or twice a day, and the rules stopped exactly that. **The daily limit, the cooldown per group, the posting hours and the repeated-text rule are gone, and nothing warns about them either.** Whatever is queued goes out, one group at a time, with the gap between. `fbposter/guards.py` was deleted; `normalise` moved to `text.py`, and "Post anyway" went with the rules it got past.
@@ -162,287 +152,6 @@ The user's choice, 2026-10-18. The clients are real-estate agents who post one l
 
 It is imported inside `session.attach()`. The objection recorded last time (that this moves the cost onto the first background name lookup or the first post) is exactly why it is safe: both of those already run **off the thread drawing the window**. A second on the worker thread is invisible; a second before the window appears is not. `tests/test_qtui_performance.py` pins both halves: that importing the window does not pull Playwright in, and that nothing in the package imports it at module scope, since the cost comes back silently wherever that is written.
 
-### Two retentions, and only one of them deletes
-
-They are separate settings on purpose and are easy to confuse:
-
-| Setting | Default | What it does |
-| --- | --- | --- |
-| `queue_retention_hours` | 24 | **No longer read.** It hid finished batches on the Queue screen, which the Dashboard replaced. It stays in `DEFAULT_SETTINGS` because the migrations seed from it. |
-| `history_retention_days` | 90 | **Deletes** finished batches, permanently. 0 disables it. |
-
-`TaskRepo.prune_history` is the destructive one, and it is deliberately conservative. **It counts what it deletes into `post_totals` first** (migration 013), in the same transaction, so the Dashboard's "all time" never shrinks (see "The Dashboard"). It never touches:
-
-- anything **unfinished**: a batch still due to go out is not history;
-- the newest **`RECENT_BODIES_LIMIT` posted bodies per group**, however old, because that is exactly the window `GroupRepo.recent_bodies` reads. That history is what tells the worker a text was sent to a group before (`PostRequest.sent_before`). Every check that finds a post by its words must not be fooled by an older post with the same words. `RECENT_BODIES_LIMIT` is one constant used by both, and `tests/test_history_prune.py` pins that they match.
-
-A consequence worth knowing before "fixing" it: **with few posts to a group, nothing ages out at all**, because every post is still inside the guard's window. That is correct, and the storage involved is trivial: 20 bodies per group, for ever.
-
-`sqlite3` reports `rowcount` as **-1** for a `DELETE` that begins with a CTE, so the prune selects the doomed ids first and deletes by id; a count that silently means "unknown" is worse than no count. `reclaim_space()` runs `VACUUM` **and then `PRAGMA wal_checkpoint(TRUNCATE)`**. Under WAL the rewritten pages sit in the `-wal` file and the main database does not shrink on disk without it.
-
-The worker calls this at most once a day (`PRUNE_EVERY`), tracked in the `last_prune_at` setting rather than in memory so that restarting the app does not re-run it and an app left open for weeks still gets round to it. A failure there is reported and swallowed: housekeeping must never be able to stall the queue.
-
-### The Dashboard replaced the Queue screen
-
-The user asked for it (2026-10-14): a screen of numbers about the posting, in the Queue's place in the sidebar. `fbposter/stats.py` works every number out as pure functions; `qtui/views/dashboard.py` only draws them. What the user chose, and what follows from it:
-
-- **"Sent" is `repo.SENT_STATES`**: posted, waiting for an admin, or might have posted, everywhere the Dashboard counts posts. The "Posted today" tile says "Since midnight, Israel time"; it said "N of 25 allowed today" until the daily limit went (2026-10-18), and the per-group "Can post" column went with the cooldown. Success rate is what went out of what was tried; a skip (a group removed mid-batch) is the app working, not failing, and is left out.
-- **Every day is an Israel calendar date** through `clock`, never "now minus 24 hours": "the last 7 days" is seven dates, so a daylight-saving change cannot move a post into another day.
-- **"All time" never shrinks, except at an account switch.** The history prune deletes finished batches after 90 days, so before it deletes it adds their counts to `post_totals`, per group and per state, in the same transaction (`TaskRepo.archived_totals`). All time is the rows still stored plus those counts. No foreign key on that table: a cascade would be a way to lose them. Switching Facebook account is the one deliberate reset: it deletes the history and `post_totals`, so the Dashboard starts from zero; see "Changing which Facebook account it posts as".
-- **Cancel stayed, the approval buttons did not.** "Going out" lists every unfinished batch with Cancel (and Undo). The "Went live" / "Declined" buttons for a post held by an admin were dropped: the worker follows those up by itself, and one it gives up on stays `awaiting_approval`, which counts as sent for that day only. `TaskRepo.resolve_pending` stays, because the worker uses it.
-- **Recent activity replaced the batch history.** The last 15 groups the worker reached, each with its result and the reason under one that did not go out. The Queue's Recent/All toggle, `list_for_queue` and `count_older_than` went with it.
-- **The charts are drawn with `QPainter`** (`DayBars`, `OutcomeBar`, `Meter`). `PySide6.QtCharts` is excluded from the packaged build on purpose (`fbposter.spec`), so do not reach for it.
-- **Worker events refresh it**, several times a minute while a batch runs, so the tiles and charts update in place and the three lists (by group, going out, recent) are rebuilt only when their own snapshot changed. `tests/test_qtui_performance.py::TestTheDashboardIsNotRebuiltForNothing` pins that.
-
-**Do not "tidy up" by deleting old rows** (an account switch is the one deliberate exception). `task_targets` is what `sent_before` reads and what the Dashboard counts. Deleting history would let an old post in the feed be taken as proof that a new one with the same words went out.
-
-### Reading the client's groups off Facebook
-
-A client used to paste every group link by hand. Now the app reads them off Facebook's "Your groups" page (`strings.YOUR_GROUPS_URL`, `/groups/joins/`): by itself once, after the first login, and from the "Get my groups from Facebook" button on Groups after that. The user's choices, 2026-10-13: every group is added, the ones the account manages included; new ones start ticked; a group the user removed is never added back.
-
-**There is no way to add a group by its link any more** (the user's choice, 2026-10-14): the box went, and `GroupRepo.add_from_url` is left for the tests and nothing on screen. The Groups screen has a search box in its place. It matches the name a row shows, ignoring case and invisible marks (a nameless group shows, and so matches, its number), and hides rows rather than rebuilding them. "Select all" and "Clear" act only on the groups on show; a ticked group the search hides stays ticked.
-
-- **Read live on 2026-10-13** (an English account in 12 groups, one managed): inside `[role="main"]`, one heading with the count in brackets ("All groups you've joined (12)") and every group under it, the managed one included. Each group has three links to the same address: its picture (no text), its name, and a "View group" button. **The button carries an `aria-label` and the name link does not**, so the name is read without a word of Facebook's, in any language; taking the longest text would have named a group called "TRY" "View group". Addresses use the number, or the group's short name when it has one. All 12 were there on arrival; a longer list is assumed to load as it is scrolled, which is unverified live.
-- **Read only, and bounded.** One page load, scrolled with `Humanizer.browse`, links read from `[role="main"]` only (`groups_from_links`, pure). It stops at the heading's count, after `QUIET_SCROLLS` (3) scrolls with nothing new, at `MAX_SCROLLS` (60), or after `TIME_LIMIT_S` (180s). It clicks and types nothing. A checkpoint, login or block page adds nothing and says so; a page with neither a list nor a heading is an error, never "no groups".
-- **`GroupRepo.import_found` adds only identifiers not in the table, active or archived**, matched ignoring case. Unlike "Bring back", which is the user asking for a group back, an import is the app deciding, and it must not overrule a removal. The names come with the groups, because fifty nameless groups would be fifty page loads in a row through the name lookup. A group added earlier by number and listed by its short name (or the reverse) is not recognised as the same one and is added twice; it can be removed.
-- **The first login is the moment `SETUP_COMPLETE_KEY` is first set.** That sets `groups_import_pending`, and the import runs on each `CONNECTED` until a read succeeds; a failed automatic read says nothing and waits for the next connection, never a timer. A client upgrading from an older version is already set up and never gets an automatic import. Switching Facebook account replaces the list rather than adding to it; see "Changing which Facebook account it posts as".
-- **`App.group_finder` is `None` until `run()` switches it on**, like `_clear_stuck_tabs`: a window the suite builds must not open Facebook even with the app's Chrome running on the machine. `tests/test_group_import.py` covers all of it with a fake page and a stub finder.
-
-### Group sets: one name for several groups, and a live link for repeating posts
-
-The user asked for "Group of Groups" (2026-10-15); it is called **Group sets** on screen. It was cut from v1 as "group tags" and is built now because the Groups list is read off Facebook and can be long. The user's choices, and what follows from them:
-
-- **Made in one place, picked whole elsewhere.** The Group sets screen (its own sidebar item, below the Dashboard) makes, edits and deletes sets. Groups and a repeating post's edit screen pick them, each as one checkbox. A group a picked set brings shows ticked, greyed, with "in <set>" beside it, and **cannot be unticked on its own**: unpick the set. Picking a set adds to the groups already ticked. Clear unpicks the sets too.
-- **A set is not a posting path.** Now and Once copy the set's groups into an ordinary batch when the button is pressed (`App.selected_group_ids()` includes them). A repeating post stores the set itself in `schedule_sets`, and `ScheduleRepo` works out `Schedule.recipient_ids` afresh on every read: the post's own groups in their order, then each set's groups in the set's order, each group once, removed groups left out. `_fire_schedule` reads `recipient_ids`, never `group_ids`, which is now only the groups ticked by hand. So **a group added to a set gets the next run** of every post that follows it, and one taken out does not. The worker and the queue never see a set.
-- **The order is fixed because it rotates the wordings** (`run_count + position`). `GroupSetRepo.update` keeps the groups already in a set where they were and puts new ones after them, as the edit screen does for a post's own groups.
-- **Saving a set is never held up, and judges nothing.** It used to name, in the banner, any rule a following post newly broke; with no rules (2026-10-18) it just says what was saved.
-- **Deleting a set keeps posting going.** In one transaction, every post that followed it gets the set's groups as ordinary groups, then the set goes (`SetDeletion` records exactly that). Undo (`GroupSetRepo.restore`) puts the set, its groups and its links back, and takes away the groups the delete added.
-- **Removing a group takes it out of every set**, in the same transaction that archives it, exactly as it leaves repeating posts. `Removal.set_rows` lets Undo put it back in its place; "Bring back" later does not. A post whose sets have no groups left is paused when it next comes due, with the usual "no groups left" message.
-- **A set needs a name and at least one group.** Names are unique ignoring case (`COLLATE NOCASE`) and are stored with invisible marks stripped, because they are compared.
-- Tests: `tests/test_group_sets.py` (storage, removal, deletion, the worker following a set) and `tests/test_qtui_group_sets.py` (the screens).
-
-### Removing a group archives it; it has never been safe to delete one
-
-`GroupRepo.remove` sets `archived = 1`. It used to be a `DELETE`, and
-`task_targets.group_id` is `ON DELETE CASCADE`, so removing a group destroyed
-every post ever made to it. That history was what the repeated-text rule read
-(gone since 2026-10-18), and it is still what `sent_before` reads and the
-Dashboard counts. Two clicks in the UI, no warning, and it was silently gone.
-The one place a group row is deleted is an account switch (`replace_with`), and
-only a group with no history left to lose.
-
-- **`list()` already excludes archived groups**, so every screen needed no
-  change; `get()` deliberately still finds them, because the Dashboard has to
-  name a group it posted to last week.
-- **Anything deciding whether to *post* must call `GroupRepo.active()`**, which
-  returns `None` for an archived group. That is what `get()` returning `None`
-  used to mean. `worker._attempt`, `worker._fire_schedule` and
-  `worker._sweep_pending` all do. Reaching for `get()` in one of those posts to,
-  or opens a page for, a group the user removed.
-- **The follow-up sweep drops a removed group rather than chasing it**, since
-  every check is a real page load and the answer can no longer be acted on. The
-  target row stays `awaiting_approval`, which counts as sent (on the Dashboard
-  and for `sent_before`) whether or not anyone ever learns what the admin did
-  with it.
-- **A removed group comes back from the list under the Groups list**
-  ("Show removed groups", then "Bring back": `GroupRepo.removed` and
-  `bring_back`). Pasting its link again used to be the way, until the paste box
-  went (2026-10-14). It brings the history back with it, but not its place in
-  any repeating or queued post, and it starts ticked. The toast says so when
-  there is history, because the user is otherwise about to wonder why the
-  Dashboard already counts posts to this group. `add_from_url` still un-archives too.
-- **Removing a group takes it out of every repeating post and every queued
-  post, and re-adding it puts it back in neither**. The user's choice
-  (2026-09-30 for repeating, 2026-10-01 for queued), reversing the earlier
-  "re-adding resumes it". All of it happens in the one transaction that
-  archives the group, and `GroupRepo.remove` returns a `Removal` (how many of
-  each) so the Groups screen can say what it was taken out of. The `Removal`
-  also records exactly what changed, so the banner's **Undo** straight after
-  the click (`GroupRepo.restore`) puts the group back into all of it. That is
-  taking back a slip, not re-adding: "Bring back" later still restores
-  neither, and Undo puts back only what is still as the removal left it.
-  - Repeating: its `schedule_targets` rows are deleted. Migration 010 did the
-    same for groups removed before. To post there again, the user ticks it on
-    the post's Edit screen. A schedule left with *no* groups is paused and
-    reported when it next comes due, like one with an unusable repeat rule.
-    Otherwise it comes round two or three times a day for ever, posts nothing
-    and says nothing.
-  - Queued: every `pending` turn in an unfinished batch is marked `skipped`
-    with `GROUP_REMOVED` ("Group was removed."), not deleted, so the Dashboard
-    says what became of it. A `running` turn is mid-post and is left alone. The
-    `WHERE state = 'pending'` is what stops this racing `claim_target`. A batch
-    left with nothing to do is finished on the spot: `cancelled` ("Every group
-    in it was removed.") if it never started, `done` if it had, as the worker
-    would have recorded. Finished batches are history and are not touched.
-  - The worker's `active()` checks in `_attempt` and `_fire_schedule` stay as a
-    second line; `_attempt` records the same `skipped` / `GROUP_REMOVED`.
-
-### Database rules
-
-- **`Database.transaction()`, never `with connection:`.** Connections use `isolation_level=None` (autocommit), so `with connection:` commits a transaction that was never begun and a later failure leaves earlier statements written. This already produced an orphan task row once; `tests/test_db.py` guards it.
-- **That rule applies to `apply_migrations` too, and it was the one place still breaking it.** A migration that failed part way left its first statement written with `user_version` unmoved, so the next launch re-ran it and stopped on `duplicate column name`. The client's app simply would not open. Each migration and its version bump are now one explicit `BEGIN`/`COMMIT`/`ROLLBACK`. **Never call `executescript` inside one**: it commits whatever transaction is already open before it runs a line, so a script migration wrapped in a transaction is not atomic at all. `_run_script` splits on `sqlite3.complete_statement` and executes statement by statement, which keeps every one of them inside the `BEGIN`.
-- **One connection per thread.** The UI thread and the Phase 5 worker both use the database; `Database.connection` is thread-local and WAL is on so a read never blocks on a write.
-- **Judgements live in pure modules** (`stats.py`, `recurrence.py`, `onboarding.py`, `keepalive.py`), never in a repository or a view. Repos supply the rows and timestamps; the pure modules work things out from them, so they are testable without a database or a browser.
-- The `UNIQUE(task_id, group_id)` index is load-bearing. Do not drop it to "fix" an insert error.
-- **Schema changes append a migration to `MIGRATIONS` in `schema.py`; never edit an existing one.** They are keyed on `PRAGMA user_version` and the earlier ones have already run against the user's real database.
-- The App takes an injectable `db=`; tests pass a temporary database and must never touch `C:\FBAutomation\fbposter.db`.
-
-### Hebrew, and why the UI is Qt
-
-**`fbposter/qtui/` is the only UI.** The original CustomTkinter window (`fbposter/ui/`, `main.py gui --tk`) was removed on 2026-09-30; the one piece of it the app still used, the connection check, is now `fbposter/connection.py`.
-
-The move was forced by Hebrew, which is most of what this app is used to write. **Tk 8.6 has no bidirectional text support at all**: it lays characters out in logical order, left to right, always: `Text.bbox()` proves it, and no tag, `justify`, RLM, RLE or RLI moves a single x-coordinate. What made Hebrew look right in Tk was Windows reordering each *run* it draws (one unbroken stretch of one script), so a pure-Hebrew line came out fine while any line mixing Hebrew with English or digits came out a **mirror image** of the truth. Three rounds of increasingly elaborate workarounds in Tk (per-line justify tags, an invisible U+202B embedding, `python-bidi` reordering in the preview), never got the editor right.
-
-Qt shapes text itself and needs none of it. `qtui/views/compose.py` contains **no direction code whatsoever**, and a plain `QTextEdit` renders the mixed sentence identically to Facebook, aligning Hebrew paragraphs right on its own. Do not add direction code (bidi marks, reordering) to `qtui/`; if Hebrew ever looks wrong there, the cause is something else.
-
-**Verifying anything about Hebrew rendering:** never read glyph order off a screenshot. That produced two confidently wrong diagnoses in a row. Split the image into halves and identify an unambiguous anchor (a Latin word, a digit run), or compare pixels against a known-correct rendering. In the test sentence "…אני רוצה … kalofan והמחיר … 1000 שקל", correct output puts `אני` at the far right and `1000` in the left half.
-
-### UI rules
-
-The window's own rules (the flow, redrawing, the Compose preview, the visual rules) are in **`fbposter/qtui/CLAUDE.md`**. What follows is the part that holds for any UI code.
-
-- **Only the main thread touches widgets.** Blocking work goes through a background thread → `queue.Queue` → a pump on the UI thread: `App.run_in_background`, and a `QTimer` driving `App._drain_worker_events`. The posting worker reports progress the same way and never touches a widget itself.
-- **No modal dialogs for status, ever**. Use `app.toast`. There are exactly three permitted, and all three share one justification: they can only appear because the user just acted, so the app already has focus and they cannot interrupt anything. One is the media file picker, in Compose and on the repeating-post edit screen. The second is `qtui.app.ask_before_closing`, raised only from `closeEvent`, only when `App.unfinished_work()` finds something still due. See the close rule below. The third is the single-instance refusal in `run()`, which exists because the packaged `.exe` has no console for the `print` it used to be. Chrome's native file dialog is a different thing entirely and is never acceptable. See the Photo/video rule below. Windows' own administrator prompt (UAC) is not the app's dialog, and appears on the same terms: only straight after the user changes "Start with Windows" and Windows has refused the change without it (see Power).
-- **Closing the window stops the posting, so it says so first.** The worker is the window's own thread; `closeEvent` stopped it silently, so a daily repeat set up and then closed away simply never ran again with nothing on screen to show it. `App.unfinished_work()` returns a phrase naming what is still due (unfinished batches, active schedules), or `None`, and only a non-`None` answer costs the user a dialog. **The confirmation is injectable (`App(confirm_close=)`) and defaults to the real one**, exactly like `check_fn` and `group_namer`: the GUI suite closes every window it builds, so a real modal would hang the run rather than fail it. It is also skipped entirely while `self.worker is None`, which is every window a test builds.
-- **Compose owns per-group wording, and `body_for()` is the only way to read it.** `_base_body` is the shared text, `_bodies` holds per-group rewrites, `_editing` is the active tab. `body_for()` reads committed state only, so `capture()` must run first. It once returned the live editor contents when that group was active, which handed back the wrong text as soon as `_editing` was assigned before the read. Editing the base clears the rewrites (the user's choice) and toasts, and only when the text genuinely changed. A tab switch must never cost someone their wording.
-- **Anything in a view that reaches for a browser must be injectable, and the shared test App must be given a stub.** The Groups view looks up group names on its own whenever it is shown, and `chrome.probe()` succeeds on any machine with Chrome running, so before `SilentNamer` existed, the GUI suite silently opened real Facebook pages and took nearly three minutes instead of twenty seconds. The `App` takes `check_fn=`, `db=` and `group_namer=` for this reason.
-
-### How the tests avoid a browser and a real clock
-
-Nothing in the suite opens Chrome, hits Facebook, or waits out a real delay. Keep it that way. Every seam already exists:
-
-- **`tests/fake_page.py`** stands in for a Playwright `Page`, recording every call into `page.calls`. It implements only the surface `GroupPoster` actually uses, so a poster that starts calling something new fails loudly instead of quietly passing. Its knobs (`missing`, `redirect_to`, `body_text`, `wait_fails_for`, `never_detaches`) are how the halt paths, the slow-publish path and the dry-run boundary get exercised.
-- **`Humanizer(rng=, sleep=)`**: pass a seeded `Random` and a no-op sleep and the human pacing is deterministic and instant.
-- **`PostingWorker(poster=, now=, sleep=, blocker=, tick_seconds=)`**: the whole loop, including the inter-group gap and crash recovery, runs without a thread, a browser or the wall clock.
-- **`App(check_fn=, db=, group_namer=)`**: a temporary database and `SilentNamer`. Constructing an `App` deliberately does not start the worker. `App.group_finder` is `None` (switched off) unless a test passes a stub; `run()` switches the live one on.
-- **Looking inside Chrome is inert until `qtui.app.run()` switches it on.** `session.before_attach` is `None`, and a window's `_clear_stuck_tabs` and `_restart_chrome` do nothing, unless `run()` wires up `tabs.py`. The suite never does, so no test can look inside, let alone close a tab in, the app's Chrome running on the developer's machine. `tests/test_tabs.py` tests the DevTools client against a WebSocket server on a thread of its own.
-- **Qt tests run offscreen.** `tests/conftest.py` has a session-scoped `qt_application` (one `QApplication`, `QT_QPA_PLATFORM=offscreen`) and a per-test `qt_app` window on a temporary database. Offscreen is not tidiness: this app's central promise is that it never takes focus, and a suite that popped real windows would break that on the developer's own machine every time it ran. Drive views through their own methods rather than synthesised clicks. Note that `deleteLater()` widgets keep painting until the event loop turns, so anything that reads pixels needs a real loop turn first. Two "duplicate row" and "giant blue rectangle" scares came from screenshotting without one.
-
-**`QPixmap` cannot be constructed before a `QApplication` exists**: Qt aborts the process (`STATUS_STACK_BUFFER_OVERRUN`), so pytest reports nothing at all rather than a failure. Any test touching `QPixmap`, `cover()` or `avatar()` must depend on the `qt_application` fixture even if it never builds a widget.
-
-**Never call `browser.close()` on a CDP-attached browser.** That Chrome belongs to the user and holds the Facebook login. `session.attach()` is a context manager that simply drops the connection on exit; closing it as a side effect of attaching would take the browser away mid-whatever. The one deliberate close is `tabs._close_owned`, which sends `Browser.close` only to a Chrome proven to be the app's own, and two things use it, both refusing while a post is open: `tabs.restart_chrome`, the last resort for a check that has stalled (at most once in 30 minutes), and `tabs.close_chrome`, run by `closeEvent` once the worker and the Chrome watcher have stopped, because the user chose (2026-10-14) to have the background Chrome close with the app. Nothing posts while the app is shut, and the next start opens Chrome again. `App._close_chrome` is inert until `run()` wires it up, like `_restart_chrome`, or every window the suite closes would close the developer's Chrome. The login is on disk in the profile and survives it, exactly as it survives the user closing the window. `test_keepalive.py` fails on a close anywhere else. Login is checked via the `c_user` cookie rather than the DOM. No navigation, no selectors, no language dependency.
-
-### Handing this to a non-technical user
-
-The app ships to a client as `dist\FacebookAutoPoster-Setup-x.y.z.exe`. How that is built, and the six things a frozen build loses without a word, are in **`packaging/CLAUDE.md`**. What stays here is the app side, and the one packaging fact that shapes app code: **the packaged app has no console, so `print()` reaches nobody.** Anything the user must see goes through the window.
-
-**The app used to answer "what now?" with terminal commands.** `connection.py` said *"Start it with 'main.py launch'"* and `automation/detect.py` said *"Run 'main.py setup' and sign in again"*, both of which reach the user through the connection pill. They are good developer instructions and useless to somebody holding an `.exe` with no console behind it. `tests/test_onboarding.py::TestNothingTellsTheUserToOpenATerminal` greps the wizard copy, the halt messages and the connection details so a third one cannot be written.
-
-- **`onboarding.py` is pure and `login.py` drives the browser**: the same split `stats.py` has against the Dashboard. What the app decides to tell the user next is worth testing without Chrome, a profile directory or a Facebook session, and it is: 27 tests, half a second.
-- **One problem at a time.** `plan()` returns a single `SetupStep`, never a list. A screen reporting four problems at once is four times as intimidating and no more useful, because they have to be fixed in order anyway. There is no point mentioning Facebook when Chrome is not installed.
-- **The wizard is a view, not a dialog.** "No modal dialogs for status, ever" still holds. It is in `App.views` but deliberately **not** in `nav_buttons`: setup is something you finish, not a step you return to. The two ways back in are the first launch and the repair button under the pill.
-- **`SETUP_COMPLETE_KEY` is a stored fact, not a live check.** The window has to decide where to open *before* it is on screen, and `chrome.probe()` is up to a full second: a second of grey nothing, which reads as a crash. So the wizard shows until a connection check has come back `CONNECTED` **once**, and only `CONNECTED` retires it.
-- **Chrome is started after the window is up, never before it.** `App.begin_startup_checks()` is fired by a `QTimer` from `run()`, like `start_worker` and for the same reason. A window a test builds must not launch a browser. `chrome.launch` waits on the debug port for up to `LAUNCH_TIMEOUT_S` (**30 seconds**); in front of the window that is half a minute of nothing.
-
-**The startup check gets exactly one second chance.** `STARTUP_RECHECK_MS` (15s), armed by `begin_startup_checks` and spent by the first result. The reason is the logon task: it starts the app 45 seconds after sign-in, while Windows is still bringing the network up, and the check ends in a real page load, so it can fail for a reason that fixes itself a moment later, leaving a red pill on a machine nobody is sitting at. **One retry, never a loop**: an offline machine must not reopen Facebook every fifteen seconds for ever, and nothing in this app may open Facebook on a timer. Pressing "Check connection" by hand never arms it.
-
-**A background Chrome that closes is started again, by the window, without a loop.** Nothing used to notice Chrome going away while the app stayed open. The user closing it from the taskbar, a crash, or Windows Update left the pill on its last word, and every post waiting on a connection that was never coming back. Now `App.watch_chrome` runs every `keepalive.WATCH_EVERY_S` (20s), armed by `begin_startup_checks` and stopped in `closeEvent`. It asks the debugging port only, which is ~14ms and **never a Facebook page**. If Chrome is gone, the window restarts it off-screen and says so.
-
-- **One connection check per restart, never per tick.** A check is a real page load. It runs after a restart, and when Chrome is seen back while the pill still says it is down. Never on the timer itself.
-- **`chrome.launch` holds a lock for the whole launch.** The watcher, the startup check and the wizard's button can all ask at once. Without the lock each saw the port closed and each started a Chrome, and the second just opens another window in the first.
-- **A silent port is not a dead Chrome.** Chrome holds `<profile>/lockfile` open, delete-on-close, for as long as it runs. `chrome.profile_in_use` reads that, and the watcher treats "port silent, profile held" as *busy*: it waits, and only warns after `BUSY_LOOKS_BEFORE_TELLING` looks. `chrome.launch` refuses to start a second Chrome on a held profile and gives it `BUSY_GRACE_S` to answer instead. Launching on a profile a busy Chrome still holds hands the launch to it, and Chrome may shut the busy one down to take over. The app's Chrome was once replaced outright at a moment of heavy load, and mid-post that loses the post. The lockfile behaviour was verified live on 2026-09-25.
-- **A failed restart backs off, and gives up after `MAX_ATTEMPTS`.** The usual cause is a Chrome already open on the profile *without* the port, so every launch opens yet another window in it. Retrying every 20s would pile them up for ever. The keeper waits 1 minute, then 5, then stops and points the user at Start Chrome. Chrome being seen alive resets the count, whoever started it.
-- **A launch that finds Chrome already up means someone else started it, off-screen.** `open_login_window` and `switch_account` check `is_running()` and then launch visibly, but the keep-alive can start Chrome between the two. `launch()` then starts nothing and returns False, and they now *move* the window on screen instead of assuming theirs is the visible one. Before this, the login form opened in an off-screen window.
-- **The seams are looked up at call time** (`lambda: login.start_chrome()`), not captured in `__init__`. Tests patch `login.start_chrome` after the window exists; a captured reference ignored the patch, and on a machine without Chrome up it would have launched a real one.
-
-**A Chrome whose port answers can still hang every connection.** A client logged in and saw the light go green. Then the group names never loaded, and "Check connection" sat on "Checking…" until they closed the background Chrome by hand. Reproduced on 2026-09-27 against Chrome 153, on a throwaway Chrome of its own (its own profile, port 9333, no Facebook):
-
-- **While any tab has a JavaScript dialog open, or its page is stuck in a loop, Playwright's `connect_over_cdp` hangs for ever.** Dialogs include alert, confirm and "Leave site?". Its own 30-second timeout does not fire. The check, the name lookup and every post all go through that connect, so all of them hang.
-- **`/json/version` goes on answering throughout**, so the keep-alive saw a healthy Chrome.
-- **`Runtime.getIsolateId` tells the two apart.** A healthy tab answers in about a millisecond; a stuck one never does. It runs nothing in the page.
-- **`Target.closeTarget` on the stuck tab is enough.** A connect already hung on it finishes by itself 0.6s later.
-
-So `tabs.clear_stuck_tabs` runs in three places:
-
-- **In front of every connect**, through `session.before_attach`.
-- **From the keep-alive**, every `TAB_SWEEP_EVERY_S` (2 min). That catches a stuck tab before a scheduled post rather than when somebody presses a button.
-- **When a check passes `CHECK_DEADLINE_S` (90s)**, the one situation that also gets the restart.
-
-Every look is a few DevTools messages to the app's own Chrome over `cdp.py`; none is a page load, and none reaches Facebook. The rules that make that safe:
-
-- **Only the app's own Chrome, proven.** The process behind the port must have been started with `--user-data-dir=` the app's profile. The command line is read from Windows (`NtQueryInformationProcess`, then `CommandLineToArgvW`), off the PID `SystemInfo.getProcessInfo` names. Anything else answering on the port is asked which process it is and nothing more. Chrome did not write `DevToolsActivePort` into the profile here, so that file cannot be the proof.
-- **Two looks, more than ten seconds of silence in all**, before a tab counts as stuck. A Facebook page busy loading on a slow laptop answers the second time.
-- **Never the last tab.** Chrome quits when its last tab closes, so a blank one is opened first.
-- **Nothing while the worker has a page open.** `LivePoster._page` holds `tabs.posting()`, taken only once its connect has succeeded. A worker hung *in* the connect has no page open, and must not stop the sweep that would free it.
-- **The restart is last, not first.** A stalled check first sweeps. Only when there is nothing to close does it restart the app's Chrome, at most once per `STALL_RESTART_EVERY_S` (30 min). Chrome is closed with `Browser.close`, which verifiably works with stuck tabs open (profile released in 1.4s). It is started again only once the port is shut *and* the profile lock is released. Nothing is ever killed.
-- **The answer to a check given up on is ignored.** Checks are numbered (`_check_serial`), because the hung one usually does return once Chrome is put right.
-
-**Re-login moves the window; it does not restart Chrome.** This is the part worth reading before changing it. The normal state of this app is a Chrome parked at `-32000,-32000`, so a session that expires later leaves a login form somewhere nobody can reach. Restarting Chrome is the obvious fix and the wrong one: there is no dependable way to close a window the user cannot see, and a restart mid-batch strands it. `login.open_login_window()` sends CDP `Browser.setWindowBounds` instead, and `hide_login_window()` puts it back.
-
-**Both halves of that were verified live against Chrome 151 on 2026-08-21**, because both were assumptions and either one failing leaves the client staring at an empty browser: a page created through `context.new_page()` **survives dropping the CDP connection** (the tab is a real Chrome target and Playwright does not own it), and `Browser.setWindowBounds` moves the window on screen and back off it in both directions. The check used `example.com`, never Facebook, and closed the tab it made. **Moving a window is not `bring_to_front()`**. The banned call raises a page above whatever the user is working in at a moment they did not ask for; this runs only because they just pressed a button that says a Chrome window will open.
-
-### Changing which Facebook account it posts as
-
-`login.switch_account()` drops the profile's cookies and reopens Facebook. That
-is the whole browser side, and it is enough because **nothing in the database is
-tied to an account** (the login cookie is only ever read as a yes/no and never
-stored). Everything the old account had is then deleted on purpose (below).
-Before this existed, the only way to do it was renaming `ChromeProfile\` by hand.
-
-- **New account, new everything but the templates** (the user's choices,
-  2026-10-19). Once the sign-out has worked, and never before,
-  `repo.start_new_account` deletes in one transaction every batch (waiting or
-  finished, so the whole posting history), every repeating post, every group
-  set, `post_totals`, and every removed group, and clears `last_posted_at` on
-  the groups still listed. The window then empties the post being written
-  (`CreatePostView.clear`) and closes the Group sets editor. The Dashboard is
-  fresh because there is nothing left to count. This is the one deliberate
-  exception to "never delete history", and it has a known cost the user
-  accepted: `sent_before` forgets the old account's posts, so in a group both
-  accounts are in, an old post with the same words can be taken as proof a new
-  one went out. It also closes the gap between the switch and the new groups
-  being read: nothing is left queued that could post as the new account to the
-  old one's groups.
-- **The groups list becomes the new account's groups** (until 2026-10-19 a
-  switch left the list as it was). A successful sign-out sets
-  `groups_replace_pending` and `groups_import_pending`, so the read runs on the
-  next `CONNECTED`, and while the replace is pending the read (automatic or the
-  button) calls `GroupRepo.replace_with` instead of `import_found`. In one
-  transaction: a group the new account is not in is removed as Remove does it
-  (`_archive`), then deleted outright unless something was sent to it since the
-  switch, so it never sits in the new account's removed groups; a removed group
-  it is in comes back, overruling a removal only here; a group in both is not
-  touched. No Undo.
-- **Only a complete read may replace** (`FoundGroups.complete`: the heading's
-  count read, and every group it counts found). A partial read would remove
-  groups the account is in, so it changes nothing, says so, and leaves the
-  replace pending for the next connection or the button. Unlike the first-login
-  import, a failed automatic read here is announced.
-
-- **Cookies, never Facebook's own Log out menu.** Driving that menu would be a
-  language-dependent click on obfuscated markup, in the account menu of all
-  places, where a mis-resolved selector could press something else entirely. It
-  is also the only approach that leaves nothing for the next account to inherit:
-  the "recently logged in" chooser is a cookie too.
-- **Cleared before the navigation, never after.** Cleared afterwards, the page in
-  front of the user is still the old account's feed, and the login form appears
-  only if they think to reload it themselves.
-- **Nothing is half-done.** A window that will not come on screen signs nobody
-  out, and a sign-out that fails never navigates. Landing on the old account's
-  feed after being told you were signed out is how somebody posts as the wrong
-  person. `_sign_out` therefore raises rather than swallowing, unlike almost
-  everything else in `login.py`.
-- **It lives on the Settings screen.** It used to be the pill's button whenever
-  the connection was fine, one press from "Check connection" on every screen; the
-  user moved it. Settings owns the button and the question, and is enabled only
-  while `CONNECTED`. The yes calls `WelcomeView.start_switch()` and navigates to
-  the wizard, which owns the sign-out, the login that follows and parking the
-  window afterwards: one implementation of each. The wizard itself no longer
-  offers a switch, and the pill's button is hidden when nothing is wrong.
-- **Two presses, and the second is not a dialog.** The question replaces the
-  card's text rather than opening over it, so the permitted-modal list stays at
-  three.
-- **Refused outright while the worker is mid-post**, checked at the first press
-  and again at the yes, since a post can start while they read the question.
-  Dropping the cookies with a post in the composer fails that post, and the
-  batch then halts on a verification that could never have succeeded. It is a
-  wait, not a refusal.
-- **The app records the sign-out itself** (`App.note_connection`) instead of
-  waiting for a check to come back and say so. That is not cosmetic: until the
-  app knows, the wizard still believes it is `READY`, and the `READY` branch of
-  `WelcomeView.refresh()` parks the very login window the user is about to type
-  into. `_switching` exists for exactly that window of time.
-
 ## Non-Interfering Operation
 
 The user keeps working on the machine while batches run or wait. This is a hard requirement.
@@ -452,129 +161,15 @@ It is achievable because Playwright dispatches input through the DevTools protoc
 - **Never call `page.bring_to_front()`.**
 - Attach media with `set_input_files` on the input element. Never open the native OS file-picker. It is modal and steals focus.
 - Launch the debug profile off-screen (`--window-position=-32000,-32000`) rather than minimized, and disable background throttling so an unfocused window still behaves normally: `--disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-renderer-backgrounding`.
-- The app's own UI must not raise itself, and opens a modal dialog only in the three cases listed under the UI rules, never to report status, which goes to the Dashboard or a passive toast.
+- The app's own UI must not raise itself, and opens a modal dialog only in the three cases listed under the UI rules (`ui.md`), never to report status, which goes to the Dashboard or a passive toast.
 - Headless is not an option: different fingerprint, defeats the real-session premise.
 - Schedules are absolute timestamps recomputed on wake, never `sleep()` countdowns. Hold off system sleep during an active batch via `SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)`; a slot missed during suspend is reported, never fired late in a burst.
 
-## Power: sleep, shutdown, and an unattended laptop
-
-**`SetThreadExecutionState` suppresses the idle timer and nothing else.** Closing a lid, picking Sleep from the Start menu and shutting down all suspend the machine straight through it, mid-batch and all. Nothing in the app blocks shutdown, and nothing should. So the app's keep-awake is a defence against an *idle* machine dozing off, not against a user with a laptop, and a shut-down machine cannot be woken by Task Scheduler at all (wake timers reach a sleeping machine; only BIOS RTC or Wake-on-LAN reach a dead one). **Never build a "wake up to post" path.** The supported answer is `scripts/setup_always_on.ps1`, and the app restarted at logon. **Plugged in, it stays awake with the lid open or shut**: lid does nothing, never idles to sleep or hibernate. **On battery, it stays awake only while the lid is open**: never idles to sleep or hibernate, and the lid is *set* to Sleep rather than left as the laptop had it. A laptop that stays awake shut in a bag is a fire risk, so a closed lid on battery must always sleep. Windows' own critical-battery action still stops it running flat. The battery half is the user's choice (2026-09-28); until then the script was mains-only and left battery settings alone. A missed slot is still reported rather than fired late. It records every value it changes and `-Revert` puts them all back.
-
-**The backup file keys AC values on the bare setting GUID and DC values on `<guid>:dc`**, so a backup written by the mains-only script still restores. A value already on file is never overwritten (it is the one from before the first run, and the live value may be ours), but anything missing, or recorded as `null` by the old `/query` reader, is recorded before it is changed. That is how an old backup gains the battery values. Verified live on 2026-09-28 against exactly that case: an old AC-only backup, seeded DC values, on, off, and every value back.
-
-The installer calls the script with **`-AppPath`** (build the logon task around the packaged `.exe` rather than hunting for a `.venv` and `main.py`) and, when the client wanted autostart but not a machine that never sleeps, **`-SkipPower`** (register the task, touch no power setting). Keep both working when changing the script.
-
-**The Settings screen turns each half on and off on its own**, through `always_on.py`: `-SkipPower [-AppPath]` and `-Revert -SkipPower` for starting with Windows, `-SkipTask` and `-Revert -SkipTask` for keeping awake. `-Revert` alone still undoes both, which is what the uninstaller relies on. The script **exits 1 when anything it was asked to do did not happen**; the app reads that, shows the first `[fail]` line, and re-reads the real state so a checkbox never shows what was clicked instead of what is true. **It exits 2 (`always_on.NEEDS_ADMIN`) when the only failure was Windows refusing to remove the logon task for want of administrator rights**, and the app then runs the same command again elevated (`always_on.run_elevated`, ShellExecuteEx `runas`), which raises Windows' own UAC prompt. That is the installer's doing: it runs elevated, and a task registered elevated gives the user read access only (SDDL `(A;;FR;;;<user>)`), so unticking "Start with Windows" failed with access denied and the box ticked itself straight back (found on the developer's machine, 2026-09-30). The refusal is judged on `HRESULT 0x80070005` in the error id, never on the message, which Windows translates. Nothing else is ever retried elevated, and elevation is asked for only after a refusal, never up front; the user chose that over changing the task's permissions. Where things stand is read, never remembered: the scheduled task (`schtasks /query`) and the script's own backup file, which exists exactly while its power settings are in force. **`App.always_on` is `always_on.Inert` until `run()` swaps in the real one**, like `_clear_stuck_tabs`: a suite that toggled it would change the power plan of whoever ran it. Both halves were verified live on 2026-09-28 through `AlwaysOn` itself: the task half under a throwaway task name, the power half by seeding non-default AC values (sleep 1800, hibernate 3600, Wi-Fi 1), turning keep-awake on (all went to 0, DC untouched, backup recorded the seeded values), then off (seeded values back exactly, backup deleted, logon task untouched). **The lid setting is often hidden, and `powercfg /query` leaves hidden settings out**. It prints the scheme header and nothing else, exit code 0. The script read that as "no lid on this machine" and skipped the one setting that matters most, so a plugged-in laptop still slept when its lid was shut (the developer's own notebook, 2026-09-28: `Attributes = 1`, lid action Sleep on AC). `Get-PowerValue` now asks `/qh` first, which includes hidden settings; `setacvalueindex` writes a hidden one without complaint, verified on the same machine. Never judge a setting absent from `/query` alone.
-
-Three failures here were live gaps, and each one is a rule now:
-
-- **The keep-awake is bounded by `KEEP_AWAKE_HORIZON` (30 min), not by "is a batch running".** A batch that ran out of posting window at 23:00 used to stay `TASK_RUNNING` with `resume_at` set to 08:00, and counting that held the machine awake for nine hours of deliberate waiting. There is no posting window now, but the bound stays for any long wait. `TaskRepo.active_batches(before)` takes the bound; 30 minutes clears the longest gap between groups (4) and the wait for Chrome (5), so **every real gap still counts**. Suspending in a gap strands the rest of the batch exactly as suspending mid-post would.
-- **`ConnectionFailed` defers the batch; it does not halt it.** It is the one failure raised *before a page exists* (`session.attach()`), so nothing was typed and nothing can have been published, and the reasoning that makes every other failure terminal does not apply. Halting threw away a whole scheduled batch every time Chrome happened to be down: after a Windows Update restart, after a browser crash, in the minute between logon and Chrome finishing start-up. `TaskRepo.release_target` hands the claim back unattempted (the mirror of `claim_target`, conditional for the same reason), the batch retries every `CONNECTION_RETRY` (5 min) and gives up after `CONNECTION_GIVE_UP` (2 h). Announced **once**, not every five minutes.
-- **Crash recovery distinguishes "could not look" from "looked and found nothing".** `recover()` runs seconds after a restart, which is exactly when Chrome is least likely to be up; a `ConnectionFailed` there used to mark the target failed and halt the batch on the strength of the browser being absent. It now leaves the target `running` (the cautious direction, since nothing else touches it), and `_retry_recovery` comes round again. Bounded by the same 2 hours, and for a power reason: a target left `running` keeps its task `running`, which keeps the machine awake, so waiting for ever on a browser that is never coming back would hold a laptop awake for ever too. Any *other* exception escalates immediately, unchanged. That means the check ran and came back unusable, which is the user's to look at.
-
-`power.on_battery()` returns **three** values: True, False, and `None` for "cannot be established". A desktop, a VM and a driver that declines to answer all report 255, and telling that user to plug in a laptop they do not have is worse than saying nothing. The worker emits one `"power"` warning per batch when it is genuinely on battery, because on battery the power plan above still lets a closed lid suspend the machine, by design, and an unplugged laptop can be suspended with the app none the wiser. Like `check_fn` and `group_namer`, the seam is **inert by default and wired up in `App.start_worker`**. A default that read the real battery would make the suite's answer depend on whether the developer's machine was plugged in.
-
-## Rules for the Worker (`fbposter/worker.py`)
-
-One `PostingWorker`, one thread, started by `App.start_worker()` and by nothing else. Constructing an `App` deliberately does **not** start it, which is the only reason the GUI test suite can exist.
-
-- **Every wait is an absolute instant, never a countdown.** The inter-group gap lives in `tasks.resume_at` and is compared against the wall clock each tick. Never replace it with `sleep()`. A countdown does not survive the app closing or the machine suspending.
-- **The 2-4 minute gap is global (10-25 until 2026-10-18), and `tasks.resume_at` cannot enforce that on its own.** It spaces the groups *within* one batch, and that is all it can do: `claimable()` filters a waiting task out of its result and hands back the next one, so a second batch posted straight through the first one's wait, and a batch that finished left nothing behind at all, so the one after it started the same second. Twelve groups across three batches went out in 66 minutes with two posts one minute apart, which is the exact pattern this app exists to avoid. `settings.next_post_after` is the earliest instant *any* post may go out; it is written after every post and checked at the top of `_attempt`, which is the one funnel every post passes through. With the 10-25 minute gap of the time, the same twelve then took 3h20m with no gap under 12 minutes. **A skip is not a post and must never set it**. A batch of groups all removed mid-batch would otherwise lock the account out of posting for a gap. The ORDER BY in `claimable()` was never enough; it decides order, and cannot hold back a row the WHERE clause already removed.
-- **Nothing is judged at posting time but the gap and whether the group is still on the list.** `_attempt` used to re-check the daily limit, the posting hours, the cooldown and the day's wording, and defer or skip on each. All of that went on 2026-10-18 with the rules themselves.
-- **Believe the `PostOutcome`.** `outcome.posted` being False (a dry run) must not be recorded as a real post. That would count a post that never happened. This was a live bug.
-- **A target is claimed, not just marked.** `TaskRepo.claim_target` is a conditional `UPDATE ... WHERE state = 'pending'` and the transition itself is the lock. Reading a pending target and then marking it running as two steps left a window in which a *second copy of the app* read the same target and posted it too. Racing two workers on one database produced a duplicate in **7 runs out of 40**. Never replace this with an unconditional `mark_target`.
-- **A pause is stored, not held in memory.** `pause()`/`resume()` write `PAUSED_KEY` (`scheduler_paused`) and a new worker reads it, because the app restarts on its own (the logon task, a Windows Update reboot), and a pause that lifted itself at the next sign-in would post the very batch somebody paused to stop. Paused means no Facebook at all: **crash recovery waits for the resume too**, since checking on a crashed post is a page load. The control lives on the Settings screen; the sidebar shows "Posting is paused" only while one is in force, because a forgotten pause is every post silently not happening.
-- **Only one app may run.** `fbposter/single.py` takes a Windows named mutex in `run()`; a second launch shows a message box and exits 1. This is the second layer (`claim_target` is what makes a duplicate impossible), but it stops two copies fighting over the same Chrome session and both holding the machine awake.
-- **A group may hold the post for an admin, and that is a third outcome.** Groups with post approval on accept the post, close the composer, and keep it out of the feed, so `verify()` finds nothing. Guessing from that alone was wrong *both ways*: verified live against a real moderated group on 2026-08-17, the app matched something transient right after the click and recorded a confident **"done"** for a post that was not visible; a few seconds later the same check found nothing, which would have **halted** the batch. Same reality, two different wrong answers, decided by timing.
-  `GroupPoster.awaiting_approval()` reads the group's "Pending admin approval" banner. No banner and no snippet still means `PostNotVerified` and a halted batch; the safe default is unchanged.
-- **`verify()` succeeding does not mean the post was published.** Facebook shows the author their own *queued* post in the feed, so in a moderated group the snippet is found for a post nobody else can see. This was observed live in Hebrew on 2026-08-18, where the app recorded a confident "done" for a post the same page said was awaiting an admin. The target was terminal, so `_follow_up_pending` never looked at it again.
-  The banner cannot settle it either, in either order: it persists while *any* post of ours is queued, so checking it first mismarks a live post, and checking it only when the snippet is absent misses this case entirely. Both orderings were tried and both were wrong. So when the banner is up, `_is_queued()` asks the group's own pending list, the one page that distinguishes "your queued post, shown to you" from "published". A failed check there answers no and keeps the verdict `verify()` already reached: the post was seen, and turning that into a halted batch would be a poor trade.
-  A pending target is `TARGET_AWAITING_APPROVAL`: the batch **carries on**, and it counts as sent, on the Dashboard and for `recent_bodies`. Recording it as failed would tell the user it did not go out, and a user who re-queued the "failed" text would get two live posts the moment an admin approved both.
-- **A pending post is resolved by the app, never by asking the user.** `_follow_up_pending` runs every `FOLLOW_UP_EVERY` (6h), only when something is actually awaiting, only inside the posting window (a group page opened at 4am is the same signal as a post at 4am), and leaves a post alone for `FOLLOW_UP_AFTER` (30m) first.
-  `GroupPoster.pending_verdict` reads `/my_pending_content/` (verified 2026-08-17; `/pending/` is the *admin* moderation queue and is not this). Its default tab is Pending, so finding the snippet there means still waiting; otherwise `verify()` decides approved vs declined.
-  **A plain decline leaves no positive trace** ("Declined with Feedback" only lists the ones an admin wrote a reason for), so declined is reached by elimination, and elimination needs care. Two things guard it: the page must contain a `MY_CONTENT_PAGE_MARKERS` string to prove it rendered at all (a half-loaded page is indistinguishable from an empty Pending tab), and it takes `MISSES_BEFORE_DECLINED` (2) *consecutive* misses, reset the moment the post turns up again. Getting this wrong releases the wording while the post is still queued, the user reposts, and both go live.
-  `"unknown"` changes nothing and is retried later. A failure to check is reported and swallowed. Following up must never disturb the queue, so `_follow_up_pending` is a `try/except` wrapper around `_sweep_pending` exactly like `_maybe_prune`. It runs at the top of every tick; anything it let escape would take the posting with it.
-- **The sweep is bounded in three directions, and each bound is a safety rule.** It checks at most `FOLLOW_UP_PER_SWEEP` (3) groups at a time, because every check drives a real browser and a burst of page loads is the signal this whole app is built to avoid; `_follow_up_order` rotates through them on a cursor so three abandoned posts cannot starve a fourth. It stops chasing a post after `FOLLOW_UP_GIVE_UP` (30 days). The state stays `awaiting_approval`, which is the cautious direction; there is no button to settle it by hand any more (the user's choice, 2026-10-14). And `pending_verdict` **classifies the page** before reading anything off it: a checkpoint or a rate-limit warning carries none of the page markers, so without that it would read as a polite `"unknown"`, be retried twice a day in silence, and go on opening group pages straight through a block. An `AutomationHalted` (or a browser that is not there) stops the sweep rather than moving to the next group.
-- **`prune_history` never deletes a batch with a post still awaiting an admin.** The batch around it is finished, so it would otherwise age out normally, taking the follow-up's only record of it, while the post itself sat on in the group's moderation queue.
-- **Ask `GroupRepo.active()` before posting, never `get()`.** Removing a group archives it now, so `get()` still returns one the user has taken off the list. `active()` is `None` for those, which is what `get()` returning `None` used to mean. See the archiving section above.
-- **A stop after the Post click is `unconfirmed`, never `failed`.** The Dashboard shows a failed group as "Not posted". A timeout while checking a post that had been clicked used to reach the worker as a plain error, and was recorded as "Nothing was posted" about a post that may be live. `GroupPoster.clicked_post` marks the click, and anything raised after it becomes `PostNotVerified`, or an `AutomationHalted` with `may_have_posted`. `_halt` then records `TARGET_UNCONFIRMED`, which counts as sent (`repo.SENT_STATES`) on the Dashboard and for `sent_before` (the user's choice, 2026-10-07). `_record_sent` is the one way a sent post is recorded, stamped with the worker's own clock. Migration 011 relabelled old rows by their notes. A wait (Chrome away) writes its reason to `tasks.error` through `set_resume_at(note=)`, and the next post clears it.
-- **Never retry.** `PostNotVerified` halts the batch; it does not re-post. A duplicate is worse than a missing post. The **one** exception is `ConnectionFailed`, and only because it is raised before a page exists. See the Power section. Do not widen it: every other failure happens with a composer open, where "it may already have posted" is live.
-- **`_post` catches `BaseException`, records, then re-raises.** `KeyboardInterrupt` and `SystemExit` are not `Exception`, so they used to kill the worker thread outright, leaving the target stuck in `running` and the keep-awake request still held, so the machine could not sleep.
-- **Attachments are checked on disk before the browser is touched.** A file moved since the batch was queued otherwise surfaces as a Playwright timeout inside `set_input_files`, naming nothing the user can act on.
-- **Crash recovery verifies, it does not guess.** A target left `running` is checked against the group with `GroupPoster.verify`: found → done, uncheckable → escalated to the user.
-- **`verify()` answering no is not proof it did not post, so recovery looks twice.** The feed is virtualised and the check is a single page load, so a slow render answers no for a post that is live; and a moderated group shows the author their own queued post, so a check landing either side of the crash can go either way. Requeueing on that alone is how a duplicate happens. `_resolve_unfound` asks `pending_verdict` (the group's own list of your posts, the one page that separates "queued" from "gone"), before anything is sent again: `pending` → `awaiting_approval`, `approved` → done (the earlier verify was a false negative), `unknown` → left `running` and retried, and **only `declined`** (not live *and* not in the queue) requeues. `_wait_or_escalate` bounds the waiting at `CONNECTION_GIVE_UP`, because a target left `running` holds the machine awake.
-- A missed slot older than `MISSED_GRACE` (2h) is marked `missed`, never fired late in a burst. **A batch waiting on purpose is exempt**: `resume_at` being set means it is waiting, not that the machine was asleep. **`_note_due` stamps every scheduled batch that comes due while the worker runs** (`resume_at = scheduled_for`), because one listing to 80 groups takes hours and a batch set for a time in the middle of that waits its turn behind it; without the stamp it was thrown away two hours in. One first seen more than `MISSED_GRACE` late (the machine was asleep or off, or posting was paused) is not stamped and is still missed.
-- **Due schedules are materialised at the top of `run_once`**, before any task is claimed, and creating one counts as a step. See the Repeating posts section above.
-- **`LivePoster` reattaches over CDP per group** and closes its page afterwards. Holding one connection open across a multi-hour batch would mean a Chrome restart kills the run; reattaching costs a second and survives it.
-- The worker never touches a widget. It puts `WorkerEvent`s on a `queue.Queue` that the UI drains on its own thread: `App._drain_worker_events`, on a `QTimer`.
-
-## Rules for the Automation Engine
-
-These are safety requirements, not preferences. The user posts as an ordinary group member and account loss is the failure mode being designed against.
-
-- **Never automate login, and never click through a checkpoint, CAPTCHA, or verification screen.** On encountering one (or any "posting too fast" warning or unexpected page), halt the entire batch and surface it to the user. No blind retries.
-- **Randomized 2-4 minute delay between groups** (`HumanProfile.group_gap_seconds`), on top of the minute and a half a post itself takes, so one listing to 80 groups is about six hours. It was 10-25 minutes until the user lowered it on 2026-10-18; under 2-3 minutes is what the research found reads as automation, so do not go lower without asking.
-- **Human-like interaction is required**, not cosmetic: randomized scroll on arrival, hover before click, per-keystroke typing delay with variance. Never paste a full text block instantly. All of it lives in `Humanizer`; `fill()` and a single `type(whole_body)` are both banned.
-- **Never click the Photo/video button.** It opens the native Windows "Open" dialog, which is modal, steals focus, and was seen still sitting on screen after a run. The `input[type="file"]` is already in the composer's DOM before that button is touched, so `attach_media` writes straight to it. `PHOTO_VIDEO_BUTTONS` exists only so `probe()` can confirm the selector still resolves. Do not wire it into the posting flow. That `input[type="file"]` is also the one sanctioned CSS selector in the codebase: an attribute selector on a standard element, not an obfuscated class name.
-- **There is no daily cap, cooldown, posting window or repeated-text rule**, and nothing warns about them. See "No posting rules, only tips".
-- **Verify the post actually appeared** after publishing rather than trusting that the click succeeded. **First, Facebook's own reply to the Post click.** The page calls `strings.POST_CREATED_CALL` (`ComposerStoryCreateMutation`), and the reply carries the new post's link and id (`created_post_url`). Every post gets its own id, so it proves *this* post, and it works for pictures too. Read live on 2026-10-07 in a group without post approval: a text post replied with `.../permalink/<id>/`, and a picture-only post made the same call. Confirmed end to end through `LivePoster` on 2026-10-10: a text already posted there on 2026-10-07 and a picture-only post each came back verified with a new link of their own. **Its body must be read before anything navigates.** Live, it could not be read once the page had moved on, and `tests/fake_page.py` refuses the same way. The link is stored in `task_targets.post_url`. The reply's shape for a group that holds posts for an admin is unverified live; the banner check after it decides that case.
-- **Without the reply, the words decide.** That happens only if Facebook renames the call. Verification then looks for `distinctive_snippet(body)` (the user's own words, never a Facebook string), so it does not depend on the interface language, and it reloads and scrolls before giving up because the feed is virtualised. **Once the same words may go to a group again, finding them is no proof.** So when `sent_before` is set, a match raises `PostNotVerified` ("might have posted") instead of confirming. Crash recovery escalates such a target straight away, and the follow-up sweep does not call one "approved" on its words. A false negative here is expensive: it raises `PostNotVerified`, and anything that retried on that would post twice.
-- **A post with pictures and no text has no words to look for**, so `verify()` cannot judge it and is not asked. Facebook's reply confirms it. Without the reply, `GroupPoster._pictures_only_outcome` takes the composer closing after Post as the evidence, and the Dashboard shows "Uploaded, not verified" (the user's wording, 2026-10-07), then looks at the group once (a checkpoint there still halts; the approval banner makes it pending). A composer still open is halted with the cautious "check the group" message, never "safe to try again". Crash recovery hands such a target straight to the user, and the follow-up sweep leaves it alone, because both search by words; held by an admin, it stays `awaiting_approval`. Pictures alone may repeat too (2026-10-18). Verified live on 2026-09-29 against a group with no post approval; the held-for-an-admin branch is unverified live. A video alone is treated exactly the same way.
-- **Videos** (built 2026-10-15, at the user's request; read live on the TRY group that day). They go through the same file input as pictures, in any mix: its `accept` list is Facebook's own (`media.VIDEO_SUFFIXES`), and it carries `multiple`. Five things were learned live, and each is now a rule:
-  - **Playwright refuses a file over 50 MB to a browser it thinks is remote**: "Cannot transfer files larger than 50Mb to a browser not co-located with the server". An attached browser counts as remote, so `session.attach()` passes `is_local=True` (the app's Chrome is always `127.0.0.1`). Chrome then reads the file from disk itself. Do not drop it.
-  - **Facebook enables Post about a second after the files are set, long before a video has uploaded.** A 58 MB video sat at 1% with Post clickable. So `GroupPoster.wait_for_uploads` watches the post window's `progressbar` (aria-label "Uploading video", `aria-valuenow` 0-100, read by role and number so no language is involved), which goes when the upload is done, and Post is clicked only after two looks with no bar and Post enabled. What a click mid-upload does was deliberately never tried.
-  - **No overall upload limit** (the user's choice; Facebook's own is 10 GB, refused at attach time). Uploads were slow live (the 58 MB one was a fifth of the way after five minutes), so only `UPLOAD_STALL_MS` (5 min) with no movement stops it, raising `UploadStalled` before Post: nothing was posted, and the message says so. A bar coming or going counts as movement, because one video finishing lowers the total while the next carries on. The page is still checked for a checkpoint every 30s.
-  - **Facebook's reply to Post is different for a video**: `story` is null and `publishing_flow` is "FALLBACK", because the post is published only once the video is processed, a minute or two later. The post's number is inside `story_create.story_id` (base64 of `S:_I<author>:<kind>:<number>`), and `created_post_url` builds the link from it; that link opened the exact post live. Before that was read, the first live video post went out fine and the app reported "may well have gone out", because the words were not in the feed yet.
-  - **Crash recovery leaves a video post alone for `VIDEO_SETTLE` (10 min) after its click.** In that window the post is in neither the feed nor the pending list, which reads as "declined" and requeues it: a duplicate.
-  The preview never decodes a video (QtMultimedia is not in the packaged build): `compose.video_tile` draws a player-shaped tile with the name. A video of `media.SLOW_UPLOAD_BYTES` (100 MB) or more is attached with a note that the post waits for it.
-
-- **Content variation is advice, not a rule.** Per Meta's Spam policy, accounts get restricted at *low* frequencies when repetitive content is present, which is why it is the first of the Posting tips and why a repeating post rotates its wordings. Nothing enforces it.
-
-Expected volume is high now: one listing to 40-80 groups, once or twice a day (the user, 2026-10-18), where it used to be 2-3 posts a day to 5-7 groups. The posting itself still looks like a person: one group at a time, the gap between, human typing. Groups where the user is an admin used to be left out, since Facebook schedules those natively; the user reversed that on 2026-10-13, and reading the groups off Facebook adds them like any other.
-
 ## Scope Discipline
 
-The workload is small, and the spec was trimmed accordingly. **Not in v1:** group tags ("groups of groups"), a separate `run_log` table, video upload, skipping a single group mid-batch. Video upload has since been built at the user's request (2026-10-15); see "Videos" under the Automation Engine rules. See the Scope Control table in `README.md` for the reasoning. Do not reintroduce the ones still cut without asking. Each was cut on purpose. v1 was: compose → pick groups → post now or schedule once → serial worker with jitter → live queue view (the Dashboard since 2026-10-14).
+The workload is small, and the spec was trimmed accordingly. **Still cut:** skipping a single group mid-batch (the Dashboard's "Going out" list can only cancel a whole batch), and a separate `run_log` table. Each was cut on purpose; do not add them without asking. The Scope Control table in `README.md` has the reasoning.
 
-Recurring scheduling was cut from v1 on the same grounds and has since been **built at the user's request** (daily, as many times a day as wanted since 2026-10-18; it was in their original requirements). Group tags were built too, as group sets (2026-10-15); see "Group sets" above. Pausing was cut too and has since been built: one pause for all posting, on the Settings screen, which holds a batch mid-way (see the Worker rules). Skipping one group mid-batch is still cut, and so is the `run_log` table. The Dashboard's "Going out" list can only cancel a whole batch.
-
-## Selector Strategy
-
-Facebook's DOM class names are obfuscated and change between builds. Use role- and `aria-label`-based selectors (`get_by_role`, and `get_by_text` where an element has no accessible name) and never CSS class selectors. Selectors are also language-dependent.
-
-**English, Hebrew and Russian are all supported**, and the account has been switched between all three. Every lookup tries a list of candidates, so the order in `strings.py` implies nothing but speed. `?locale=` on the URL does **not** override the account's language setting, only the account setting matters.
-
-Verified live in each language:
-
-| Element | English | Hebrew | Russian |
-| --- | --- | --- | --- |
-| Composer trigger | `Write something...` | `כאן כותבים…` | `Напишите что-нибудь...` |
-| Photo/video | `Photo/video` | `תמונה או סרטון` | `Фото/видео` |
-| **Post** | `Post` | `פרסום` | **`Отправить`** |
-
-The composer trigger carries **no aria-label in any language** and is matched on visible text; the text field has no accessible name and is found as the dialog's only `textbox`.
-
-**A landmark is part of the selector, not decoration: `document.querySelector('h1')` is not the group's heading.** It returns the first `h1` in *document order*, and Facebook's chat sidebar renders its own and inserts it **ahead** of the group's about 1.75s into the load. A group called `TRY` was therefore stored as `Chats`, and it reached a client. Sampled live on 2026-09-08: at 750ms one `h1`, `'TRY'`; at 1750ms two, with `'Chats'` first. So this is **not a race that waiting fixes**: `groupinfo.py` already waited four seconds and the wrong answer is stable long before that; waiting longer makes it worse. **And it was total, not intermittent**: surveyed across 8 unrelated groups on 2026-09-08, the old selector returned `Chats` for *every one*, so a client with several groups saw the same name on all of them. The new selector agreed with the tab title 8/8, Hebrew names included: two independent parts of the page, which is what makes that evidence worth anything. Note the module's own docstring promised it turned `2509198906266893` into `bar-test`; that is one of the surveyed groups, and it was returning `Chats`. `READ_NAME` is scoped to `[role="main"] h1`, and there is deliberately **no "any h1" fallback**. The tab title is a better last resort than an arbitrary heading. `tests/test_groupinfo.py` pins the selector itself, because the bug lived in a JavaScript string no Python test can execute.
-
-**The name is read the moment that scoped heading has text, not after a fixed pause.** The lookup used to wait a flat four seconds *after* DOMContentLoaded. Measured live on 2026-09-25, the heading is already there at DOMContentLoaded (3.47s, heading at 3.50s), so over half of every lookup was waiting for something that had already happened. `wait_for_heading` polls for `HAS_HEADING`, which is scoped exactly like `READ_NAME`. That scope is what makes reading early safe: the late, wrong heading is outside `[role="main"]`. It polls on a timer, never on animation frames, because this Chrome is off-screen and may never paint. A lookup now takes 4-5.5s end to end, and most of that is Facebook's page load.
-
-**The member count is read in the same visit as the name**, verified live on 2026-10-14 on an English account and a two-member group only. It is the link to the group's member list (`a[href*="/members"]` inside `[role="main"]`) that has no `aria-label`; the labelled one beside it is "See everyone". The text is stored as Facebook wrote it ("2 members", or the account's own language), so nothing is translated. Facebook's "Your groups" list shows no count, only "You last visited...", so every group's page is opened once, all in one tab that goes from group to group and is closed when the sweep ends (the user's request, 2026-10-14; it was a new tab per group). One tab is not fewer visits to Facebook. `GroupRepo.missing_details` is groups with no name, or no count, and a page that loaded with no count waits `MEMBERS_RETRY` (1 day) before it is opened again. A page that never loaded is not recorded, and is tried at the next chance.
-
-**Fixing a name lookup does not fix the names already stored.** `GroupRepo.missing_names` only finds *empty* ones, so a wrong name is never looked at again and would sit in the Groups list for ever. Migration 008 clears `groups.name` so the Groups screen re-fetches; until it does, `display_name` falls back to the identifier, which is what a newly added group shows anyway. Safe because nothing decides anything on `name`. The queue and the posting history both key on `group_id`.
-
-**Read every string off the live site, never translate one.** Russian's post button is `Отправить` ("send"), while the obvious translation, and what research suggested, is `Опубликовать`. Shipping the plausible word would have failed at the Post click, which is the one step that cannot safely be retried. **The pending banner caught the same trap twice more**, verified 2026-08-18: the live Hebrew is `בהמתנה` where the natural translation gives `ממתין`, and the live Russian is `подтверждения` ("confirmation") where the natural translation gives `одобрения` ("approval"), a word that appears nowhere on the page. Two of the three shipped only because the researched list happened to include the right variant alongside the wrong one. To add a language: `main.py probe` a real group, dump the composer, paste what Facebook returns.
-
-**Verifying a pending string is cheap only while something is pending.** The banner exists solely while the group is holding a post of yours, so it cannot be read on demand: the Hebrew round needed a real post, and the Russian round was free only because that post was still sitting in the queue. If a fourth language is ever added, read both strings *while a post is pending* rather than switching twice.
-
-**`?locale=` is ignored outright on a logged-in session, verified live on 2026-08-16.** Probing a real group with `?locale=ru_RU`, `?locale=he_IL` and `?locale=en_US` against an English account: Facebook kept the parameter in the URL and rendered English every time. `<html lang>` stayed `en` in all three, and under `he_IL` `dir` stayed **`ltr`**: Hebrew would have forced `rtl`, so this is not a redirect or a strip, it is simply ignored. There is no account-language x URL-locale matrix; there are only three states, the account's own setting.
-
-**The account's language is the only one that matters, and the app never asks for another.** `parse_group_url` rebuilds every URL as `https://www.facebook.com/groups/<id>/` from the identifier alone, so a pasted `?locale=` is discarded and never reaches Facebook. There is no configured or expected language anywhere in the codebase: every lookup tries the *whole* candidate list across all three at once, so whichever language the page comes back in is matched. All nine account-language x pasted-locale combinations therefore work, and they work for that reason rather than by enumeration.
-
-Two tests keep it that way, and both guard something that fails silently: `tests/test_detect.py::TestEveryLanguageIsCovered` checks all ten language-dependent tables have a candidate in each script (**including `RATE_LIMIT_MARKERS`, where losing a language means posting on through a block**), and `test_no_language_dependent_table_is_left_unguarded` fails if `strings.py` gains a table nobody added to that list.
-
-The anomaly markers are the deliberate exception. A rate-limit warning cannot be summoned on demand, so those are researched and marked unverified, and biased toward over-matching.
-
-Never hardcode a UI string outside `strings.py`, and never assert on a literal in a test. Reference the constants.
+Everything else cut from v1 has since been **built at the user's request**: repeating posts (daily, as many times a day as wanted since 2026-10-18; it was in their original requirements; `worker.md`), pausing (one pause for all posting, on the Settings screen, which holds a batch mid-way; `worker.md`), group tags (as group sets, 2026-10-15; `data.md`) and video upload (2026-10-15; "Videos" in `automation.md`). v1 was: compose → pick groups → post now or schedule once → serial worker with jitter → live queue view (the Dashboard since 2026-10-14).
 
 ## Writing: no long dashes
 
