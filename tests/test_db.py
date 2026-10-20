@@ -24,6 +24,8 @@ from fbposter.db.repo import GroupRepo, ScheduleRepo, SettingsRepo, TaskRepo, Te
 from fbposter.db.schema import DEFAULT_SETTINGS, LATEST_VERSION, current_version
 from fbposter.errors import DuplicateGroup, InvalidGroupURL
 
+from .conftest import fresh_database
+
 # Read off the schema rather than written out, so lowering it again is a
 # one-line change rather than a hunt through the suite.
 DEFAULT_COOLDOWN = int(DEFAULT_SETTINGS["default_cooldown_hours"])
@@ -31,7 +33,7 @@ DEFAULT_COOLDOWN = int(DEFAULT_SETTINGS["default_cooldown_hours"])
 
 @pytest.fixture
 def db(tmp_path):
-    database = Database(tmp_path / "test.db")
+    database = fresh_database(tmp_path / "test.db")
     yield database
     database.close()
 
@@ -218,7 +220,7 @@ class TestSchema:
         2026-10-18): a row written with it reads as an ordinary batch."""
         from fbposter.db.repo import TaskRepo
 
-        db = Database(tmp_path / "overrides.db")
+        db = fresh_database(tmp_path / "overrides.db")
         try:
             group = GroupRepo(db).add_from_url("https://www.facebook.com/groups/42/")
             tasks = TaskRepo(db)

@@ -25,7 +25,6 @@ from fbposter import clock
 from fbposter.text import normalise
 from fbposter.automation.humanize import HumanProfile, Humanizer
 from fbposter.automation.poster import PostOutcome, PostRequest
-from fbposter.db import Database
 from fbposter.db.models import (
     TARGET_AWAITING_APPROVAL,
     TARGET_DONE,
@@ -43,6 +42,8 @@ from fbposter.db.repo import (
 )
 from fbposter.power import SleepBlocker
 from fbposter.worker import PRUNE_EVERY, PostingWorker
+
+from .conftest import fresh_database
 
 NOON = clock.parse_local("2026-08-10 12:00")
 
@@ -65,7 +66,7 @@ class Clock:
 
 @pytest.fixture
 def db(tmp_path):
-    database = Database(tmp_path / "prune.db")
+    database = fresh_database(tmp_path / "prune.db")
     yield database
     database.close()
 

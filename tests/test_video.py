@@ -35,6 +35,8 @@ from fbposter.errors import AutomationHalted, UploadStalled
 from .fake_page import FakePage
 from .test_poster import POST_BUTTON, make_poster, request
 
+from .conftest import fresh_database
+
 VIDEO = Path("C:/clips/bike.mp4")
 PICTURE = Path("C:/pictures/bike.jpg")
 STALL_LOOKS = UPLOAD_STALL_MS // UPLOAD_POLL_MS
@@ -234,13 +236,12 @@ class TestCrashRecoveryGivesAVideoTimeToAppear:
 
     @pytest.fixture
     def interrupted(self, tmp_path):
-        from fbposter.db import Database
         from fbposter.db.models import TARGET_RUNNING, utcnow
         from fbposter.db.repo import GroupRepo, TaskRepo
 
         from .test_worker import BODY, Clock, FakePoster, add_groups, make_worker
 
-        db = Database(tmp_path / "video.db")
+        db = fresh_database(tmp_path / "video.db")
         groups, tasks = GroupRepo(db), TaskRepo(db)
         one, _ = add_groups(groups)
         clip = tmp_path / "clip.mp4"

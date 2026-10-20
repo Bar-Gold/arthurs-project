@@ -10,15 +10,16 @@ from fbposter import login, onboarding
 from fbposter.onboarding import SetupStep
 from fbposter.connection import ConnectionResult, ConnectionState
 
+from .conftest import discard
+
 
 def build_app(tmp_path, *, setup_complete: bool):
-    from fbposter.db import Database
     from fbposter.db.repo import SettingsRepo
     from fbposter.qtui.app import SETUP_COMPLETE_KEY, App
 
-    from .conftest import SilentNamer
+    from .conftest import SilentNamer, fresh_database
 
-    db = Database(tmp_path / "welcome.db")
+    db = fresh_database(tmp_path / "welcome.db")
     if setup_complete:
         SettingsRepo(db).set(SETUP_COMPLETE_KEY, "1")
     return App(
@@ -44,6 +45,7 @@ class TestTheWindowOpensWhereTheUserActuallyIs:
             assert app.current_view == "welcome"
         finally:
             app.close()
+            discard(app)
 
     def test_once_it_has_worked_it_opens_on_home(self, qt_application, tmp_path):
         app = build_app(tmp_path, setup_complete=True)
@@ -51,6 +53,7 @@ class TestTheWindowOpensWhereTheUserActuallyIs:
             assert app.current_view == "home"
         finally:
             app.close()
+            discard(app)
 
     def test_only_a_real_connection_retires_the_wizard(self, qt_application, tmp_path):
         """Anything short of CONNECTED and the window must go on opening where
@@ -73,6 +76,7 @@ class TestTheWindowOpensWhereTheUserActuallyIs:
             assert SettingsRepo(app.db).get(SETUP_COMPLETE_KEY) == "1"
         finally:
             app.close()
+            discard(app)
 
 
 class TestTheRepairButtonBesideTheLight:

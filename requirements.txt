@@ -2,6 +2,9 @@
 # attaches to the user's real Chrome and never launches one itself.
 playwright>=1.62
 pytest>=9.1
+# Tests only: runs the suite on every core (`pytest tests/ -n auto`), about
+# 35 seconds instead of two minutes. The app never imports it.
+pytest-xdist>=3.6
 
 # The UI. Qt rather than Tk because Tk 8.6 has no bidirectional text support:
 # it lays characters out in logical order and leaves reordering to Windows,

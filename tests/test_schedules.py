@@ -21,7 +21,6 @@ import pytest
 from fbposter import clock, recurrence
 from fbposter.automation.humanize import HumanProfile, Humanizer
 from fbposter.automation.poster import PostOutcome, PostRequest
-from fbposter.db import Database
 from fbposter.db.models import (
     SCHEDULE_ACTIVE,
     SCHEDULE_PAUSED,
@@ -33,6 +32,8 @@ from fbposter.db.models import (
 from fbposter.db.repo import GroupRepo, ScheduleRepo, SettingsRepo, TaskRepo
 from fbposter.power import SleepBlocker
 from fbposter.worker import MISSED_GRACE, PostingWorker
+
+from .conftest import fresh_database
 
 WORDINGS = ["First way of putting it", "Second way", "Third way"]
 
@@ -69,7 +70,7 @@ class Clock:
 
 @pytest.fixture
 def db(tmp_path):
-    database = Database(tmp_path / "schedules.db")
+    database = fresh_database(tmp_path / "schedules.db")
     yield database
     database.close()
 

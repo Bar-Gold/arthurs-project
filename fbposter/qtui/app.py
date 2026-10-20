@@ -11,6 +11,7 @@ import queue
 import threading
 import time
 
+import shiboken6
 from PySide6.QtCore import QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QFont, QIcon
 from PySide6.QtWidgets import (
@@ -558,13 +559,22 @@ class App(QMainWindow):
         the worker thread.
         """
 
+        def report(callback, payload):
+            try:
+                self._background_done.emit(callback, payload)
+            except RuntimeError:
+                # The window was deleted while this ran (the app closing, or a
+                # test window thrown away): nobody is left to tell.
+                if shiboken6.isValid(self):
+                    raise
+
         def work():
             try:
                 result = fn()
             except Exception as exc:  # reported, never swallowed
-                self._background_done.emit(on_error, exc)
+                report(on_error, exc)
             else:
-                self._background_done.emit(on_success, result)
+                report(on_success, result)
 
         threading.Thread(target=work, daemon=True).start()
 

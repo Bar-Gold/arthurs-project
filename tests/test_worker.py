@@ -16,7 +16,6 @@ import pytest
 from fbposter import clock
 from fbposter.automation.humanize import HumanProfile, Humanizer
 from fbposter.automation.poster import PostOutcome, PostRequest
-from fbposter.db import Database
 from fbposter.db.models import (
     TARGET_AWAITING_APPROVAL,
     TARGET_DECLINED,
@@ -46,6 +45,8 @@ from fbposter.worker import (
     PAUSED_KEY,
     PostingWorker,
 )
+
+from .conftest import fresh_database
 
 BODY = "Selling a road bike, 54cm frame."
 
@@ -100,7 +101,7 @@ class Clock:
 
 @pytest.fixture
 def db(tmp_path):
-    database = Database(tmp_path / "worker.db")
+    database = fresh_database(tmp_path / "worker.db")
     yield database
     database.close()
 

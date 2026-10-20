@@ -22,10 +22,12 @@ from fbposter.db.repo import GroupRepo, GroupSetRepo, ScheduleRepo, TaskRepo
 
 from .test_schedules import NOON, WORDINGS, Clock, add_groups, make_worker
 
+from .conftest import fresh_database
+
 
 @pytest.fixture
 def db(tmp_path):
-    database = Database(tmp_path / "sets.db")
+    database = fresh_database(tmp_path / "sets.db")
     yield database
     database.close()
 

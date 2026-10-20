@@ -11,12 +11,11 @@ from __future__ import annotations
 
 import pytest
 
-from fbposter.db import Database
 from fbposter.db.models import SCHEDULE_PAUSED, TASK_DONE
 from fbposter.db.repo import GroupRepo, ScheduleRepo, TaskRepo
 from fbposter.connection import ConnectionResult, ConnectionState
 
-from .conftest import SilentNamer
+from .conftest import SilentNamer, discard, fresh_database
 
 
 class StubWorker:
@@ -46,7 +45,7 @@ class Window:
 
         self.asked: list[str] = []
         self.answer = answer
-        self.db = Database(tmp_path / "close.db")
+        self.db = fresh_database(tmp_path / "close.db")
         self.app = App(
             check_fn=lambda: ConnectionResult(ConnectionState.UNKNOWN, ""),
             db=self.db,
@@ -99,6 +98,7 @@ def window(qt_application, tmp_path):
         win.answer = True
         win.app.worker = None
         win.app.close()
+        discard(win.app)
 
 
 class TestClosingWithNothingWaiting:

@@ -86,7 +86,16 @@ if ($Clean) {
 # --- stage 0: the suite must pass before anything is shipped -----------------
 
 Write-Head "Running the tests."
-Invoke-Native -Exe $Python -Arguments @("-m", "pytest", (Join-Path $Root "tests"), "-q") `
+# On every core (pytest-xdist): about 35 seconds rather than two minutes. It is
+# installed here if the venv predates it, as PyInstaller is below.
+$xdist = (& $Python -c "import importlib.util,sys; sys.stdout.write('yes' if importlib.util.find_spec('xdist') else 'no')") -join ""
+if ($xdist -ne "yes") {
+    Write-Step "pytest-xdist is not installed in the venv. Installing it."
+    Invoke-Native -Exe $Python `
+        -Arguments @("-m", "pip", "install", "--disable-pip-version-check", "-q", "pytest-xdist") `
+        -FailMessage "Could not install pytest-xdist"
+}
+Invoke-Native -Exe $Python -Arguments @("-m", "pytest", (Join-Path $Root "tests"), "-q", "-n", "auto") `
     -FailMessage "Tests failed. Not building a client release from a red suite."
 Write-Good "Suite green."
 
