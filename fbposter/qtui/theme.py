@@ -2,10 +2,10 @@
 
 Navy and gold (the user's choice, 2026-10-20, replacing the Facebook blue it
 started from): a deep navy sidebar in both modes, warm ivory pages, navy
-buttons in light mode and gold ones in dark. Resolved to one set of values at
-startup rather than carried as (light, dark) pairs: Qt styles through a
-stylesheet, and a stylesheet is a string, so the mode has to be chosen before
-it is built.
+buttons in light mode and gold ones in dark. Resolved to one set of values
+rather than carried as (light, dark) pairs: Qt styles through a stylesheet,
+and a stylesheet is a string, so the mode is chosen before it is built. The
+Settings switch rebuilds it (`App.apply_theme`).
 """
 
 from __future__ import annotations
@@ -128,6 +128,9 @@ SIDEBAR_DARK = dict(SIDEBAR_LIGHT, **{
 LIGHT = {
     **SIDEBAR_LIGHT,
     "WINDOW_BG": "#F6F3EE",
+    # The light behind the middle of Home: WINDOW_BG raised by the same step in
+    # every channel, so the gradient shows no coloured rings.
+    "HOME_GLOW": "#FFFCF7",
     "SURFACE": "#FFFFFF",
     "BORDER": "#E3DCD0",
     "TEXT": "#161D2B",
@@ -181,6 +184,7 @@ LIGHT = {
 DARK = {
     **SIDEBAR_DARK,
     "WINDOW_BG": "#0F1729",
+    "HOME_GLOW": "#182032",
     "SURFACE": "#162036",
     "BORDER": "#29354F",
     "TEXT": "#ECE7DD",
@@ -232,28 +236,26 @@ C = dict(LIGHT)
 MODE = "light"
 
 
-def system_is_dark() -> bool:
-    """Follow the Windows app theme, the way the Tk build did."""
-    try:
-        import winreg
-
-        key = winreg.OpenKey(
-            winreg.HKEY_CURRENT_USER,
-            r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
-        )
-        with key:
-            value, _ = winreg.QueryValueEx(key, "AppsUseLightTheme")
-        return value == 0
-    except Exception:
-        return False
+# Light or dark is the user's own choice, made on the Settings screen and
+# stored under this key as "light" or "dark" (2026-10-20). It used to follow
+# the Windows app theme; the user wanted a switch of the app's own instead,
+# with no "same as Windows" option, and light until somebody picks dark.
+THEME_KEY = "appearance"
+LIGHT_MODE = "light"
+DARK_MODE = "dark"
 
 
-def activate(dark: bool | None = None) -> dict:
-    """Choose the palette. Call once, before building the stylesheet."""
+def is_dark(stored: str | None) -> bool:
+    """Whether a stored choice means dark. Anything else, nothing included,
+    is light."""
+    return stored == DARK_MODE
+
+
+def activate(dark: bool = False) -> dict:
+    """Choose the palette, before building the stylesheet from it."""
     global C, MODE
-    is_dark = system_is_dark() if dark is None else dark
-    C = dict(DARK if is_dark else LIGHT)
-    MODE = "dark" if is_dark else "light"
+    C = dict(DARK if dark else LIGHT)
+    MODE = DARK_MODE if dark else LIGHT_MODE
     return C
 
 
@@ -352,6 +354,16 @@ def stylesheet() -> str:
         font-weight: 400;
     }}
     QLabel#HomeLine {{ color: {c["TEXT_MUTED"]}; font-size: {SIZE_BODY}px; }}
+    /* Home's greeting, in capitals and tracked wide (widgets.TRACKING). The
+       words are muted, not gold: gold text is 3.1:1 on the cream page. The
+       gold is the two hairlines either side, which are detail. */
+    QLabel#HomeGreeting {{
+        color: {c["TEXT_MUTED"]};
+        font-size: {SIZE_SMALL}px;
+        font-weight: 600;
+    }}
+    QFrame#HomeRule {{ background: {c["GOLD"]}; border: none; }}
+    QLabel#HomeStatus {{ color: {c["TEXT_MUTED"]}; }}
     /* A Dashboard number, and a Dashboard tile that holds words instead. */
     QLabel#StatValue {{ font-size: {SIZE_STAT}px; font-weight: 600; }}
     QLabel#StatText {{ font-size: {SIZE_HEADING}px; font-weight: 600; }}

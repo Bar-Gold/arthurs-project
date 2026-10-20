@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QButtonGroup,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -29,7 +30,7 @@ from fbposter import onboarding
 from fbposter.connection import ConnectionState
 
 from .. import theme
-from ..widgets import Switch, badge, card, row, set_badge
+from ..widgets import Switch, badge, card, row, segmented, set_badge
 
 # What the scheduler row says for each worker state: headline, colour, detail.
 STATUS = {
@@ -77,9 +78,22 @@ AWAKE_HELP = (
 )
 
 
+APPEARANCE_LABEL = "Light or dark"
+APPEARANCE_HELP = (
+    "Light has ivory pages and navy buttons, dark has navy pages and gold "
+    "buttons. It changes as soon as you choose."
+)
+# The two choices, in the order the switch shows them. There is no "same as
+# Windows" (the user's choice, 2026-10-20).
+APPEARANCES = ((theme.LIGHT_MODE, "Light"), (theme.DARK_MODE, "Dark"))
+
+
 class SettingsView(QWidget):
     title = "Settings"
-    subtitle = "Whether the app is posting, the account it posts as, and this PC."
+    subtitle = (
+        "Whether the app is posting, the account it posts as, this PC, and "
+        "light or dark."
+    )
 
     def __init__(self, app) -> None:
         super().__init__()
@@ -114,6 +128,7 @@ class SettingsView(QWidget):
         column.addWidget(self._build_scheduler())
         column.addWidget(self._build_account())
         column.addWidget(self._build_pc())
+        column.addWidget(self._build_appearance())
         column.addStretch(1)
         self.area.setWidget(holder)
         outer.addWidget(self.area, 1)
@@ -247,11 +262,37 @@ class SettingsView(QWidget):
         inner.addWidget(self.pc_note)
         return box
 
+    def _build_appearance(self) -> QWidget:
+        box, inner = self._card("Appearance")
+        toggle, buttons = segmented([words for _mode, words in APPEARANCES])
+        group = QButtonGroup(self)
+        self.appearance_buttons: dict[str, QPushButton] = {}
+        for (mode, _words), button in zip(APPEARANCES, buttons):
+            group.addButton(button)
+            button.clicked.connect(lambda _c, m=mode: self.choose_appearance(m))
+            self.appearance_buttons[mode] = button
+        toggle.setAccessibleName(APPEARANCE_LABEL)
+        inner.addWidget(self._setting(APPEARANCE_LABEL, toggle, self._muted(APPEARANCE_HELP)))
+        self.refresh_appearance()
+        return box
+
+    def choose_appearance(self, mode: str) -> None:
+        """Light or dark: stored, and the whole window changes at once."""
+        self.app.settings_repo.set(theme.THEME_KEY, mode)
+        self.app.apply_theme(theme.is_dark(mode))
+        self.refresh_appearance()
+
+    def refresh_appearance(self) -> None:
+        """Light the choice in force. Restated, not trusted to the click."""
+        for mode, button in self.appearance_buttons.items():
+            button.setChecked(mode == theme.MODE)
+
     # -- showing -----------------------------------------------------------
     def on_show(self) -> None:
         self.refresh_status()
         self.refresh_account()
         self.load_pc()
+        self.refresh_appearance()
 
     def refresh_status(self) -> None:
         """Say what the scheduler is doing. Cheap: runs on every worker tick."""

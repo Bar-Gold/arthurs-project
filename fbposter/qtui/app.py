@@ -14,6 +14,7 @@ import time
 from PySide6.QtCore import QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QFont, QIcon
 from PySide6.QtWidgets import (
+    QApplication,
     QButtonGroup,
     QFrame,
     QHBoxLayout,
@@ -694,6 +695,27 @@ class App(QMainWindow):
         self._set_connection(result.state, result.detail, announce=False)
         self._refresh_welcome()
 
+    def apply_theme(self, dark: bool) -> None:
+        """Light or dark, at once, without a restart (the Settings switch).
+
+        The stylesheet is rebuilt from the other palette, and Qt restyles
+        every widget from it. What it cannot reach is colour already drawn
+        into a picture or set on a text format, so each view that has some
+        redraws it in `restyle()`.
+        """
+        if (theme.MODE == theme.DARK_MODE) == dark:
+            return
+        theme.activate(dark=dark)
+        application = QApplication.instance()
+        if application is not None:
+            application.setStyleSheet(theme.stylesheet())
+        # The logo's mark is drawn in the sidebar's navy, a shade apart.
+        self.brand_button.setIcon(QIcon(icons.brand(BRAND_SIZE, BRAND_SIZE + BRAND_GAP)))
+        for view in self.views.values():
+            restyle = getattr(view, "restyle", None)
+            if restyle is not None:
+                restyle()
+
     def _refresh_welcome(self) -> None:
         view = self.views.get("welcome")
         if view is not None:
@@ -933,11 +955,13 @@ class App(QMainWindow):
         self._refresh_scheduler()
 
     def _refresh_scheduler(self) -> None:
-        """The paused line in the sidebar and the Settings card, together."""
+        """The paused line in the sidebar, the Settings card and Home's status
+        line, together."""
         paused = self.worker is not None and self.worker.paused
         if self.paused_notice.isHidden() == paused:
             self.paused_notice.setVisible(paused)
         self.views["settings"].refresh_status()
+        self.views["home"].refresh_status()
 
     def _drain_worker_events(self) -> None:
         while True:
@@ -1080,7 +1104,11 @@ def run() -> int:
         box.exec()
         return 1
 
-    theme.activate()
+    # The window's database is opened first, for one setting: light or dark,
+    # as chosen on Settings. The colours have to be known before a widget is
+    # built.
+    db = Database(config.database_path())
+    theme.activate(dark=theme.is_dark(SettingsRepo(db).get(theme.THEME_KEY)))
     theme.load_fonts()
     # The style before the stylesheet: the stylesheet wraps whatever style is
     # installed when it is set.
@@ -1090,7 +1118,7 @@ def run() -> int:
     # as well meant two sources of truth, and the smaller one was winning.
     application.setFont(QFont(theme.FONT_FAMILY))
 
-    window = App()
+    window = App(db=db)
     # Only the real app looks inside its Chrome for a stuck tab (tabs.py), and
     # only it may restart one. Every window the suite builds keeps the inert
     # defaults, so no test can reach a Chrome running on the machine.

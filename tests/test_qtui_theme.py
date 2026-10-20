@@ -49,6 +49,9 @@ class TestContrast:
             ("TEXT", "SURFACE"),
             ("TEXT_MUTED", "WINDOW_BG"),
             ("TEXT_MUTED", "SURFACE"),
+            # Home's headline, line, greeting and status sit on its light.
+            ("TEXT", "HOME_GLOW"),
+            ("TEXT_MUTED", "HOME_GLOW"),
             ("TEXT_ON_ACCENT", "ACCENT"),
             ("SUCCESS", "SURFACE"),
             ("WARNING", "SURFACE"),

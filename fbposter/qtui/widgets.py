@@ -43,8 +43,9 @@ UNDO_MIN_MS = 10_000
 # loose at the spacing that suits body text, so headings are drawn a touch
 # tighter -- about -0.02em, the way system fonts track their display sizes.
 # A stylesheet cannot say this (Qt has no letter-spacing property), so
-# AppStyle sets it as each label is polished.
-TRACKING = {"Title": -0.5, "Brand": -0.3, "CardTitle": -0.2}
+# AppStyle sets it as each label is polished. Small capitals go the other
+# way, opened up so the letters do not crowd: Home's greeting.
+TRACKING = {"Title": -0.5, "Brand": -0.3, "CardTitle": -0.2, "HomeGreeting": 2.0}
 
 
 def literal(text: str) -> str:

@@ -93,10 +93,10 @@ class WelcomeView(QWidget):
         stack.setContentsMargins(0, 0, 0, 0)
         stack.setSpacing(0)
 
-        logo = QLabel()
-        logo.setPixmap(icons.brand(LOGO_SIZE))
-        logo.setFixedSize(LOGO_SIZE, LOGO_SIZE)
-        stack.addWidget(logo, 0, Qt.AlignHCenter)
+        self.logo = QLabel()
+        self.logo.setPixmap(icons.brand(LOGO_SIZE))
+        self.logo.setFixedSize(LOGO_SIZE, LOGO_SIZE)
+        stack.addWidget(self.logo, 0, Qt.AlignHCenter)
         stack.addSpacing(theme.PAD_L)
 
         heading = QLabel(self.title)
@@ -249,6 +249,12 @@ class WelcomeView(QWidget):
             # Whatever is running, it is the action button that says so.
             self.action_button.setText("Working…")
             self.action_button.setVisible(True)
+
+    def restyle(self) -> None:
+        """Light or dark changed: the marks and the logo are pictures, drawn
+        in the colours of the moment, so they are drawn again."""
+        self.logo.setPixmap(icons.brand(LOGO_SIZE))
+        self._draw()
 
     # -- the one button ----------------------------------------------------
     def do_action(self) -> None:

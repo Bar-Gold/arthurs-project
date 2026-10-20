@@ -1032,6 +1032,15 @@ class PublishView(QWidget):
         )
 
     # -- what is about to happen -------------------------------------------
+    def restyle(self) -> None:
+        """Light or dark changed. The calendar's day names and past days are
+        text formats, and the summary's warning colour is set in its text:
+        neither comes from the stylesheet."""
+        dates = self.schedule_entry.date_entry
+        dates._quiet_calendar()
+        dates.dim_past_days(QDateTime.currentDateTime().date())
+        self.refresh_summary()
+
     def refresh_summary(self) -> None:
         groups = self.selected_group_ids()
         count = f"{len(groups)} group{'s' if len(groups) != 1 else ''}"

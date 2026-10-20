@@ -131,6 +131,10 @@ class CreatePostView(QWidget):
             button.setEnabled(position <= self.index)
             button.setIcon(QIcon(icons.pixmap(state, theme.C[MARK_COLOURS[state]], MARK_SIZE)))
 
+    def restyle(self) -> None:
+        """Light or dark changed: the step marks are pictures in its colours."""
+        self._restate()
+
     def start_over(self) -> None:
         """A post went out or was queued: clear it all and go Home."""
         self.clear()

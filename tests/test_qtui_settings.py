@@ -368,3 +368,86 @@ class TestThisPC:
         from fbposter.always_on import Inert
 
         assert isinstance(qt_app.always_on, Inert)
+
+
+class TestLightOrDark:
+    """A switch of the app's own (the user's choice, 2026-10-20): Light or
+    Dark, no "same as Windows", and light until somebody picks dark. It
+    changes the whole window at once, with no restart."""
+
+    class SheetRecorder:
+        """Stands in for the application where `App.apply_theme` hands it the
+        new stylesheet: records it, and restyles nothing.
+
+        In the app that call restyles the one window. In the suite it would
+        restyle every window every earlier test left behind (they are closed,
+        never deleted), and over a thousand of them that took minutes and
+        gigabytes. What Qt does with a stylesheet is Qt's to test; that the
+        right one reaches it is this file's."""
+
+        def __init__(self) -> None:
+            self.sheet = ""
+
+        def setStyleSheet(self, sheet: str) -> None:  # noqa: N802 - Qt's name
+            self.sheet = sheet
+
+    @pytest.fixture
+    def application(self, monkeypatch):
+        from types import SimpleNamespace
+
+        from fbposter.qtui import app as app_module
+        from fbposter.qtui import theme
+
+        recorder = self.SheetRecorder()
+        monkeypatch.setattr(app_module, "QApplication",
+                            SimpleNamespace(instance=lambda: recorder))
+        yield recorder
+        theme.activate(dark=False)
+
+    def test_nothing_stored_is_light(self):
+        from fbposter.qtui import theme
+
+        assert not theme.is_dark(None)
+        assert not theme.is_dark("light")
+        assert not theme.is_dark("something else")
+        assert theme.is_dark("dark")
+
+    def test_it_no_longer_asks_windows(self):
+        from fbposter.qtui import theme
+
+        assert not hasattr(theme, "system_is_dark")
+
+    def test_the_app_starts_in_the_stored_choice(self):
+        import inspect
+
+        from fbposter.qtui import app as app_module
+
+        source = inspect.getsource(app_module.run)
+        assert "theme.THEME_KEY" in source
+        assert "App(db=db)" in source, "the window must use the database the choice came from"
+
+    def test_choosing_dark_stores_it_and_turns_the_window_dark(self, qt_app, application):
+        from fbposter.qtui import theme
+
+        settings = qt_app.views["settings"]
+        assert settings.appearance_buttons["light"].isChecked()
+
+        settings.appearance_buttons["dark"].click()
+        assert qt_app.settings_repo.get(theme.THEME_KEY) == "dark"
+        assert theme.MODE == "dark"
+        assert theme.DARK["WINDOW_BG"] in application.sheet
+        assert settings.appearance_buttons["dark"].isChecked()
+        assert not settings.appearance_buttons["light"].isChecked()
+
+        settings.appearance_buttons["light"].click()
+        assert qt_app.settings_repo.get(theme.THEME_KEY) == "light"
+        assert theme.MODE == "light"
+        assert theme.LIGHT["WINDOW_BG"] in application.sheet
+
+    def test_pictures_drawn_in_the_old_colours_are_drawn_again(self, qt_app, application):
+        """The step marks are pictures: the stylesheet cannot recolour them."""
+        flow = qt_app.views["create"]
+        before = flow.step_buttons["compose"].icon().pixmap(16).toImage()
+        qt_app.apply_theme(True)
+        after = flow.step_buttons["compose"].icon().pixmap(16).toImage()
+        assert before != after
