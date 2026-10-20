@@ -133,10 +133,9 @@ class TestStatusesAreBadges:
         set_badge(label, "Fine", "SUCCESS")
         assert (label.text(), label.property("tone")) == ("Fine", "SUCCESS")
 
-    def test_every_tone_has_a_tint_in_both_modes(self):
+    def test_every_tone_has_a_tint(self):
         for tone, tint in theme.BADGE_TINTS.items():
-            for palette in (theme.LIGHT, theme.DARK):
-                assert tone in palette and tint in palette
+            assert tone in theme.LIGHT and tint in theme.LIGHT
 
 
 class TestChoicesAreJoinedToggles:
@@ -176,7 +175,7 @@ class TestChoicesAreJoinedToggles:
 
     def test_the_wording_tabs_are_not_filled_with_the_accent(self):
         """Only the screen's next step is filled with the accent."""
-        theme.activate(dark=False)
+        theme.activate()
         sheet = theme.stylesheet()
         rule = re.search(r"QPushButton#Tab:checked \{([^}]*)\}", sheet).group(1)
         assert theme.C["NAV_ACTIVE_BG"] in rule
@@ -185,21 +184,16 @@ class TestChoicesAreJoinedToggles:
 
 class TestIcons:
     @pytest.mark.parametrize("name", sorted(icons.SHAPES))
-    @pytest.mark.parametrize("dark", [False, True])
-    def test_every_icon_draws(self, qt_application, name, dark):
+    def test_every_icon_draws(self, qt_application, name):
         """A shape the SVG reader cannot parse is a blank space, not an error."""
-        theme.activate(dark=dark)
-        try:
-            drawn = icons.pixmap(name, theme.C["TEXT"], 18)
-            assert not drawn.isNull()
-            image = drawn.toImage()
-            assert any(
-                image.pixelColor(x, y).alpha()
-                for x in range(image.width())
-                for y in range(image.height())
-            ), f"{name} drew nothing"
-        finally:
-            theme.activate(dark=False)
+        drawn = icons.pixmap(name, theme.C["TEXT"], 18)
+        assert not drawn.isNull()
+        image = drawn.toImage()
+        assert any(
+            image.pixelColor(x, y).alpha()
+            for x in range(image.width())
+            for y in range(image.height())
+        ), f"{name} drew nothing"
 
     def test_the_brand_draws(self, qt_application):
         assert not icons.brand(24).isNull()
@@ -234,7 +228,7 @@ class TestIcons:
 
 class TestSpacingAndType:
     def test_a_heading_is_not_smaller_than_body_text(self):
-        theme.activate(dark=False)
+        theme.activate()
         rule = re.search(r"QLabel#SectionHeading \{([^}]*)\}", theme.stylesheet()).group(1)
         size = int(re.search(r"font-size: (\d+)px", rule).group(1))
         assert size >= theme.SIZE_BODY
@@ -295,7 +289,7 @@ class TestTheSettingsPage:
             assert last.alignment() & Qt.AlignRight
 
     def test_the_card_titles_are_a_step_above_the_setting_names(self):
-        theme.activate(dark=False)
+        theme.activate()
         sheet = theme.stylesheet()
         rule = re.search(r"QLabel#CardTitle \{([^}]*)\}", sheet).group(1)
         assert f"{theme.SIZE_HEADING}px" in rule and "600" in rule

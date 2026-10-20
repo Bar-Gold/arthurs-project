@@ -279,20 +279,18 @@ class TestAppStyle:
         assert spin.cursor().shape() != Qt.PointingHandCursor
 
     def test_the_real_window_installs_it_before_the_stylesheet(self):
-        """The stylesheet wraps whatever style is installed when it is set,
-        and it is the window's, set as the window is built (App.__init__)."""
+        """The stylesheet wraps whatever style is installed when it is set."""
         from fbposter.qtui import app
 
         source = inspect.getsource(app.run)
         assert "setStyle(AppStyle())" in source
-        assert source.index("setStyle(AppStyle())") < source.index("stylesheet=theme.stylesheet()")
+        assert source.index("setStyle(AppStyle())") < source.index("setStyleSheet(")
 
 
-@pytest.fixture(params=[False, True], ids=["light", "dark"])
-def sheet(request):
-    theme.activate(dark=request.param)
+@pytest.fixture
+def sheet():
+    theme.activate()
     yield theme.stylesheet()
-    theme.activate(dark=False)
 
 
 class TestTheStylesheet:
@@ -304,9 +302,8 @@ class TestTheStylesheet:
             assert Path(url).exists(), url
 
     @pytest.mark.parametrize("name", theme.ICON_NAMES)
-    @pytest.mark.parametrize("mode", ["light", "dark"])
-    def test_every_icon_exists_in_both_modes(self, name, mode):
-        assert theme.icon_path(name, mode).exists()
+    def test_every_icon_exists(self, name):
+        assert theme.icon_path(name).exists()
 
     @pytest.mark.parametrize(
         "selector",

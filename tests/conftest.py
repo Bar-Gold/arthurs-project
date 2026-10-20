@@ -47,7 +47,7 @@ def qt_application():
     except Exception as exc:  # no Qt, no Qt tests
         pytest.skip(f"PySide6 is unavailable here: {exc}")
 
-    theme.activate(dark=False)
+    theme.activate()
     application = QApplication.instance() or QApplication([])
     yield application
 

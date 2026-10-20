@@ -207,14 +207,6 @@ class HomeView(QWidget):
         self.status_label.setText(words)
         self.status_dot.setPixmap(icons.pixmap("dot", theme.C[colour], DOT_SIZE))
 
-    def restyle(self) -> None:
-        """Light or dark changed: the dot is a picture in the old mode's colour,
-        and the light behind the column is painted, not styled."""
-        shown, self._status_shown = self._status_shown, None
-        if shown is not None:
-            self._show_status(shown)
-        self.update()
-
     def create_post(self) -> None:
         """Step 1 of Create a post."""
         self.app.show_view("compose")

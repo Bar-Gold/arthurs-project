@@ -546,10 +546,6 @@ class ComposeView(QWidget):
         name = group.display_name if group else ALL_GROUPS_TAB
         return name, REWORDED if self.has_rewrite(self._editing) else SHARED_WORDING
 
-    def restyle(self) -> None:
-        """Light or dark changed: the preview's avatar is a picture."""
-        self.refresh_preview()
-
     def refresh_preview(self) -> None:
         if self.slot.currentWidget() is not self.preview:
             return

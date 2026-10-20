@@ -556,11 +556,6 @@ class ScheduleEditView(QWidget):
         return rule != before
 
     # -- what is about to be saved -----------------------------------------
-    def restyle(self) -> None:
-        """Light or dark changed: the summary's warning colour is in its text."""
-        if self.schedule_id is not None:
-            self.refresh_summary()
-
     def refresh_summary(self) -> None:
         if self._loading or self._loaded is None:
             return

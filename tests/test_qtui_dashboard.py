@@ -319,21 +319,14 @@ class TestTheLabels:
 
 
 class TestTheDrawnParts:
-    @pytest.mark.parametrize("dark", [False, True], ids=["light", "dark"])
-    def test_they_paint_in_both_modes(self, qt_application, dark):
+    def test_they_paint(self, qt_application):
         from datetime import date
 
-        from fbposter.qtui import theme
-
-        theme.activate(dark=dark)
-        try:
-            bars = DayBars()
-            bars.set_days([(date(2026, 10, day), day % 4) for day in range(1, 15)])
-            bars.resize(700, 170)
-            outcome = OutcomeBar()
-            outcome.set_counts({TARGET_DONE: 5, TARGET_FAILED: 1})
-            outcome.resize(700, 14)
-            for widget in (bars, outcome):
-                assert not widget.grab().isNull()
-        finally:
-            theme.activate(dark=False)
+        bars = DayBars()
+        bars.set_days([(date(2026, 10, day), day % 4) for day in range(1, 15)])
+        bars.resize(700, 170)
+        outcome = OutcomeBar()
+        outcome.set_counts({TARGET_DONE: 5, TARGET_FAILED: 1})
+        outcome.resize(700, 14)
+        for widget in (bars, outcome):
+            assert not widget.grab().isNull()

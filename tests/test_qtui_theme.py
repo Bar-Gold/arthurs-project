@@ -5,8 +5,8 @@ point and is invisible until someone hits it: focus that cannot be seen,
 body text below the readable floor, a colour that only exists in one mode.
 
 The contrast check is the one worth keeping honest: it computes real WCAG
-ratios rather than trusting that the palette "looks fine", and it runs against
-both light and dark.
+ratios rather than trusting that the palette "looks fine". There is one
+palette: dark mode was removed (the user's choice, 2026-10-20).
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ def contrast(one: str, two: str) -> float:
 class TestContrast:
     """Priority 1: 4.5:1 for body text, in both modes."""
 
-    @pytest.mark.parametrize("palette_name", ["LIGHT", "DARK"])
+    @pytest.mark.parametrize("palette_name", ["LIGHT"])
     @pytest.mark.parametrize(
         "fg,bg",
         [
@@ -85,7 +85,7 @@ class TestContrast:
             ("TEXT", "SEGMENT_TRACK"),
             ("TEXT", "SEGMENT_ON"),
             # The navy sidebar (2026-10-20) has colours of its own, because
-            # the page's are dark in light mode. Its names, at rest, hovered,
+            # the page's are dark. Its names, at rest, hovered,
             # pressed, and the one you are on in gold.
             ("SIDEBAR_TEXT", "SIDEBAR_BG"),
             ("SIDEBAR_TEXT", "SIDEBAR_HOVER"),
@@ -111,7 +111,7 @@ class TestContrast:
             f"{palette_name}: {fg} on {bg} is {ratio:.2f}:1, under {MIN_CONTRAST}:1"
         )
 
-    @pytest.mark.parametrize("palette_name", ["LIGHT", "DARK"])
+    @pytest.mark.parametrize("palette_name", ["LIGHT"])
     def test_white_is_readable_on_the_primary_button(self, palette_name):
         """Facebook's own #1877F2 puts white at 4.23:1, just under the floor."""
         palette = getattr(theme, palette_name)
@@ -119,33 +119,32 @@ class TestContrast:
         assert contrast(palette["ACCENT_HOVER"], palette["TEXT_ON_ACCENT"]) >= MIN_CONTRAST
         assert contrast(palette["ACCENT_PRESSED"], palette["TEXT_ON_ACCENT"]) >= MIN_CONTRAST
 
-    @pytest.mark.parametrize("palette_name", ["LIGHT", "DARK"])
+    @pytest.mark.parametrize("palette_name", ["LIGHT"])
     def test_the_focus_ring_stands_out_from_its_surface(self, palette_name):
         """A focus ring nobody can see is the same as no focus ring."""
         palette = getattr(theme, palette_name)
         ratio = contrast(palette["ACCENT"], palette["SURFACE"])
         assert ratio >= MIN_CONTRAST_LARGE
 
-    @pytest.mark.parametrize("palette_name", ["LIGHT", "DARK"])
+    @pytest.mark.parametrize("palette_name", ["LIGHT"])
     @pytest.mark.parametrize("bg", ["WINDOW_BG", "SURFACE"])
     def test_the_focus_ring_clears_the_indicator_bar(self, palette_name, bg):
         """WCAG 2.2 wants 3:1 for a focus indicator against what is next to it."""
         palette = getattr(theme, palette_name)
         assert contrast(palette["ACCENT"], palette[bg]) >= MIN_CONTRAST_LARGE
 
-    @pytest.mark.parametrize("palette_name", ["LIGHT", "DARK"])
+    @pytest.mark.parametrize("palette_name", ["LIGHT"])
     @pytest.mark.parametrize("bg", ["SIDEBAR_BG", "SIDEBAR_ACTIVE_BG"])
     def test_the_sidebar_focus_ring_is_gold(self, palette_name, bg):
-        """The sidebar is navy in both modes, where a navy ring is no ring."""
+        """The sidebar is navy, where a navy ring is no ring."""
         palette = getattr(theme, palette_name)
         assert contrast(palette["SIDEBAR_ACTIVE"], palette[bg]) >= MIN_CONTRAST_LARGE
-        theme.activate(dark=palette_name == "DARK")
+        theme.activate()
         sheet = theme.stylesheet()
-        theme.activate(dark=False)
         nav_focus = sheet.split("QPushButton#Nav:focus")[1][:200]
         assert palette["SIDEBAR_ACTIVE"] in nav_focus
 
-    @pytest.mark.parametrize("palette_name", ["LIGHT", "DARK"])
+    @pytest.mark.parametrize("palette_name", ["LIGHT"])
     @pytest.mark.parametrize("fg", ["GOLD", "INFO"])
     def test_the_gold_outline_and_the_chart_colour_show(self, palette_name, fg):
         """The chosen tab's outline and the "waiting for an admin" share of
@@ -153,7 +152,7 @@ class TestContrast:
         palette = getattr(theme, palette_name)
         assert contrast(palette[fg], palette["SURFACE"]) >= MIN_CONTRAST_LARGE
 
-    @pytest.mark.parametrize("palette_name", ["LIGHT", "DARK"])
+    @pytest.mark.parametrize("palette_name", ["LIGHT"])
     def test_the_primary_focus_ring_shows_against_its_own_fill(self, palette_name):
         """The ring sits inside a coloured button, so the fill is what it
         has to stand out from -- not the page."""
@@ -161,28 +160,27 @@ class TestContrast:
         ratio = contrast(palette["TEXT_ON_ACCENT"], palette["ACCENT"])
         assert ratio >= MIN_CONTRAST_LARGE
 
-    @pytest.mark.parametrize("palette_name", ["LIGHT", "DARK"])
+    @pytest.mark.parametrize("palette_name", ["LIGHT"])
     def test_borders_are_visible_against_their_surface(self, palette_name):
         palette = getattr(theme, palette_name)
         assert contrast(palette["BORDER"], palette["SURFACE"]) > 1.1
 
 
 class TestPaletteCompleteness:
-    def test_both_modes_define_the_same_keys(self):
-        """A colour defined for one mode only is invisible in the other."""
-        assert set(theme.LIGHT) == set(theme.DARK)
+    def test_there_is_only_the_light_palette(self):
+        """Dark mode was removed (the user's choice, 2026-10-20)."""
+        for gone in ("DARK", "SIDEBAR_DARK", "CHECK_ICON_DARK", "THEME_KEY", "is_dark", "system_is_dark"):
+            assert not hasattr(theme, gone), gone
 
-    @pytest.mark.parametrize("palette_name", ["LIGHT", "DARK"])
+    @pytest.mark.parametrize("palette_name", ["LIGHT"])
     def test_every_value_is_a_hex_colour(self, palette_name):
         for key, value in getattr(theme, palette_name).items():
             assert value.startswith("#") and len(value) == 7, f"{key} = {value!r}"
 
     def test_the_stylesheet_only_uses_keys_that_exist(self):
-        """Builds against both palettes; a missing key would raise KeyError."""
-        for dark in (False, True):
-            theme.activate(dark=dark)
-            assert theme.stylesheet()
-        theme.activate(dark=False)
+        """A missing key would raise KeyError."""
+        theme.activate()
+        assert theme.stylesheet()
 
 
 class TestTypography:
@@ -219,9 +217,9 @@ class TestTheTitleFont:
         on a button is decoration in the way of the task. The tip numbers on
         Posting tips are the one figure in it (2026-10-20): they are read as
         headings of a sort, never worked with."""
-        theme.activate(dark=False)
+        theme.activate()
         sheet = theme.stylesheet()
-        theme.activate(dark=False)
+        theme.activate()
         rules = [block for block in sheet.split("}") if theme.FONT_DISPLAY in block]
         selectors = sorted(block.split("{")[0].strip().split("*/")[-1].strip() for block in rules)
         assert selectors == [
@@ -230,7 +228,7 @@ class TestTheTitleFont:
 
     def test_it_is_never_made_bold(self):
         """It has one weight; Qt would fake a bold by smearing it."""
-        theme.activate(dark=False)
+        theme.activate()
         for block in theme.stylesheet().split("}"):
             if theme.FONT_DISPLAY in block:
                 assert "font-weight: 400" in block
@@ -244,19 +242,15 @@ class TestTheTitleFont:
 
 
 class TestTheTickSuitsTheFill:
-    def test_each_mode_has_its_own_tick(self):
-        """White on the navy box, navy on the gold one."""
+    def test_the_tick_is_white_on_the_navy_box(self):
         from pathlib import Path
 
-        for dark, path in ((False, theme.CHECK_ICON), (True, theme.CHECK_ICON_DARK)):
-            theme.activate(dark=dark)
-            assert Path(path).is_file()
-            assert "\\" not in path
-            checked = theme.stylesheet().split("QCheckBox::indicator:checked")[1][:200]
-            assert path in checked
-        theme.activate(dark=False)
-        assert "#FFFFFF" in Path(theme.CHECK_ICON).read_text()
-        assert theme.DARK["TEXT_ON_ACCENT"] in Path(theme.CHECK_ICON_DARK).read_text()
+        path = theme.CHECK_ICON
+        assert Path(path).is_file()
+        assert "\\" not in path
+        checked = theme.stylesheet().split("QCheckBox::indicator:checked")[1][:200]
+        assert path in checked
+        assert "#FFFFFF" in Path(path).read_text()
 
     def test_the_application_font_does_not_override_the_stylesheet(self):
         """Two sources of truth for size, and the smaller one was winning."""
@@ -270,17 +264,17 @@ class TestTheTickSuitsTheFill:
 
 class TestFocusAndHitTargets:
     def test_the_stylesheet_defines_focus_styling(self):
-        theme.activate(dark=False)
+        theme.activate()
         sheet = theme.stylesheet()
         assert "QPushButton:focus" in sheet
         assert "QLineEdit:focus" in sheet or ":focus" in sheet
 
     def test_focus_is_not_switched_off_anywhere(self):
-        theme.activate(dark=False)
+        theme.activate()
         assert "outline: none" not in theme.stylesheet()
 
     def test_controls_declare_a_minimum_height(self):
-        theme.activate(dark=False)
+        theme.activate()
         assert "min-height" in theme.stylesheet()
 
     def test_the_primary_action_is_the_biggest_target(self):

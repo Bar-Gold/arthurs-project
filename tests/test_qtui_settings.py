@@ -370,68 +370,18 @@ class TestThisPC:
         assert isinstance(qt_app.always_on, Inert)
 
 
-class TestLightOrDark:
-    """A switch of the app's own (the user's choice, 2026-10-20): Light or
-    Dark, no "same as Windows", and light until somebody picks dark. It
-    changes the whole window at once, with no restart."""
+class TestLightOnly:
+    """Dark mode was removed at the user's request (2026-10-20), after its
+    Light/Dark switch could not be made smooth enough for them. Settings has
+    no Appearance card, and nothing follows the Windows theme either."""
 
-    @pytest.fixture
-    def application(self):
-        """Puts the palette back to light for the tests after this one. The
-        stylesheet is the window's own (App.__init__), so a switch restyles
-        only the window under test, never every window the suite left behind."""
-        from fbposter.qtui import theme
-
-        yield
-        theme.activate(dark=False)
-
-    def test_nothing_stored_is_light(self):
-        from fbposter.qtui import theme
-
-        assert not theme.is_dark(None)
-        assert not theme.is_dark("light")
-        assert not theme.is_dark("something else")
-        assert theme.is_dark("dark")
-
-    def test_it_no_longer_asks_windows(self):
-        from fbposter.qtui import theme
-
-        assert not hasattr(theme, "system_is_dark")
-
-    def test_the_app_starts_in_the_stored_choice(self):
-        import inspect
-
-        from fbposter.qtui import app as app_module
-
-        source = inspect.getsource(app_module.run)
-        assert "theme.THEME_KEY" in source
-        assert "App(db=db, stylesheet=theme.stylesheet())" in source, (
-            "the window must use the database the choice came from, and carry the look itself"
-        )
-        assert "application.setStyleSheet" not in source, "on the application, a switch took most of a second"
-
-    def test_choosing_dark_stores_it_and_turns_the_window_dark(self, qt_app, application):
-        from fbposter.qtui import theme
+    def test_settings_offers_no_light_or_dark(self, qt_app):
+        from PySide6.QtWidgets import QLabel
 
         settings = qt_app.views["settings"]
-        assert settings.appearance_buttons["light"].isChecked()
+        assert not hasattr(settings, "appearance_buttons")
+        titles = [label.text() for label in settings.findChildren(QLabel)]
+        assert "Appearance" not in titles
 
-        settings.appearance_buttons["dark"].click()
-        assert qt_app.settings_repo.get(theme.THEME_KEY) == "dark"
-        assert theme.MODE == "dark"
-        assert theme.DARK["WINDOW_BG"] in qt_app.styleSheet()
-        assert settings.appearance_buttons["dark"].isChecked()
-        assert not settings.appearance_buttons["light"].isChecked()
-
-        settings.appearance_buttons["light"].click()
-        assert qt_app.settings_repo.get(theme.THEME_KEY) == "light"
-        assert theme.MODE == "light"
-        assert theme.LIGHT["WINDOW_BG"] in qt_app.styleSheet()
-
-    def test_pictures_drawn_in_the_old_colours_are_drawn_again(self, qt_app, application):
-        """The step marks are pictures: the stylesheet cannot recolour them."""
-        flow = qt_app.views["create"]
-        before = flow.step_buttons["compose"].icon().pixmap(16).toImage()
-        qt_app.apply_theme(True)
-        after = flow.step_buttons["compose"].icon().pixmap(16).toImage()
-        assert before != after
+    def test_the_window_has_no_theme_switch(self, qt_app):
+        assert not hasattr(qt_app, "apply_theme")

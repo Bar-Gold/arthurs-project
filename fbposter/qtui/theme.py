@@ -1,11 +1,9 @@
 """Colour, type and spacing for the Qt UI.
 
 Navy and gold (the user's choice, 2026-10-20, replacing the Facebook blue it
-started from): a deep navy sidebar in both modes, warm ivory pages, navy
-buttons in light mode and gold ones in dark. Resolved to one set of values
-rather than carried as (light, dark) pairs: Qt styles through a stylesheet,
-and a stylesheet is a string, so the mode is chosen before it is built. The
-Settings switch rebuilds it (`App.apply_theme`).
+started from): a deep navy sidebar, warm ivory pages and navy buttons. Light
+only: dark mode was removed at the user's request (2026-10-20), after its
+Light/Dark switch could not be made smooth enough for them.
 """
 
 from __future__ import annotations
@@ -16,16 +14,13 @@ from pathlib import Path
 # too -- a backslash is an escape character inside a stylesheet, so a native
 # path silently fails to load and the tick just never appears.
 ASSETS = Path(__file__).parent / "assets"
-# The tick is white on the navy box in light mode and navy on the gold box in
-# dark mode: white on gold is under 2:1.
+# The tick, white on the navy box.
 CHECK_ICON = (ASSETS / "check.svg").as_posix()
-CHECK_ICON_DARK = (ASSETS / "check-dark.svg").as_posix()
 
 # The arrows on steppers, drop-downs and the calendar. An SVG cannot take its
-# colour from the palette, so each one exists per mode -- and the up/down pair
-# again as "-off", for a stepper already at its limit. One colour could not do
-# for both modes: the dimmed arrow has to be *darker* than normal on a dark
-# field and *lighter* on a light one.
+# colour from the palette, so the colour is in the file -- and the up/down pair
+# exists again as "-off", for a stepper already at its limit. The files still
+# end in "-light", from when there was a dark set too.
 ICON_NAMES = (
     "chevron-up", "chevron-down", "chevron-up-off", "chevron-down-off",
     "chevron-left", "chevron-right",
@@ -96,10 +91,10 @@ SIDEBAR_WIDTH = 232
 WINDOW_MIN = (980, 660)
 WINDOW_DEFAULT = (1120, 760)
 
-# The sidebar is deep navy in both modes, so it has colours of its own: the
-# page's text colours are dark in light mode and would vanish on it. Every
-# status shown there (the connection, "Posting is paused") has a sidebar
-# version, light enough for navy. Gold marks the screen you are on.
+# The sidebar is deep navy, so it has colours of its own: the page's text
+# colours are dark and would vanish on it. Every status shown there (the
+# connection, "Posting is paused") has a sidebar version, light enough for
+# navy. Gold marks the screen you are on.
 SIDEBAR_LIGHT = {
     "SIDEBAR_BG": "#101B30",
     "SIDEBAR_BORDER": "#26324D",
@@ -114,16 +109,6 @@ SIDEBAR_LIGHT = {
     "SIDEBAR_DANGER": "#FF8A97",
     "SIDEBAR_NEUTRAL": "#A4ACBD",
 }
-
-# A shade darker than the page in dark mode, so it still reads as its own
-# column.
-SIDEBAR_DARK = dict(SIDEBAR_LIGHT, **{
-    "SIDEBAR_BG": "#0A1120",
-    "SIDEBAR_BORDER": "#1E2944",
-    "SIDEBAR_HOVER": "#141E34",
-    "SIDEBAR_PRESSED": "#1C2843",
-    "SIDEBAR_ACTIVE_BG": "#18233C",
-})
 
 LIGHT = {
     **SIDEBAR_LIGHT,
@@ -141,18 +126,14 @@ LIGHT = {
     "ACCENT_HOVER": "#2A406B",
     # Pressed goes darker again, so a click shows the moment it lands.
     "ACCENT_PRESSED": "#111E38",
-    # Accent used *as text*. Separate from the fill because the two have
-    # opposite requirements in dark mode, where the fill is gold and carries
-    # navy text, and the text must be light enough for a dark surface. A
-    # touch bluer than the body text here, so a chosen tab still reads as
-    # chosen.
+    # Accent used *as text*: a touch bluer than the body text, so a chosen
+    # tab still reads as chosen.
     "ACCENT_TEXT": "#1F3A6B",
     # The champagne tint behind a chosen tab or step.
     "NAV_ACTIVE_BG": "#F3ECDD",
     # The outline of a chosen tab or step. Deep enough for 3:1 on white.
     "GOLD": "#A88440",
-    # The logo's own gold, the same in both modes. Decoration only, never
-    # text.
+    # The logo's own gold. Decoration only, never text.
     "BRAND": "#C9A45C",
     # Neutral states for everything that is not the accent. Hover used to be
     # the pale tint of the selected tab, so hovering any button made it look
@@ -167,9 +148,7 @@ LIGHT = {
     "DANGER_SOFT": "#FBEDEE",
     "DANGER_PRESSED_BG": "#F6DCDF",
     "NEUTRAL": "#676C77",
-    # A post held for an admin, on the Dashboard's charts. Not the accent:
-    # in dark mode that is gold, and stood beside "Might have posted" in
-    # orange the two read as one.
+    # A post held for an admin, on the Dashboard's charts.
     "INFO": "#2E4D86",
     # The tints behind a status badge, each pale enough to keep its own colour
     # of text above 4.5:1. The accent's tint is NAV_ACTIVE_BG.
@@ -179,44 +158,6 @@ LIGHT = {
     # A joined toggle: the track, and the raised segment that is chosen.
     "SEGMENT_TRACK": "#EDE8DF",
     "SEGMENT_ON": "#FFFFFF",
-}
-
-DARK = {
-    **SIDEBAR_DARK,
-    "WINDOW_BG": "#0F1729",
-    "HOME_GLOW": "#182032",
-    "SURFACE": "#162036",
-    "BORDER": "#29354F",
-    "TEXT": "#ECE7DD",
-    "TEXT_MUTED": "#A7AFC0",
-    # Gold buttons carry navy text: white on gold is under 2:1.
-    "TEXT_ON_ACCENT": "#0F1729",
-    "ACCENT": "#CDA65E",
-    # Hover goes lighter rather than darker, because darkening gold takes
-    # the navy text below the floor.
-    "ACCENT_HOVER": "#D9B676",
-    "ACCENT_PRESSED": "#BC944C",
-    "ACCENT_TEXT": "#DDBD7C",
-    "NAV_ACTIVE_BG": "#2A2D33",
-    "GOLD": "#CDA65E",
-    "BRAND": "#C9A45C",
-    "HOVER_BG": "#1D2841",
-    "PRESSED_BG": "#26324D",
-    "BORDER_STRONG": "#46557A",
-    "SUCCESS": "#5CC985",
-    "WARNING": "#F2A85A",
-    "DANGER": "#FF7D8E",
-    "DANGER_SOFT": "#3A2230",
-    "DANGER_PRESSED_BG": "#472836",
-    "NEUTRAL": "#9098AA",
-    "INFO": "#7EA2E0",
-    "SUCCESS_SOFT": "#1B3330",
-    "WARNING_SOFT": "#3A2F27",
-    "NEUTRAL_SOFT": "#26324D",
-    # Darker than the page and the cards, so the track reads as sunken on
-    # both. The page colour itself left it invisible on the page.
-    "SEGMENT_TRACK": "#0A1120",
-    "SEGMENT_ON": "#2A3654",
 }
 
 # A status badge's text colour, by the colour token a status is given, and the
@@ -233,36 +174,19 @@ BADGE_TINTS = {
 # Filled in by activate(); the module is imported for its names, so this has to
 # exist before anyone reads it.
 C = dict(LIGHT)
-MODE = "light"
 
 
-# Light or dark is the user's own choice, made on the Settings screen and
-# stored under this key as "light" or "dark" (2026-10-20). It used to follow
-# the Windows app theme; the user wanted a switch of the app's own instead,
-# with no "same as Windows" option, and light until somebody picks dark.
-THEME_KEY = "appearance"
-LIGHT_MODE = "light"
-DARK_MODE = "dark"
-
-
-def is_dark(stored: str | None) -> bool:
-    """Whether a stored choice means dark. Anything else, nothing included,
-    is light."""
-    return stored == DARK_MODE
-
-
-def activate(dark: bool = False) -> dict:
-    """Choose the palette, before building the stylesheet from it."""
-    global C, MODE
-    C = dict(DARK if dark else LIGHT)
-    MODE = DARK_MODE if dark else LIGHT_MODE
+def activate() -> dict:
+    """Fill C with the palette, before building the stylesheet from it."""
+    global C
+    C = dict(LIGHT)
     return C
 
 
-def icon_path(name: str, mode: str | None = None) -> Path:
-    """The file for one of `ICON_NAMES` in the given (default: active) mode."""
+def icon_path(name: str) -> Path:
+    """The file for one of `ICON_NAMES`."""
     state = "-off" if name.endswith("-off") else ""
-    return ASSETS / f"{name.removesuffix('-off')}-{mode or MODE}{state}.svg"
+    return ASSETS / f"{name.removesuffix('-off')}-light{state}.svg"
 
 
 def icon(name: str) -> str:
@@ -271,8 +195,8 @@ def icon(name: str) -> str:
 
 
 def check_icon() -> str:
-    """The checkbox tick for the active mode."""
-    return CHECK_ICON_DARK if MODE == "dark" else CHECK_ICON
+    """The checkbox tick."""
+    return CHECK_ICON
 
 
 def load_fonts() -> list[str]:
@@ -436,7 +360,7 @@ def stylesheet() -> str:
         background: {c["BORDER"]};
         color: {c["TEXT_MUTED"]};
     }}
-    /* The sidebar is navy in both modes, so everything on it takes the
+    /* The sidebar is navy, so everything on it takes the
        SIDEBAR_ colours, and the screen you are on is lit in gold. */
     QFrame#Sidebar QFrame#Divider {{ background: {c["SIDEBAR_BORDER"]}; }}
     QPushButton#Nav {{
@@ -768,7 +692,7 @@ def stylesheet() -> str:
 
     /* The date picker's calendar. Unstyled it was the platform's own: red
        weekends (Saturday and Sunday, which is not even Israel's weekend), a
-       grey header, and a next-month arrow that vanished in dark mode. */
+       grey header, and a next-month arrow that could vanish. */
     QCalendarWidget QWidget {{ background: {c["SURFACE"]}; }}
     QCalendarWidget QWidget#qt_calendar_navigationbar {{
         background: {c["SURFACE"]};
