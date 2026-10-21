@@ -1,8 +1,9 @@
 """Editing a repeating post that already exists.
 
-Its own screen, opened from the post's card on Publish, rather than loading the
-post back into Compose, Groups and Publish: those three hold whatever the user
-is writing next, and editing a repeating post must not cost them that draft.
+Its own screen, opened from the post's card on Repeating posts, rather than
+loading the post back into Compose, Groups and Publish: those three hold
+whatever the user is writing next, and editing a repeating post must not cost
+them that draft.
 
 Everything a repeating post is made of can change here -- name, wordings,
 groups, pictures, times and days. Two things deliberately do not:
@@ -22,6 +23,12 @@ stores the set, not its groups, so it follows the set from its next run.
 
 Saving judges nothing: there are no posting rules (the user's choice,
 2026-10-18). As many times a day as wanted, and pictures or a video alone.
+
+Write and Preview, as in Create a post (the user's choice, 2026-10-21):
+Preview puts the post, as a group will see it, where the wordings, groups and
+pictures were, and leaves the right-hand card (name, times, Save) as it is. A
+post with several wordings shows one at a time, picked by "Wording 1",
+"Wording 2" and so on above it. It shows what is on the screen, saved or not.
 """
 
 from __future__ import annotations
@@ -30,6 +37,7 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QButtonGroup,
     QCheckBox,
     QFileDialog,
     QGridLayout,
@@ -49,8 +57,23 @@ from fbposter.db.repo import KEEP
 from fbposter.text import strip_invisible
 
 from .. import theme
-from ..widgets import RowList, back_link, card, clear, literal, row, set_note_lines
-from .compose import ATTACH_LABEL, MEDIA_FILTER, NO_ATTACHMENTS, check_attachments
+from ..widgets import (
+    RowList,
+    back_link,
+    card,
+    clear,
+    literal,
+    row,
+    segmented,
+    set_note_lines,
+)
+from .compose import (
+    ATTACH_LABEL,
+    MEDIA_FILTER,
+    NO_ATTACHMENTS,
+    PostPreview,
+    check_attachments,
+)
 from .groups import SET_COLUMNS, GroupRow, in_sets, set_label
 from .publish import (
     DEFAULT_TIMES,
@@ -67,6 +90,9 @@ from .publish import (
 
 # Room for about four lines of a wording.
 WORDING_HEIGHT = 104
+
+WRITE = "write"
+PREVIEW = "preview"
 
 
 class ScheduleEditView(QWidget):
@@ -97,6 +123,8 @@ class ScheduleEditView(QWidget):
         self._sets: dict[int, object] = {}
         self._time_rows: list[TimePicker] = []
         self._day_boxes: list[QCheckBox] = []
+        # Which wording Preview shows, counting the ones with words in.
+        self._preview_index = 0
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -122,6 +150,21 @@ class ScheduleEditView(QWidget):
 
     # -- left column: what goes out, and where -----------------------------
     def _build_left(self, parent: QHBoxLayout) -> None:
+        left = row()
+        left_column = QVBoxLayout(left)
+        left_column.setContentsMargins(0, 0, 0, 0)
+        left_column.setSpacing(theme.PAD_S)
+        parent.addWidget(left, 1)
+
+        toggle, (self.write_button, self.preview_button) = segmented(("Write", "Preview"))
+        modes = QButtonGroup(self)
+        for index, button in enumerate((self.write_button, self.preview_button)):
+            modes.addButton(button, index)
+        self.write_button.setChecked(True)
+        self.write_button.clicked.connect(lambda: self.set_mode(WRITE))
+        self.preview_button.clicked.connect(lambda: self.set_mode(PREVIEW))
+        left_column.addWidget(toggle)
+
         # One scroll for the whole column: every section keeps its natural
         # height rather than being squashed to fit the window.
         holder = QWidget()
@@ -132,7 +175,9 @@ class ScheduleEditView(QWidget):
         area.setWidgetResizable(True)
         area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         area.setWidget(holder)
-        parent.addWidget(area, 1)
+        self.write_page = area
+        left_column.addWidget(area, 1)
+        self._build_preview(left_column)
 
         header = QHBoxLayout()
         label = QLabel("Wordings")
@@ -196,6 +241,32 @@ class ScheduleEditView(QWidget):
 
         column.addStretch(1)
 
+    def _build_preview(self, parent: QVBoxLayout) -> None:
+        self.preview_page = row()
+        page = QVBoxLayout(self.preview_page)
+        page.setContentsMargins(0, 0, 0, 0)
+        page.setSpacing(theme.PAD_S)
+
+        # One button per wording, shown only when there is more than one.
+        self.wording_picker = row()
+        self.picker_box = QHBoxLayout(self.wording_picker)
+        self.picker_box.setContentsMargins(0, 0, 0, 0)
+        self.picker_box.setSpacing(theme.PAD_XS)
+        self.picker_box.setAlignment(Qt.AlignLeft)
+        self._picker_group = QButtonGroup(self)
+        page.addWidget(self.wording_picker)
+
+        box = card()
+        box_layout = QVBoxLayout(box)
+        # The preview's ground fills the box to its border, as in Create a post.
+        box_layout.setContentsMargins(1, 1, 1, 1)
+        self.preview = PostPreview()
+        box_layout.addWidget(self.preview)
+        page.addWidget(box, 1)
+
+        self.preview_page.setVisible(False)
+        parent.addWidget(self.preview_page, 1)
+
     # -- right column: when, and the buttons -------------------------------
     def _build_right(self, parent: QHBoxLayout) -> None:
         column = QVBoxLayout()
@@ -219,6 +290,8 @@ class ScheduleEditView(QWidget):
         layout.addWidget(name_label)
         self.name_entry = QLineEdit()
         self.name_entry.setPlaceholderText("e.g. Bikes for sale")
+        # The preview is headed with the name, so it follows the typing.
+        self.name_entry.textChanged.connect(lambda _text: self.refresh_preview())
         layout.addWidget(self.name_entry)
 
         header = QHBoxLayout()
@@ -335,8 +408,63 @@ class ScheduleEditView(QWidget):
                 box.setChecked(every_day or index in schedule.days)
         finally:
             self._loading = False
+        # Every post opens on Write, at its first wording.
+        self._preview_index = 0
+        self.set_mode(WRITE)
         self.refresh_summary()
         return True
+
+    # -- preview -----------------------------------------------------------
+    def set_mode(self, mode: str) -> None:
+        """Write, or the post as a group will see it in place of the column."""
+        preview = mode == PREVIEW
+        self.write_button.setChecked(not preview)
+        self.preview_button.setChecked(preview)
+        self.write_page.setVisible(not preview)
+        self.preview_page.setVisible(preview)
+        if preview:
+            # Built on the way in, never on a pick: the button clicked would be
+            # destroyed under its own click. The wordings cannot change while
+            # the preview stands in for them.
+            self._fill_picker()
+            self.refresh_preview()
+
+    def _fill_picker(self) -> None:
+        count = len(self.wordings())
+        self._preview_index = min(self._preview_index, max(count - 1, 0))
+        for button in self._picker_group.buttons():
+            self._picker_group.removeButton(button)
+        clear(self.picker_box)
+        for index in range(count):
+            button = QPushButton(f"Wording {index + 1}")
+            button.setObjectName("Tab")
+            button.setCheckable(True)
+            button.setChecked(index == self._preview_index)
+            button.clicked.connect(lambda _c, i=index: self.show_wording(i))
+            self._picker_group.addButton(button)
+            self.picker_box.addWidget(button)
+        self.wording_picker.setVisible(count > 1)
+
+    def show_wording(self, index: int) -> None:
+        self._preview_index = index
+        # Restated, not left to the click, so exactly one is ever lit.
+        for position, button in enumerate(self._picker_group.buttons()):
+            button.setChecked(position == index)
+        self.refresh_preview()
+
+    def refresh_preview(self) -> None:
+        if self.preview_page.isHidden():
+            return
+        texts = self.wordings()
+        text = texts[self._preview_index] if texts else ""
+        name = self.name_entry.text().strip()
+        if not name and self._loaded is not None:
+            name = self._loaded.display_name
+        groups = len(self.ticked_group_ids())
+        subheading = f"Just now · {groups} group{'s' if groups != 1 else ''}"
+        if len(texts) > 1:
+            subheading += f" · wording {self._preview_index + 1} of {len(texts)}"
+        self.preview.render(name, subheading, text, [Path(p) for p in self._pictures])
 
     # -- wordings ----------------------------------------------------------
     def add_wording(self, text: str = "") -> QTextEdit:
@@ -675,5 +803,6 @@ class ScheduleEditView(QWidget):
         return True
 
     def leave(self) -> None:
-        """Back to Publish. Nothing is written unless Save already did it."""
-        self.app.show_view("publish")
+        """Back to Repeating posts, where it was opened from. Nothing is
+        written unless Save already did it."""
+        self.app.show_view("repeating")

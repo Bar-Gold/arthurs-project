@@ -22,7 +22,6 @@ from PySide6.QtWidgets import QLabel
 from fbposter import clock, recurrence
 from fbposter.db.models import (
     SCHEDULE_ACTIVE,
-    SCHEDULE_PAUSED,
     TASK_PENDING,
     utcnow,
 )
@@ -431,7 +430,7 @@ class TestALongListScrolls:
         assert area.minimumSizeHint().height() < RECIPIENTS_MAX_HEIGHT
 
     def test_repeat_gives_it_less_room(self, many):
-        """Repeat has its wordings and repeating posts under the list."""
+        """Repeat has its wordings under the list."""
         many.set_mode(REPEAT)
         assert many.recipient_area.sizeHint().height() == RECIPIENTS_MAX_HEIGHT_REPEAT
         many.set_mode(NOW)
@@ -452,42 +451,26 @@ class TestALongListScrolls:
         assert "typed but never captured" in publish.preview_note.text()
 
 
-class TestManagingRepeatingPosts:
-    def test_pausing_and_resuming(self, qt_app, views):
+class TestTheRepeatingPostsListMoved:
+    """The repeating posts already made are on their own screen now,
+    Repeating posts in the sidebar (the user's choice, 2026-10-21)."""
+
+    def test_step_3_no_longer_lists_them(self, views):
+        _compose, publish = views
+        publish.set_mode(REPEAT)
+        shown = [label.text() for label in publish.findChildren(QLabel)]
+        assert "Existing repeating posts" not in shown
+        for gone in ("schedule_area", "schedule_box", "toggle_schedule", "delete_schedule"):
+            assert not hasattr(publish, gone), gone
+
+    def test_starting_one_says_where_it_went(self, qt_app, views):
+        """The window goes to Home once it is saved, so the banner says
+        where to find it."""
         _compose, publish = views
         publish.set_mode(REPEAT)
         publish.publish()
-        schedule_id = qt_app.schedule_repo.list()[0].id
-
-        publish.toggle_schedule(schedule_id)
-        assert qt_app.schedule_repo.get(schedule_id).state == SCHEDULE_PAUSED
-        publish.toggle_schedule(schedule_id)
-        assert qt_app.schedule_repo.get(schedule_id).state == SCHEDULE_ACTIVE
-
-    def test_resuming_recomputes_the_next_slot(self, qt_app, views):
-        _compose, publish = views
-        publish.set_mode(REPEAT)
-        publish.publish()
-        schedule_id = qt_app.schedule_repo.list()[0].id
-        qt_app.schedule_repo.set_next_run(
-            schedule_id, clock.parse_local("2020-01-01 09:00")
-        )
-        publish.toggle_schedule(schedule_id)
-        publish.toggle_schedule(schedule_id)
-        assert qt_app.schedule_repo.get(schedule_id).next_run_at > utcnow()
-
-    def test_deleting(self, qt_app, views):
-        _compose, publish = views
-        publish.set_mode(REPEAT)
-        publish.publish()
-        publish.delete_schedule(qt_app.schedule_repo.list()[0].id)
-        assert qt_app.schedule_repo.list() == []
-
-    def test_a_created_schedule_gets_a_card(self, views):
-        _compose, publish = views
-        publish.set_mode(REPEAT)
-        publish.publish()
-        assert publish.schedule_box.count() == 2  # one card plus the stretch
+        assert len(qt_app.schedule_repo.list()) == 1
+        assert "Find it in Repeating posts." in qt_app.toast_label.text()
 
 
 def start_again(qt_app, body=BODY, mode=REPEAT):
@@ -573,7 +556,7 @@ class TestTheWindowItself:
         # So is "schedule_edit", reached from a repeating post's card.
         assert set(qt_app.views) == {
             "compose", "publish", "groups", "dashboard", "settings", "welcome",
-            "schedule_edit", "group_sets", "tips", "home", "create",
+            "schedule_edit", "group_sets", "tips", "home", "create", "repeating",
         }
 
     def test_the_wizard_is_not_a_sidebar_step(self, qt_app):

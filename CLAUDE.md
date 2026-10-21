@@ -8,7 +8,7 @@ Most of these rules already cost a live bug. This file holds what applies everyw
 
 | Rule file | Sections | Loads for |
 | --- | --- | --- |
-| `worker.md` | Rules for the Worker; Repeating posts | `worker.py`, `recurrence.py`, Publish, the repeating-post edit screen |
+| `worker.md` | Rules for the Worker; Repeating posts | `worker.py`, `recurrence.py`, Publish, the Repeating posts screen, the repeating-post edit screen |
 | `power.md` | Power: sleep, shutdown, and an unattended laptop | `power.py`, `always_on.py`, `worker.py`, `scripts/`, Settings, `installer.iss` |
 | `automation.md` | Rules for the Automation Engine; Selector Strategy; Reading the client's groups off Facebook | `automation/`, `strings.py`, `groups.py`, `media.py` |
 | `chrome-and-login.md` | Handing this to a non-technical user; Changing which Facebook account it posts as; Never call `browser.close()` | `chrome.py`, `keepalive.py`, `tabs.py`, `cdp.py`, `session.py`, `login.py`, `onboarding.py`, `connection.py`, `single.py`, `config.py`, `main.py`, `qtui/app.py`, the wizard, Settings |
@@ -33,11 +33,9 @@ Each is spelled out in its rule file. These are the ones no change may break:
 
 ## Repository Status
 
-**All five phases are done; v1 is feature-complete.** Chrome debug-profile launcher and CDP session (1), the UI (2; CustomTkinter then, Qt now), SQLite persistence and the safety guards (3), the automation engine in `fbposter/automation/` (4), and the scheduler/worker in `fbposter/worker.py` (5).
+**v1 is feature-complete, and the app posts on its own.** Opening the GUI starts the worker, and any due batch will go out. `README.md` holds the full spec; everything built since v1 is in `git log`.
 
-**The app now posts on its own.** Opening the GUI starts the worker, and any due batch will go out. `README.md` holds the full spec. Everything built since v1 is in `git log`; the rules each piece left behind are below and in `.claude/rules/`.
-
-**It is now shipped, not just run.** The app is packaged as an installer for a non-technical client: a first-run wizard replaces the terminal commands the app used to print, and `packaging/` builds a signed-nothing-but-working `Setup.exe`. The wizard also owns the one thing a finished setup might still need changing, which Facebook account it posts as. See "Handing this to a non-technical user" (`chrome-and-login.md`).
+**It is shipped to a non-technical client** as an installer built by `packaging/`. A first-run wizard does the setup, and later changes which Facebook account it posts as. See "Handing this to a non-technical user" (`chrome-and-login.md`).
 
 ## What This Is
 
@@ -59,7 +57,7 @@ python -m venv .venv
 .\.venv\Scripts\python.exe main.py launch   # Chrome off-screen, ready for automation
 .\.venv\Scripts\python.exe main.py status   # attach over CDP, report the session state
 
-# Phase 4, both safe to run against a real group:
+# Both safe to run against a real group:
 .\.venv\Scripts\python.exe main.py probe   <group-url>              # resolve selectors; types nothing
 .\.venv\Scripts\python.exe main.py dry-run <group-url> --text "..." # full rehearsal, never clicks Post
 .\.venv\Scripts\python.exe main.py dry-run <group-url> --image a.jpg --image b.jpg  # pictures; --text optional
@@ -116,7 +114,7 @@ Packaging: `packaging/`: `fbposter.spec` (PyInstaller), `installer.iss` (Inno Se
 
 Automation: `automation/poster.py` (`GroupPoster`: arrive → compose → type → attach → publish → verify, plus the read-only `probe`), `detect.py` (`classify` a page as OK / checkpoint / login / rate-limit / unavailable), `humanize.py` (`Humanizer`: keystroke timing, hovers, arrival scroll, the inter-group gap), `groupinfo.py` (read a group's display name off the `h1` **inside `[role="main"]`**, and its member count in the same visit; cosmetic, and must never raise into a caller), `groupfinder.py` (read every group the account is in off Facebook's "Your groups" page; see "Reading the client's groups off Facebook").
 
-UI: `qtui/app.py` (window, sidebar, connection pill, paused line, worker-event pump, background thread helper), `qtui/views/` (`home`, where the app opens; `create`, Create a post, which holds compose, groups and publish as the three steps of one road with a step bar; dashboard; `group_sets`, where sets are made; `tips`, the Posting tips; `settings`, at the foot of the sidebar; plus `welcome`, the first-run wizard, and `schedule_edit`, which edits one repeating post from its card in step 3; neither is in the sidebar. See `fbposter/qtui/CLAUDE.md` for the flow), `qtui/theme.py` (palette + one stylesheet), `qtui/widgets.py` (`card`, `row`, `clear`, `replace_at`, `badge`, `segmented`, `AppStyle`), `qtui/icons.py` (the sidebar and status icons, as SVG strings), `qtui/assets/`.
+UI: `qtui/app.py` (window, sidebar, connection pill, paused line, worker-event pump, background thread helper), `qtui/views/` (`home`, where the app opens; `create`, Create a post, which holds compose, groups and publish as the three steps of one road with a step bar; dashboard; `group_sets`, where sets are made; `repeating`, the repeating posts already made; `tips`, the Posting tips; `settings`, at the foot of the sidebar; plus `welcome`, the first-run wizard, and `schedule_edit`, which edits one repeating post from its card on Repeating posts; neither is in the sidebar. See `fbposter/qtui/CLAUDE.md` for the flow), `qtui/theme.py` (palette + one stylesheet), `qtui/widgets.py` (`card`, `row`, `clear`, `replace_at`, `badge`, `segmented`, `AppStyle`), `qtui/icons.py` (the sidebar and status icons, as SVG strings), `qtui/assets/`.
 
 Storage: `db/`: `connection.py` (per-thread connections), `schema.py` (migrations), `models.py`, `repo.py` (`GroupRepo`, `GroupSetRepo`, `TemplateRepo`, `TaskRepo`, `ScheduleRepo`, `SettingsRepo`).
 
@@ -124,33 +122,33 @@ Storage: `db/`: `connection.py` (per-thread connections), `schema.py` (migration
 
 `fbposter/text.py` owns one list of characters that print nothing (bidi marks, zero-width joiners, soft hyphen, BOM), and `strip_invisible()` removes them. It exists because two load-bearing comparisons are string equality against the user's own words:
 
-- **`text.normalise`** folds them, so the worker knows when the same words went to a group before (`PostRequest.sent_before`), which is what stops an old post in the feed being taken as proof that a new one went out. Before this, the same ad pasted twice compared as *different text*; it once let the repeated-text rule (gone since 2026-10-18) wave a repeat through. Folding in `normalise` rather than only at the input is deliberate: bodies already stored with marks in them have to compare correctly too.
+- **`text.normalise`** folds them, so the worker knows when the same words went to a group before (`PostRequest.sent_before`). Folding in `normalise` rather than only at the input is deliberate: bodies already stored with marks in them have to compare correctly too.
 - **`distinctive_snippet`** strips them, because Facebook drops them when it renders. A snippet still carrying one is searched for and never found, which reports a post that went out fine as failed and halts the batch.
+
+Both comparisons are now the fallback. A post is proved by the id in Facebook's reply to the Post click; the words are checked only when that reply carries no id, and then `sent_before` stops an older post with the same words being taken as proof that the new one went out (`automation.md`).
 
 Both Qt entry points clean on the way in as well: `ComposeView.get_text()` and `PublishView.alternates()`. **Qt needing no direction marks of its own is not the same as no marks arriving**; that gap is how this shipped.
 
 ### Time: stored in UTC, judged in Israel time
 
-Every timestamp is stored and compared in UTC, but **every human judgement is made in `Asia/Jerusalem`**: what counts as "today" on the Dashboard, the hours the follow-up sweep may open a group page in, and every time shown in or typed into the UI. Go through `fbposter/clock.py` (`to_local`, `local_hour`, `start_of_local_day`, `next_window_open`, `parse_local`, `format_local`); never read `.hour` or `.date()` off a stored UTC value. Doing that put the posting window three hours out, when there still was one: it allowed a 01:00 local post and refused a 09:00 one.
+Every timestamp is stored and compared in UTC, but **every human judgement is made in `Asia/Jerusalem`**: what counts as "today" on the Dashboard, the hours the follow-up sweep may open a group page in, and every time shown in or typed into the UI. Go through `fbposter/clock.py` (`to_local`, `local_hour`, `start_of_local_day`, `next_window_open`, `parse_local`, `format_local`); never read `.hour` or `.date()` off a stored UTC value; that once put the day three hours out.
 
-**A posting window may cross midnight.** `clock.inside_window` owns the rule and `clock.next_window_open` defers to it, because when the two judged differently a 22:00-06:00 window excluded *every* hour and a batch deferred itself one day at a time, for ever, silently. The posting hours no longer hold posts back (see "No posting rules, only tips"); they are still read, from the stored `posting_window_*` settings, by `_follow_up_pending`. `clock.sane_hour` also guards against a stored hour outside 0-23, which used to raise `hour must be in 0..23` inside `datetime.replace`; the worker loop swallowed it and retried every tick, so the app just stopped posting.
+**A posting window may cross midnight.** `clock.inside_window` owns the rule and `clock.next_window_open` defers to it, so the two can never judge a 22:00-06:00 window differently (they once did, and a batch deferred itself for ever, silently). The posting hours no longer hold posts back (see "No posting rules, only tips"); they are still read, from the stored `posting_window_*` settings, by `_follow_up_pending`. `clock.sane_hour` guards against a stored hour outside 0-23, which once raised inside the worker loop on every tick and silently stopped all posting.
 
 `tzdata` is therefore a hard requirement, not a nicety: Windows ships no IANA time zone database, so without it `Asia/Jerusalem` does not resolve and `clock.posting_zone()` falls back to the machine's own zone.
 
 ### No posting rules, only tips
 
-The user's choice, 2026-10-18. The clients are real-estate agents who post one listing to 40-80 groups, once or twice a day, and the rules stopped exactly that. **The daily limit, the cooldown per group, the posting hours and the repeated-text rule are gone, and nothing warns about them either.** Whatever is queued goes out, one group at a time, with the gap between. `fbposter/guards.py` was deleted; `normalise` moved to `text.py`, and "Post anyway" went with the rules it got past.
+The user's choice, 2026-10-18. The clients are real-estate agents who post one listing to 40-80 groups, once or twice a day, and the rules stopped exactly that. **The daily limit, the cooldown per group, the posting hours and the repeated-text rule are gone, and nothing warns about them either.** Whatever is queued goes out, one group at a time, with the gap between. `fbposter/guards.py` and "Post anyway" are gone.
 
-- **What is left is not a rule the user bends.** The 2-4 minute gap between posts (lowered from 10-25 the same day, from research: closer than 2-3 minutes reads as a bot), halting on a checkpoint, never re-sending a post that may have gone out, one post at a time, and a missed slot dropped rather than fired late. The user confirmed each.
+- **What is left is not a rule the user bends.** The 2-4 minute gap between posts (closer than 2-3 minutes reads as a bot), halting on a checkpoint, never re-sending a post that may have gone out, one post at a time, and a missed slot dropped rather than fired late. The user confirmed each.
 - **The advice lives on the Posting tips screen** (`fbposter/tips.py`, `qtui/views/tips.py`): ten tips in Hebrew, English and Russian, researched that day from Meta's spam policy and guides by people who post to many groups. It decides nothing: `tests/test_tips.py` fails if the worker, Compose, Publish or `recurrence.py` import it. Every language has the same tips in the same order with the same numbers, which that test pins. It opens in Hebrew, right to left through `setLayoutDirection` (not bidi marks), and remembers the language in the `tips_language` setting. Screen names (Publish, Settings, Pause posting) stay in English in every language because that is what the window says. **The Hebrew was checked with the `hebrew-content-writer` skill; the Russian had no such check**, so have a native speaker read any change to it.
 - **Old data is left as it was.** `tasks.overrides` and `schedules.overrides` (migration 009) are still columns, default `[]`, and nothing reads or writes them. `daily_cap`, `default_cooldown_hours` and `groups.cooldown_hours` are still stored and seeded, unread, like `queue_retention_hours`. Never edit migration 009 to drop them.
 - **Do not bring a rule back as a "small safety net".** A warning on Publish was offered and turned down too: the user wants the page of tips and nothing on the screens that post.
 
 ### Playwright is imported lazily, and must stay that way
 
-**Startup cost was Playwright, and it is now deferred.** This reverses an earlier decision recorded here, on a re-measurement: `playwright.sync_api` costs **~830ms**, not the ~340ms first measured, and importing `fbposter.qtui.app` went from **1670ms to 682ms** without it. The earlier note also had the mechanism wrong. Neither `worker.py` nor `automation/groupinfo.py` imports Playwright; **`session.py` does**, and both pull it in through that, so one lazy import fixed both rather than needing two.
-
-It is imported inside `session.attach()`. The objection recorded last time (that this moves the cost onto the first background name lookup or the first post) is exactly why it is safe: both of those already run **off the thread drawing the window**. A second on the worker thread is invisible; a second before the window appears is not. `tests/test_qtui_performance.py` pins both halves: that importing the window does not pull Playwright in, and that nothing in the package imports it at module scope, since the cost comes back silently wherever that is written.
+Importing `playwright.sync_api` costs **~830ms**, more than half of the window's startup. So it is imported only inside `session.attach()`; `session.py` is the one module that uses it, and `worker.py` and `groupinfo.py` reach it through there. The cost lands on the first post or name lookup instead, which is safe because both run **off the thread drawing the window**: a second there is invisible, a second before the window appears is not. `tests/test_qtui_performance.py` pins it: importing the window must not pull Playwright in, and nothing in the package may import it at module scope.
 
 ## Non-Interfering Operation
 
@@ -169,7 +167,7 @@ It is achievable because Playwright dispatches input through the DevTools protoc
 
 The workload is small, and the spec was trimmed accordingly. **Still cut:** skipping a single group mid-batch (the Dashboard's "Going out" list can only cancel a whole batch), and a separate `run_log` table. Each was cut on purpose; do not add them without asking. The Scope Control table in `README.md` has the reasoning.
 
-Everything else cut from v1 has since been **built at the user's request**: repeating posts (daily, as many times a day as wanted since 2026-10-18; it was in their original requirements; `worker.md`), pausing (one pause for all posting, on the Settings screen, which holds a batch mid-way; `worker.md`), group tags (as group sets, 2026-10-15; `data.md`) and video upload (2026-10-15; "Videos" in `automation.md`). v1 was: compose → pick groups → post now or schedule once → serial worker with jitter → live queue view (the Dashboard since 2026-10-14).
+Everything else cut from v1 has since been **built at the user's request**: repeating posts (daily, as many times a day as wanted since 2026-10-18; it was in their original requirements; `worker.md`), pausing (one pause for all posting, on the Settings screen, which holds a batch mid-way; `worker.md`), group tags (as group sets, 2026-10-15; `data.md`) and video upload (2026-10-15; "Videos" in `automation.md`).
 
 ## Writing: no long dashes
 
@@ -184,3 +182,4 @@ Automating posts violates Facebook's Terms of Service. The measures above reduce
 All your answers need to be short and clear.
 Never assume anything, if you are not sure about something you ask me.
 Explain technical stuff as simple as you can. 
+When you finish making changes in the code that change the behaviour or something that visible in the app restart the ap so i can see or try the new stuff. 

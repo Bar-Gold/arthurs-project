@@ -63,6 +63,13 @@ SHAPES = {
         '<circle cx="15.5" cy="9.5" r="2"/>'
         '<circle cx="12" cy="15.5" r="2"/>'
     ),
+    # Two arrows chasing each other round: a post that comes round again.
+    "repeating": (
+        '<path d="m17 2 4 4-4 4"/>'
+        '<path d="M3 11v-1a4 4 0 0 1 4-4h14"/>'
+        '<path d="m7 22-4-4 4-4"/>'
+        '<path d="M21 13v1a4 4 0 0 1-4 4H3"/>'
+    ),
     # A light bulb: advice for posting safely.
     "tips": (
         '<path d="M9.5 18h5M10.5 21h3"/>'

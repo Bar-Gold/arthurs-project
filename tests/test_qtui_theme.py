@@ -295,8 +295,9 @@ class TestNavigationReadsAsAFlow:
 
     def test_no_more_than_seven_nav_items(self):
         """Many more and a sidebar stops being scannable. It was five until
-        the user chose an item of its own for group sets (2026-10-15), and
-        six until Posting tips (2026-10-18)."""
+        the user chose an item of its own for group sets (2026-10-15), six
+        until Posting tips (2026-10-18), and seven since Repeating posts
+        (2026-10-21), so it is full: a new item means taking one away."""
         assert len(NAV_ITEMS) <= 7
 
 

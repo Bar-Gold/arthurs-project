@@ -12,8 +12,9 @@ from datetime import timedelta
 import pytest
 from PySide6.QtWidgets import QLabel, QPushButton
 
-from fbposter import recurrence
+from fbposter import recurrence, stats
 from fbposter.db.models import (
+    SCHEDULE_PAUSED,
     TARGET_AWAITING_APPROVAL,
     TARGET_DONE,
     TARGET_FAILED,
@@ -91,8 +92,9 @@ class TestTheSidebar:
 
         keys = [key for key, _label, _cls in NAV_ITEMS]
         assert "queue" not in keys
-        # Below the road to a post, which holds the three steps (2026-10-19).
-        assert keys.index("dashboard") == keys.index("create") + 1
+        # Below what you keep, Group sets and Repeating posts, starting the
+        # section of what you look at (the user's choice, 2026-10-21).
+        assert keys.index("dashboard") == keys.index("repeating") + 1
         assert qt_app.nav_buttons["dashboard"].text() == "Dashboard"
 
 
@@ -251,6 +253,17 @@ class TestGoingOut:
         qt_app.task_repo.mark_target(first.id, TARGET_DONE, posted=True)
         assert any("1 of 2 groups done" in text for text in texts(view))
 
+    def test_a_repeating_post_s_name_ends_the_line(self, qt_app, groups, view):
+        """After the count, never before it: a Hebrew name took the number
+        that followed it into its own run, and the line read "· 0 · <name>
+        of 2 groups done" (seen on the window, 2026-10-21)."""
+        name = "דירה ברמת גן"
+        schedule = repeating(qt_app, groups, name=name)
+        qt_app.task_repo.create(BODY, [(g.id, BODY) for g in groups], schedule_id=schedule.id)
+        assert any(
+            text.endswith(f"0 of 2 groups done · {name}") for text in going_texts(view)
+        )
+
     def test_a_waiting_batch_says_why(self, qt_app, groups, view):
         task = qt_app.task_repo.create(BODY, [(groups[0].id, BODY)])
         note = "Waiting: Chrome is not reachable."
@@ -269,6 +282,80 @@ class TestGoingOut:
     def test_a_pictures_only_batch_says_so_rather_than_nothing(self, qt_app, groups, view):
         qt_app.task_repo.create("", [(groups[0].id, "")], media_paths=["a.jpg", "b.jpg"])
         assert "Pictures only (2 pictures, no text)" in texts(view)
+
+
+def repeating(qt_app, groups, name="Bikes", body=BODY, at=None, media_paths=()):
+    """A repeating post whose next run is `at`, or the next 09:00."""
+    rule = recurrence.build(["09:00"])
+    return qt_app.schedule_repo.create(
+        name=name, bodies=[body] if body else [], group_ids=[g.id for g in groups],
+        times=list(rule.times), media_paths=list(media_paths),
+        next_run_at=at or recurrence.next_occurrence(rule, utcnow()),
+    )
+
+
+def going_texts(view) -> list[str]:
+    """The "Going out" list only: the "Next scheduled" tile names a time too."""
+    view.refresh(force=True)
+    shown = []
+    for index in range(view.going_box.count()):
+        widget = view.going_box.itemAt(index).widget()
+        if widget is not None:
+            shown.extend(label.text() for label in widget.findChildren(QLabel))
+    return shown
+
+
+class TestRepeatingPostsBeforeTheirTime:
+    """Until its time comes a repeating post is not a batch, so "Going out"
+    used to leave it out (the user's report, 2026-10-21). It shows its next
+    run now, with no button: it is changed on Repeating posts."""
+
+    def test_its_next_run_is_listed(self, qt_app, groups, view):
+        at = utcnow() + timedelta(hours=3)
+        repeating(qt_app, groups, at=at)
+        shown = going_texts(view)
+        assert not view.going_heading.isHidden()
+        assert BODY in shown
+        assert "Repeating" in shown
+        assert f"Next run {stats.when_text(at, utcnow())} · 2 groups · Bikes" in shown
+
+    def test_it_has_no_button(self, qt_app, groups, view):
+        repeating(qt_app, groups)
+        assert BODY in going_texts(view)
+        captions = [b.text() for b in view.holder.findChildren(QPushButton)]
+        assert "Cancel" not in captions
+
+    def test_a_paused_one_is_not_listed(self, qt_app, groups, view):
+        schedule = repeating(qt_app, groups)
+        qt_app.schedule_repo.set_state(schedule.id, SCHEDULE_PAUSED)
+        assert going_texts(view) == []
+        assert view.going_heading.isHidden()
+
+    def test_after_the_batches_soonest_first(self, qt_app, groups, view):
+        now = utcnow()
+        repeating(qt_app, groups, name="Later", body="Later post", at=now + timedelta(hours=5))
+        repeating(qt_app, groups, name="Sooner", body="Sooner post", at=now + timedelta(hours=1))
+        qt_app.task_repo.create("Queued post", [(groups[0].id, "Queued post")])
+        shown = going_texts(view)
+        assert shown.index("Queued post") < shown.index("Sooner post") < shown.index("Later post")
+
+    def test_pictures_only_says_so(self, qt_app, groups, view):
+        repeating(qt_app, groups, body="", media_paths=["a.jpg"])
+        assert "Pictures only (1 picture, no text)" in going_texts(view)
+
+    def test_a_new_next_run_is_redrawn(self, qt_app, groups, view):
+        now = utcnow()
+        schedule = repeating(qt_app, groups, at=now + timedelta(hours=1))
+        view.refresh()
+        later = now + timedelta(days=3)
+        qt_app.schedule_repo.set_next_run(schedule.id, later)
+        view.refresh()
+        shown = []
+        for index in range(view.going_box.count()):
+            widget = view.going_box.itemAt(index).widget()
+            if widget is not None:
+                shown.extend(label.text() for label in widget.findChildren(QLabel))
+        assert any(stats.when_text(later, now) in text for text in shown)
 
 
 class TestNoApprovalButtons:

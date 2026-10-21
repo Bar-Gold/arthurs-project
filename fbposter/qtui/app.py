@@ -49,6 +49,7 @@ from .views.dashboard import DashboardView
 from .views.group_sets import GroupSetsView
 from .views.groups import IMPORT_PENDING_KEY
 from .views.home import HomeView
+from .views.repeating import RepeatingPostsView
 from .views.schedule_edit import ScheduleEditView
 from .views.settings import SettingsView
 from .views.tips import TipsView
@@ -80,21 +81,27 @@ STARTUP_RECHECK_MS = 15_000
 CHROME_WATCH_MS = keepalive.WATCH_EVERY_S * 1000
 CHECK_DEADLINE_MS = keepalive.CHECK_DEADLINE_S * 1000
 
-# Home, then the road to a post, then how it is going. Create a post holds the
-# three steps as one road (the user's request, 2026-10-19): they used to be
+# Home and the road to a post, then what you keep, then what you look at, each
+# section under a divider (the user's choice, 2026-10-21). Create a post holds
+# the three steps as one road (the user's request, 2026-10-19): they used to be
 # three items of their own. Each item has an icon (icons.py). Settings is
 # somewhere you go on purpose, so it sits at the foot of the sidebar. Group
 # sets is not a step: it is where sets are made, and they are picked in step 2
-# (its own item, the user's choice, 2026-10-15). Posting tips is advice to
-# read, in three languages (2026-10-18).
+# (its own item, the user's choice, 2026-10-15). Repeating posts lists the
+# ones already made, which used to sit in step 3 (2026-10-21). Posting tips is
+# advice to read, in three languages (2026-10-18).
 NAV_ITEMS = (
     ("home", "Home", HomeView),
     ("create", "Create a post", CreatePostView),
-    ("dashboard", "Dashboard", DashboardView),
     ("group_sets", "Group sets", GroupSetsView),
+    ("repeating", "Repeating posts", RepeatingPostsView),
+    ("dashboard", "Dashboard", DashboardView),
     ("tips", "Posting tips", TipsView),
     ("settings", "Settings", SettingsView),
 )
+
+# The items a divider goes above: each starts a section of the sidebar.
+NAV_SECTIONS = ("group_sets", "dashboard")
 
 # The three steps inside Create a post, in order. Each is still a view of its
 # own in `App.views`, and `show_view` routes its key to the step. The
@@ -103,15 +110,15 @@ NAV_ITEMS = (
 FLOW_STEPS = ("compose", "groups", "publish")
 
 # Screens that are not in the sidebar, and the item that stays lit while one
-# is open. Editing a repeating post is reached from Publish, so Publish is
-# where you are. The setup wizard belongs to no step, so nothing is lit: it
+# is open. Editing a repeating post is reached from Repeating posts, so that
+# is where you are. The setup wizard belongs to no step, so nothing is lit: it
 # used to leave whichever item was clicked last lit, often Settings, which
 # answered "where am I?" wrongly.
 NAV_PARENT = {
     "compose": "create",
     "groups": "create",
     "publish": "create",
-    "schedule_edit": "create",
+    "schedule_edit": "repeating",
 }
 
 NAV_HINTS = {
@@ -119,6 +126,7 @@ NAV_HINTS = {
     "create": "Write the post, choose the groups, then choose when",
     "dashboard": "See how the posting is going",
     "group_sets": "Keep groups together, to pick as one",
+    "repeating": "Pause, edit or delete the posts that repeat",
     "tips": "Advice for posting safely, in Hebrew, English or Russian",
     "settings": "Pause posting, the Facebook account, and this PC",
 }
@@ -300,8 +308,8 @@ class App(QMainWindow):
                 # purpose, not a step you walk through.
                 column.addStretch(1)
                 self._build_paused_notice(column)
-            if key == "dashboard":
-                # Not a step: it is where you look afterwards.
+            if key in NAV_SECTIONS:
+                # Not a step: what you keep, then where you look afterwards.
                 column.addSpacing(theme.PAD_S)
                 divider = QFrame()
                 divider.setObjectName("Divider")
@@ -410,7 +418,7 @@ class App(QMainWindow):
         self.views["welcome"] = WelcomeView(self)
         self.stack.addWidget(self.views["welcome"])
         # Not in the sidebar either: it edits one repeating post, and is
-        # reached from that post's card on Publish.
+        # reached from that post's card on Repeating posts.
         self.views["schedule_edit"] = ScheduleEditView(self)
         self.stack.addWidget(self.views["schedule_edit"])
         column.addWidget(self.stack, 1)
@@ -1015,9 +1023,9 @@ class App(QMainWindow):
         # showing the slot it already used otherwise. A group that turned out
         # to be unavailable may have left a repeating post's groups.
         if event.kind in ("scheduled", "schedule_error", "missed", "unavailable"):
-            publish_view = self.views.get("publish")
-            if publish_view is not None:
-                publish_view.refresh_schedules()
+            repeating = self.views.get("repeating")
+            if repeating is not None:
+                repeating.refresh()
 
     def unfinished_work(self) -> str | None:
         """What closing the window would stop, phrased for a person.

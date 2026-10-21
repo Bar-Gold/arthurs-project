@@ -44,13 +44,12 @@ from PySide6.QtWidgets import (
 
 from fbposter import attachments, clock, recurrence
 from fbposter.text import strip_invisible
-from fbposter.db.models import SCHEDULE_ACTIVE, SCHEDULE_PAUSED, utcnow
+from fbposter.db.models import utcnow
 
 from .. import theme
 from ..widgets import (
     RowList,
     back_link,
-    badge,
     card,
     card_title,
     clear,
@@ -70,7 +69,7 @@ SNIPPET_CHARS = 90
 # The "Going out" list: one row per group with a hairline between them, in a
 # list that scrolls past its height. A client sends one post to 40-80 groups,
 # and laid out bare the names were squeezed on top of each other. Repeat has
-# its wordings and repeating posts under the list, so it gets less room.
+# its wordings under the list, so it gets less room.
 RECIPIENT_ROW_PAD = 7
 RECIPIENTS_MAX_HEIGHT = 440
 RECIPIENTS_MAX_HEIGHT_REPEAT = 200
@@ -568,7 +567,6 @@ class PublishView(QWidget):
         # publish the text from before the last edit.
         self.compose.capture()
         self.refresh_recipients()
-        self.refresh_schedules()
         self.refresh_summary()
 
     def notify(self, message: str, level: str = "info") -> None:
@@ -674,23 +672,11 @@ class PublishView(QWidget):
         self.rotation_note.setObjectName("Muted")
         self.rotation_note.setWordWrap(True)
         extras.addWidget(self.rotation_note)
-
-        existing_label = QLabel("Existing repeating posts")
-        existing_label.setObjectName("SectionHeading")
-        extras.addWidget(existing_label)
-
-        self.schedule_area = QScrollArea()
-        self.schedule_area.setWidgetResizable(True)
-        # Never sideways: a card too wide for the column was cut off at its
-        # right edge, Edit half shown and Delete out of sight.
-        self.schedule_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        schedule_holder = QWidget()
-        self.schedule_box = QVBoxLayout(schedule_holder)
-        self.schedule_box.setContentsMargins(0, 0, 0, 0)
-        self.schedule_box.setSpacing(theme.PAD_XS)
-        self.schedule_area.setWidget(schedule_holder)
-        self.schedule_area.setMinimumHeight(160)
-        extras.addWidget(self.schedule_area)
+        # The repeating posts already made are listed on their own screen,
+        # Repeating posts in the sidebar (2026-10-21); they were here, and
+        # their list took the slack. With no wordings yet the box above is
+        # hidden, and without this the hint dropped to the foot of the column.
+        extras.addStretch()
         column.addWidget(self.repeat_extras, 1)
 
         # Takes the slack in the two modes where the extras are hidden, so the
@@ -1209,148 +1195,10 @@ class PublishView(QWidget):
         )
         self.notify(
             f"{schedule.display_name}: {recurrence.describe(rule)}. First run "
-            f"{clock.format_local(first)}.",
+            f"{clock.format_local(first)}. Find it in Repeating posts.",
             "success",
         )
 
         self.name_entry.clear()
-        self.refresh_schedules()
         return True
 
-    # -- existing repeating posts ------------------------------------------
-    def toggle_schedule(self, schedule_id: int) -> None:
-        schedule = self.app.schedule_repo.get(schedule_id)
-        if schedule is None:
-            return
-        if schedule.active:
-            self.app.schedule_repo.set_state(schedule_id, SCHEDULE_PAUSED)
-            self.notify(f"{schedule.display_name} paused.", "info")
-        else:
-            # Resuming recomputes the next slot rather than firing the one that
-            # went by while it was paused.
-            rule = recurrence.build(schedule.times, schedule.days)
-            self.app.schedule_repo.set_next_run(
-                schedule_id, recurrence.next_occurrence(rule, utcnow())
-            )
-            self.app.schedule_repo.set_state(schedule_id, SCHEDULE_ACTIVE)
-            self.notify(f"{schedule.display_name} resumed.", "success")
-        self.refresh_schedules()
-
-    def edit_schedule(self, schedule_id: int) -> bool:
-        """Open the repeating post on its own screen, where all of it can change."""
-        editor = self.app.views["schedule_edit"]
-        if not editor.load(schedule_id):
-            self.notify("That repeating post no longer exists.", "error")
-            self.refresh_schedules()
-            return False
-        self.app.show_view("schedule_edit")
-        return True
-
-    def delete_schedule(self, schedule_id: int) -> None:
-        schedule = self.app.schedule_repo.get(schedule_id)
-        self.app.schedule_repo.delete(schedule_id)
-        self.refresh_schedules()
-        if schedule is not None:
-            # "Delete" sits beside "Edit" on every card. A slip takes the
-            # wordings with it, so it is one click to take back.
-            self.app.toast(
-                f"{schedule.display_name} deleted.",
-                "info",
-                undo=lambda: self._restore_schedule(schedule),
-            )
-
-    def _restore_schedule(self, schedule) -> str | None:
-        if not self.app.schedule_repo.restore(schedule):
-            return None
-        self.refresh_schedules()
-        return f"{schedule.display_name} is back."
-
-    def refresh_schedules(self) -> None:
-        clear(self.schedule_box)
-        schedules = self.app.schedule_repo.list()
-        if not schedules:
-            note = QLabel("Nothing repeating yet.")
-            note.setObjectName("Muted")
-            self.schedule_box.addWidget(note)
-            self.schedule_box.addStretch(1)
-            return
-
-        for schedule in schedules:
-            self.schedule_box.addWidget(self._card(schedule))
-        self.schedule_box.addStretch(1)
-
-    def _card(self, schedule) -> QWidget:
-        box = card()
-        layout = QVBoxLayout(box)
-        layout.setContentsMargins(theme.PAD_M, theme.PAD_S, theme.PAD_M, theme.PAD_S)
-        layout.setSpacing(theme.PAD_XS)
-
-        # The name and whether it is on, then what it does, then what can be
-        # done to it. The state used to sit among the buttons, in coloured
-        # words the same size as "Delete" beside it; and the buttons shared
-        # the name's line, which ran the card off the column's right edge in
-        # a narrow window.
-        header = QHBoxLayout()
-        header.setSpacing(theme.PAD_S)
-        title = QLabel(schedule.display_name)
-        title.setObjectName("Strong")
-        title.setWordWrap(True)
-        header.addWidget(title, 1)
-        header.addWidget(
-            badge(
-                "Active" if schedule.active else "Paused",
-                "SUCCESS" if schedule.active else "TEXT_MUTED",
-            ),
-            0,
-            Qt.AlignTop,
-        )
-        layout.addLayout(header)
-
-        try:
-            summary = recurrence.describe(recurrence.build(schedule.times, schedule.days))
-        except recurrence.InvalidRecurrence as exc:
-            summary = f"Unusable rule: {exc}"
-        # recipient_ids: the groups its next run goes to, sets included.
-        groups = len(schedule.recipient_ids)
-        sets = len(schedule.set_ids)
-        detail = QLabel(
-            f"{summary} · "
-            + (f"{sets} group set{'s' if sets != 1 else ''} · " if sets else "")
-            + f"{groups} group{'s' if groups != 1 else ''} · "
-            f"{len(schedule.bodies)} wording{'s' if len(schedule.bodies) != 1 else ''}"
-        )
-        detail.setObjectName("Muted")
-        detail.setWordWrap(True)
-        layout.addWidget(detail)
-
-        when = QLabel(
-            f"Next {clock.format_local(schedule.next_run_at)}"
-            if schedule.active and schedule.next_run_at
-            else "Not scheduled"
-        )
-        when.setObjectName("Muted")
-        layout.addWidget(when)
-
-        if schedule.bodies:
-            flat = " ".join(schedule.bodies[0].split())
-            snippet = flat[:SNIPPET_CHARS] + ("…" if len(flat) > SNIPPET_CHARS else "")
-            first = QLabel(snippet)
-            first.setWordWrap(True)
-            layout.addWidget(first)
-
-        actions = QHBoxLayout()
-        actions.setContentsMargins(0, theme.PAD_XS, 0, 0)
-        actions.setSpacing(theme.PAD_S)
-        toggle = QPushButton("Pause" if schedule.active else "Resume")
-        toggle.clicked.connect(lambda _c, s=schedule.id: self.toggle_schedule(s))
-        actions.addWidget(toggle)
-        edit = QPushButton("Edit")
-        edit.clicked.connect(lambda _c, s=schedule.id: self.edit_schedule(s))
-        actions.addWidget(edit)
-        actions.addStretch(1)
-        remove = QPushButton("Delete")
-        remove.setObjectName("Link")
-        remove.clicked.connect(lambda _c, s=schedule.id: self.delete_schedule(s))
-        actions.addWidget(remove)
-        layout.addLayout(actions)
-        return box

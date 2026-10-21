@@ -2,9 +2,9 @@
 paths:
   - "fbposter/worker.py"
   - "fbposter/recurrence.py"
-  - "fbposter/qtui/views/{publish,schedule_edit}.py"
+  - "fbposter/qtui/views/{publish,repeating,schedule_edit}.py"
   - "tests/test_{worker,recurrence,schedules}.py"
-  - "tests/test_qtui_{publish,schedule_edit}.py"
+  - "tests/test_qtui_{publish,repeating,schedule_edit}.py"
 ---
 
 # The posting worker and repeating posts

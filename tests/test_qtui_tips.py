@@ -28,7 +28,8 @@ def labels(view) -> list[str]:
 class TestWhereItIs:
     def test_it_is_in_the_sidebar_but_not_a_step(self, qt_app):
         keys = [key for key, _label, _view in NAV_ITEMS]
-        assert keys.index("tips") == keys.index("group_sets") + 1
+        # Beside the Dashboard: both are there to look at (2026-10-21).
+        assert keys.index("tips") == keys.index("dashboard") + 1
         assert keys.index("tips") < keys.index("settings")
         assert "tips" not in FLOW_STEPS
         assert qt_app.nav_buttons["tips"].text() == "Posting tips"

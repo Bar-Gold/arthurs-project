@@ -81,7 +81,8 @@ class TestItsPlace:
         from fbposter.qtui.app import FLOW_STEPS, NAV_ITEMS
 
         keys = [key for key, _label, _view in NAV_ITEMS]
-        assert keys.index("group_sets") == keys.index("dashboard") + 1
+        # First of the things you keep, with Repeating posts (2026-10-21).
+        assert keys.index("group_sets") == keys.index("create") + 1
         assert "group_sets" not in FLOW_STEPS
         assert qt_app.nav_buttons["group_sets"].text() == "Group sets"
 
@@ -345,8 +346,10 @@ class TestPublishingWithASet:
         publish.set_mode(REPEAT)
         publish.add_wording("Second wording")
         publish.publish()
+        qt_app.show_view("repeating")
         assert any(
-            "1 group set · 3 groups" in text for text in labels(publish.schedule_area)
+            "1 group set · 3 groups" in text
+            for text in labels(qt_app.views["repeating"].area)
         )
 
 
@@ -355,10 +358,8 @@ class TestTheEditScreen:
     def editing(self, qt_app, groups):
         made = make_set(qt_app, "Tel Aviv", groups[1:3])
         schedule = make_schedule(qt_app, group_ids=[groups[0].id], set_ids=[made.id])
-        publish = qt_app.views["publish"]
-        qt_app.show_view("publish")
-        publish.set_mode(REPEAT)
-        assert publish.edit_schedule(schedule.id) is True
+        qt_app.show_view("repeating")
+        assert qt_app.views["repeating"].edit_schedule(schedule.id) is True
         return qt_app.views["schedule_edit"], schedule, made
 
     def test_its_set_is_ticked_and_its_groups_greyed(self, editing, groups):
@@ -382,10 +383,8 @@ class TestTheEditScreen:
     def test_ticking_a_set_saves_the_link(self, qt_app, groups):
         other = make_set(qt_app, "Haifa", groups[3:])
         schedule = make_schedule(qt_app, group_ids=[groups[0].id])
-        publish = qt_app.views["publish"]
-        qt_app.show_view("publish")
-        publish.set_mode(REPEAT)
-        publish.edit_schedule(schedule.id)
+        qt_app.show_view("repeating")
+        qt_app.views["repeating"].edit_schedule(schedule.id)
         editor = qt_app.views["schedule_edit"]
         editor._set_boxes[other.id].setChecked(True)
         assert "Follows Haifa" in editor.summary.text()

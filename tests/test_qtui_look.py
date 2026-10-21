@@ -113,10 +113,9 @@ class TestStatusesAreBadges:
             times=list(rule.times), days=list(rule.days), media_paths=[],
             next_run_at=recurrence.next_occurrence(rule, utcnow()),
         )
-        publish = qt_app.views["publish"]
-        qt_app.show_view("publish")
-        publish.refresh_schedules()
-        assert badges(publish)["Active"] == "SUCCESS"
+        repeating = qt_app.views["repeating"]
+        qt_app.show_view("repeating")
+        assert badges(repeating)["Active"] == "SUCCESS"
 
     def test_the_scheduler_status_is_one_too(self, qt_app):
         settings = qt_app.views["settings"]

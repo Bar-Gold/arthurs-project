@@ -23,7 +23,7 @@ from datetime import timedelta
 
 import pytest
 from PySide6.QtCore import QTime
-from PySide6.QtWidgets import QPushButton
+from PySide6.QtWidgets import QLabel, QPushButton
 
 from fbposter import clock, recurrence
 from fbposter.db.models import (
@@ -32,7 +32,6 @@ from fbposter.db.models import (
     TARGET_DONE,
     utcnow,
 )
-from fbposter.qtui.views.publish import REPEAT
 
 WORDINGS = ["Selling a road bike", "Road bike for sale", "54cm road bike going"]
 DRAFT = "Something else entirely, still being written."
@@ -69,10 +68,8 @@ def make_schedule(qt_app, group_ids, *, times=("09:00",), **extra):
 def editing(qt_app, groups):
     """A post to groups 0 and 1, open on the edit screen."""
     schedule = make_schedule(qt_app, [groups[0].id, groups[1].id])
-    publish = qt_app.views["publish"]
-    qt_app.show_view("publish")
-    publish.set_mode(REPEAT)
-    assert publish.edit_schedule(schedule.id) is True
+    qt_app.show_view("repeating")
+    assert qt_app.views["repeating"].edit_schedule(schedule.id) is True
     return qt_app.views["schedule_edit"], schedule
 
 
@@ -87,10 +84,9 @@ def set_time(editor, index, text):
 class TestReachingIt:
     def test_every_repeating_post_card_has_an_edit_button(self, qt_app, groups):
         make_schedule(qt_app, [groups[0].id])
-        publish = qt_app.views["publish"]
-        qt_app.show_view("publish")
-        publish.set_mode(REPEAT)
-        texts = [b.text() for b in publish.schedule_area.findChildren(QPushButton)]
+        repeating = qt_app.views["repeating"]
+        qt_app.show_view("repeating")
+        texts = [b.text() for b in repeating.area.findChildren(QPushButton)]
         assert "Edit" in texts
 
     def test_edit_opens_the_screen(self, qt_app, editing):
@@ -100,10 +96,10 @@ class TestReachingIt:
         assert "schedule_edit" not in qt_app.nav_buttons
 
     def test_a_post_that_has_gone_is_not_opened(self, qt_app, groups):
-        publish = qt_app.views["publish"]
-        qt_app.show_view("publish")
-        assert publish.edit_schedule(9999) is False
-        assert qt_app.current_view == "publish"
+        repeating = qt_app.views["repeating"]
+        qt_app.show_view("repeating")
+        assert repeating.edit_schedule(9999) is False
+        assert qt_app.current_view == "repeating"
         assert "no longer exists" in qt_app.toast_label.text()
 
     def test_it_has_one_accent_button_and_it_is_save(self, editing):
@@ -227,10 +223,10 @@ class TestSavingChangesIt:
         editor.save()
         assert stored(qt_app, schedule).media_paths == ["C:\\pictures\\two.jpg"]
 
-    def test_it_returns_to_publish_and_says_so(self, qt_app, editing):
+    def test_it_returns_to_repeating_posts_and_says_so(self, qt_app, editing):
         editor, _schedule = editing
         editor.save()
-        assert qt_app.current_view == "publish"
+        assert qt_app.current_view == "repeating"
         assert "saved" in qt_app.toast_label.text()
 
 
@@ -339,14 +335,14 @@ class TestBackWithoutSaving:
         set_time(editor, 0, "10:30")
         editor.back_button.click()
 
-        assert qt_app.current_view == "publish"
+        assert qt_app.current_view == "repeating"
         assert stored(qt_app, schedule) == before
 
     def test_opening_it_again_starts_from_what_is_stored(self, qt_app, editing):
         editor, schedule = editing
         editor.name_entry.setText("Changed")
         editor.leave()
-        qt_app.views["publish"].edit_schedule(schedule.id)
+        qt_app.views["repeating"].edit_schedule(schedule.id)
         assert editor.name_entry.text() == "Bikes"
 
 
@@ -397,7 +393,7 @@ class TestWhatIsRefused:
         editor, schedule = editing
         qt_app.schedule_repo.delete(schedule.id)
         assert editor.save() is False
-        assert qt_app.current_view == "publish"
+        assert qt_app.current_view == "repeating"
 
 
 class TestThereAreNoRules:
@@ -435,3 +431,79 @@ class TestThereAreNoRules:
         editor.add_time("03:00")
         editor.add_time("03:30")
         assert theme.C["WARNING"] not in editor.summary.text()
+
+
+class TestPreview:
+    """Write and Preview, as in Create a post (the user's choice, 2026-10-21).
+    A post with several wordings shows one at a time."""
+
+    @staticmethod
+    def picker(editor) -> list[str]:
+        return [button.text() for button in editor._picker_group.buttons()]
+
+    def test_it_opens_on_write(self, editing):
+        editor, _schedule = editing
+        assert editor.write_button.isChecked()
+        assert not editor.write_page.isHidden()
+        assert editor.preview_page.isHidden()
+
+    def test_preview_shows_the_first_wording_in_place_of_the_column(self, editing):
+        editor, _schedule = editing
+        editor.preview_button.click()
+        assert editor.write_page.isHidden()
+        assert not editor.preview_page.isHidden()
+        assert editor.preview.text_shown() == WORDINGS[0]
+        # The right-hand card stays: the name, the times, Save.
+        assert not editor.save_button.isHidden()
+
+    def test_each_wording_can_be_picked(self, editing):
+        editor, _schedule = editing
+        editor.set_mode("preview")
+        assert self.picker(editor) == ["Wording 1", "Wording 2", "Wording 3"]
+        assert not editor.wording_picker.isHidden()
+
+        editor._picker_group.buttons()[2].click()
+        assert editor.preview.text_shown() == WORDINGS[2]
+        lit = [button.isChecked() for button in editor._picker_group.buttons()]
+        assert lit == [False, False, True]
+
+    def test_one_wording_needs_no_picker(self, qt_app, groups):
+        schedule = make_schedule(qt_app, [groups[0].id], bodies=["Only one"])
+        qt_app.views["repeating"].edit_schedule(schedule.id)
+        editor = qt_app.views["schedule_edit"]
+        editor.set_mode("preview")
+        assert editor.wording_picker.isHidden()
+        assert editor.preview.text_shown() == "Only one"
+
+    def test_it_shows_what_is_on_the_screen_not_what_is_saved(self, qt_app, editing):
+        editor, schedule = editing
+        editor._wordings[0].setPlainText("Typed, not saved")
+        editor.set_mode("preview")
+        assert editor.preview.text_shown() == "Typed, not saved"
+        assert stored(qt_app, schedule).bodies == WORDINGS
+
+    def test_it_is_headed_with_the_name_as_it_is_typed(self, editing):
+        editor, _schedule = editing
+        editor.set_mode("preview")
+        editor.name_entry.setText("Road bikes")
+        shown = [label.text() for label in editor.preview.findChildren(QLabel)]
+        assert "Road bikes" in shown
+        assert "Just now · 2 groups · wording 1 of 3" in shown
+
+    def test_write_brings_the_column_back(self, editing):
+        editor, _schedule = editing
+        editor.set_mode("preview")
+        editor.write_button.click()
+        assert not editor.write_page.isHidden()
+        assert editor.preview_page.isHidden()
+
+    def test_the_next_post_opens_on_write_at_its_first_wording(self, qt_app, editing, groups):
+        editor, _schedule = editing
+        editor.set_mode("preview")
+        editor.show_wording(2)
+        other = make_schedule(qt_app, [groups[2].id], name="Other", bodies=["A", "B"])
+        editor.leave()
+        qt_app.views["repeating"].edit_schedule(other.id)
+        assert editor.write_button.isChecked()
+        editor.set_mode("preview")
+        assert editor.preview.text_shown() == "A"

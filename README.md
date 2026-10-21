@@ -51,7 +51,7 @@ Requirements:
 *   **Sleep handling:** hold off system sleep while a batch is in flight (`SetThreadExecutionState` with `ES_CONTINUOUS | ES_SYSTEM_REQUIRED`; the display may still turn off). Schedules are stored as absolute timestamps and recomputed on wake, so suspend/resume never drifts. A slot missed while the machine was asleep is surfaced to the user, not fired late in a burst.
 
 ## 6. Core Features & UI Requirements
-A left sidebar opens on **Home**, a calm page with one button: **Create a post**. That item walks the work in order as three steps of one road, with a step bar on top: **Write the post (what) → Choose the groups (where) → Choose when (when)**. An earlier step can be clicked to go back; forward is only by each step's Next button. A post that goes out or is queued clears the draft and returns to Home. Below them sit the **Dashboard** (how it is going), Group sets, Posting tips and Settings; the logo at the top of the sidebar also leads Home. The look is light only. The UI stays uncluttered and readable, and never opens a modal dialog to tell the user something. Status goes to a passive in-window toast.
+A left sidebar opens on **Home**, a calm page with one button: **Create a post**. That item walks the work in order as three steps of one road, with a step bar on top: **Write the post (what) → Choose the groups (where) → Choose when (when)**. An earlier step can be clicked to go back; forward is only by each step's Next button. A post that goes out or is queued clears the draft and returns to Home. Below them, each section under a divider, sit what you keep (Group sets, Repeating posts), then what you look at (the **Dashboard**, how it is going, and Posting tips), with Settings at the foot; the logo at the top of the sidebar also leads Home. The look is light only. The UI stays uncluttered and readable, and never opens a modal dialog to tell the user something. Status goes to a passive in-window toast.
 
 The **connection indicator lives in the sidebar**, not in a screen of its own: it is the "Check connection" action from §4, and nothing else in the app works without it, so it is visible from everywhere.
 
@@ -70,7 +70,7 @@ The **connection indicator lives in the sidebar**, not in a screen of its own: i
     *   There is no box for adding a group by its link (removed 2026-10-14): every group comes off Facebook.
     *   A removed group can be brought back from "Show removed groups" under the list, with its posting history. It starts ticked.
     *   **Group sets** sit above the list, one box each. Picking a set adds its groups to the ticked ones; they show greyed with the set's name, and are unticked by unpicking the set, never one by one. "Clear" unpicks the sets too.
-*   **Group sets**: its own item in the sidebar, below the Dashboard. Make, edit and delete sets: a name and the groups in it.
+*   **Group sets**: its own item in the sidebar, below Create a post. Make, edit and delete sets: a name and the groups in it.
     *   A repeating post picked with a set follows it: a group added to the set later gets the next run. Now and Once take the set's groups as they are when the button is pressed.
     *   Saving a set never waits for confirmation, and judges nothing: there are no posting rules (§7).
     *   Deleting a set (with Undo) leaves its groups in the repeating posts that used it, as ordinary groups. Removing a group from the app takes it out of every set.
@@ -83,20 +83,21 @@ The **connection indicator lives in the sidebar**, not in a screen of its own: i
     *   **Repeat**: daily, or on chosen days of the week, at as many times of day as wanted (Israel local, DST-safe).
         *   Several **wordings** per schedule, shared out across the groups so one run does not send the same text to all of them, and shifted every run. Nothing refuses a repeat.
         *   Pictures or a video alone may repeat too.
-        *   **Editable after it is made** (name, wordings, groups, pictures, times and days) from an Edit button on its card. Changes apply from the next run; a batch already queued goes out as it was, and saving never pauses or resumes it.
+        *   **Editable after it is made** (name, wordings, groups, pictures, times and days) from an Edit button on its card on Repeating posts. Changes apply from the next run; a batch already queued goes out as it was, and saving never pauses or resumes it.
         *   The Compose text is the first wording; this screen collects alternates.
-        *   Pause, resume and delete; the next run is shown before and after creating one.
+        *   The next run is shown before creating one.
         *   An exact copy of an existing repeating post (same words, pictures, times, days and groups) is refused, because it would send every group the same post twice at every slot. Anything that differs goes through.
     *   Nothing warns about timing, frequency or wording: there are no posting rules (§7).
 *   **Dashboard** (replaced the Queue screen, 2026-10-14)
     *   **Numbers:** posted today, the last 7 days against the week before, the last 30 days, all time, the success rate, the next scheduled post, active repeating posts, and how many different wordings went out in the last 7 days. Days are Israel days.
     *   **Charts:** posts per day for the last 14 days, and how every post of the last 30 days ended.
     *   **By group:** today, 7 days and all time per group, and its last post.
-    *   **Going out:** every batch still to go out, with Cancel (and Undo). Batches from a repeating post are labelled with its name.
+    *   **Going out:** every batch still to go out, with Cancel (and Undo). Batches from a repeating post are labelled with its name. Under them, each active repeating post's next run, with no button.
+*   **Repeating posts** (its own item in the sidebar, beside Group sets, 2026-10-21): every repeating post, with Pause or Resume, Edit and Delete (with Undo). New ones are made in step 3.
     *   **Recent activity:** the last 15 groups the worker reached, with the result and the reason under any that did not go out.
     *   **All time never shrinks.** What the storage retention below deletes is counted first, so the totals stay.
     *   **Retention (storage).** Finished batches are deleted for good after `history_retention_days` (90 by default; 0 disables), once a day, so the database does not grow without bound. It never deletes anything unfinished, and never the newest 20 posted bodies per group. Those are what stop the same wording going to a group twice (§7), so they are kept for ever. `VACUUM` returns the freed space to disk.
-*   **Posting tips**: its own item in the sidebar, below Group sets. Ten recommendations for posting safely (wording, how much an account can post, pacing, hours, links, group rules, what to do after a block), in Hebrew, English and Russian, with a language switch. It opens in Hebrew, right to left. Read only: it changes nothing the app does.
+*   **Posting tips**: its own item in the sidebar, below the Dashboard. Ten recommendations for posting safely (wording, how much an account can post, pacing, hours, links, group rules, what to do after a block), in Hebrew, English and Russian, with a language switch. It opens in Hebrew, right to left. Read only: it changes nothing the app does.
 
 **Post-v1 (see §10):** skipping a single group mid-batch. It is listed here only so the shape of the finished app is clear. Recurring schedules, pausing, "Groups of Groups" (built as **group sets**) and video attachments were also cut from v1 and have since been built, at the user's request.
 

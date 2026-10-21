@@ -2,7 +2,10 @@
 
 It replaced the Queue screen (the user's choice, 2026-10-14). The numbers come
 from `fbposter.stats`, which is pure; this file only draws them. Of the
-Queue's tools, Cancel stays (under "Going out", with Undo). The "Went live" and
+Queue's tools, Cancel stays (under "Going out", with Undo). "Going out" also
+lists each active repeating post's next run, with no button (the user's
+choice, 2026-10-21): until its time comes a repeating post is not a batch, so
+it was nowhere on this screen but the "Next scheduled" tile. The "Went live" and
 "Declined" buttons for a post held by a group admin were dropped on purpose:
 the worker follows those up by itself (`worker._follow_up_pending`).
 
@@ -162,12 +165,25 @@ def target_label(target, task_state: str = TASK_PENDING) -> tuple[str, str]:
     return TARGET_LABELS.get(target.state, (target.state.title(), "TEXT_MUTED"))
 
 
-def snippet_of(task) -> str:
-    flat = " ".join(task.body.split())
+def snippet_of(body: str, media_paths) -> str:
+    """The post's opening words, or what it carries when it has none."""
+    flat = " ".join(body.split())
     text = flat[:SNIPPET_CHARS] + ("…" if len(flat) > SNIPPET_CHARS else "")
-    if not text and task.media_paths:
-        text = media_only(task.media_paths)
+    if not text and media_paths:
+        text = media_only(media_paths)
     return text
+
+
+def upcoming(schedules) -> list:
+    """The repeating posts still to come round, the soonest first.
+
+    The next run as stored, like the "Next scheduled" tile: a fact, not a
+    forecast. A paused post has none to show.
+    """
+    return sorted(
+        (s for s in schedules if s.active and s.next_run_at is not None),
+        key=lambda s: (s.next_run_at, s.id),
+    )
 
 
 class DayBars(QWidget):
@@ -636,24 +652,38 @@ class DashboardView(QWidget):
     def _show_going(self, tasks, schedules, now, force: bool) -> None:
         targets = self.app.task_repo.targets_for_tasks([t.id for t in tasks])
         names = {s.id: s.display_name for s in schedules}
-        drawn = tuple(
-            (
-                task.id, task.state, task.body, task.scheduled_for, task.resume_at,
-                task.error, names.get(task.schedule_id, ""),
-                tuple((t.id, t.state) for t in targets.get(task.id, ())),
-            )
-            for task in tasks
+        coming = upcoming(schedules)
+        drawn = (
+            tuple(
+                (
+                    task.id, task.state, task.body, task.scheduled_for, task.resume_at,
+                    task.error, names.get(task.schedule_id, ""),
+                    tuple((t.id, t.state) for t in targets.get(task.id, ())),
+                )
+                for task in tasks
+            ),
+            tuple(
+                (
+                    s.id, s.display_name, stats.when_text(s.next_run_at, now),
+                    s.bodies[0] if s.bodies else "", tuple(s.media_paths),
+                    len(s.recipient_ids),
+                )
+                for s in coming
+            ),
         )
         if not force and drawn == self._going_shown:
             return
         self._going_shown = drawn
         clear(self.going_box)
-        # Nothing to cancel, nothing to say: the section goes altogether.
-        self.going_heading.setVisible(bool(tasks))
+        # Nothing waiting and nothing repeating: the section goes altogether.
+        self.going_heading.setVisible(bool(tasks or coming))
+        # The batches first: they are queued now. Then what comes round later.
         for task in tasks:
             self.going_box.addWidget(
                 self._going_card(task, targets.get(task.id, ()), names, now)
             )
+        for schedule in coming:
+            self.going_box.addWidget(self._upcoming_card(schedule, now))
 
     def _going_card(self, task, targets, names, now) -> QWidget:
         box = card()
@@ -663,7 +693,7 @@ class DashboardView(QWidget):
 
         header = QHBoxLayout()
         header.setSpacing(theme.PAD_S)
-        title = QLabel(snippet_of(task))
+        title = QLabel(snippet_of(task.body, task.media_paths))
         title.setObjectName("Strong")
         title.setWordWrap(True)
         # At the card's start, above the line under it. Left to itself a
@@ -683,10 +713,13 @@ class DashboardView(QWidget):
             f"Set for {stats.when_text(task.scheduled_for, now)}"
             if task.scheduled_for else "Right away"
         )
-        if task.schedule_id is not None:
-            when += f" · {names.get(task.schedule_id) or 'repeating post'}"
         done = sum(1 for t in targets if t.state not in (TARGET_PENDING, TARGET_RUNNING))
         when += f" · {done} of {len(targets)} group{'s' if len(targets) != 1 else ''} done"
+        # The name last, as on a repeating post's line: a Hebrew name before
+        # "· 0 of 3" took the number into its own run, and the line read
+        # "· 0 · <name> of 3 groups done".
+        if task.schedule_id is not None:
+            when += f" · {names.get(task.schedule_id) or 'repeating post'}"
         layout.addWidget(self._muted(when))
 
         if task.error:
@@ -694,6 +727,41 @@ class DashboardView(QWidget):
             note = self._muted(task.error)
             note.setWordWrap(True)
             layout.addWidget(note)
+        return box
+
+    def _upcoming_card(self, schedule, now) -> QWidget:
+        """A repeating post before its time: what, when and how widely.
+
+        No button (the user's choice, 2026-10-21): it is paused, edited or
+        deleted on Repeating posts. It is not a batch yet, so there is nothing
+        here to cancel.
+        """
+        box = card()
+        layout = QVBoxLayout(box)
+        layout.setContentsMargins(theme.PAD_M, theme.PAD_S, theme.PAD_M, theme.PAD_S)
+        layout.setSpacing(theme.PAD_XS)
+
+        header = QHBoxLayout()
+        header.setSpacing(theme.PAD_S)
+        words = snippet_of(schedule.bodies[0] if schedule.bodies else "", schedule.media_paths)
+        title = QLabel(words or schedule.display_name)
+        title.setObjectName("Strong")
+        title.setWordWrap(True)
+        # At the card's start, as on a batch's card: a Hebrew post went to
+        # the far end otherwise.
+        title.setAlignment(Qt.AlignLeft | Qt.AlignAbsolute | Qt.AlignVCenter)
+        header.addWidget(title, 1)
+        header.addWidget(badge("Repeating", "TEXT_MUTED"))
+        layout.addLayout(header)
+
+        groups = len(schedule.recipient_ids)
+        # The name last: a Hebrew name before "· 2 groups" took the number
+        # into its own run, and the line read "· 2 · <name> groups".
+        layout.addWidget(self._muted(
+            f"Next run {stats.when_text(schedule.next_run_at, now)}"
+            f" · {groups} group{'s' if groups != 1 else ''}"
+            f" · {schedule.display_name}"
+        ))
         return box
 
     def cancel(self, task_id: int) -> None:

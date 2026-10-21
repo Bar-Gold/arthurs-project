@@ -363,10 +363,13 @@ class TestTheFlowBetweenScreens:
             "home",
             # The three steps, as one road (2026-10-19).
             "create",
-            "dashboard",
-            # Not a step: where sets are made (the user's choice, 2026-10-15).
+            # What you keep, under a divider (the user's choice, 2026-10-21).
+            # Where sets are made (2026-10-15), and the repeating posts.
             "group_sets",
-            # Not a step: advice to read (2026-10-18).
+            "repeating",
+            # What you look at, under another: the numbers, then advice to
+            # read (2026-10-18).
+            "dashboard",
             "tips",
             # Not a step: somewhere you go on purpose, at the foot.
             "settings",

@@ -56,10 +56,11 @@ class TestWhereAmI:
         qt_app.show_view("welcome")
         assert lit(qt_app) == []
 
-    def test_editing_a_repeating_post_lights_create_a_post(self, qt_app):
+    def test_editing_a_repeating_post_lights_repeating_posts(self, qt_app):
+        """It is opened from a card on Repeating posts (2026-10-21)."""
         qt_app.show_view("settings")
         qt_app.show_view("schedule_edit")
-        assert lit(qt_app) == ["create"]
+        assert lit(qt_app) == ["repeating"]
 
     def test_coming_back_lights_one_again(self, qt_app):
         qt_app.show_view("welcome")
@@ -261,7 +262,7 @@ class TestUndoingADelete:
     def test_it_comes_back_whole_under_its_own_id(self, qt_app, groups):
         before = self.make(qt_app, groups)
         fired = qt_app.task_repo.create(BODY, [(groups[0].id, BODY)], schedule_id=before.id)
-        qt_app.views["publish"].delete_schedule(before.id)
+        qt_app.views["repeating"].delete_schedule(before.id)
         assert qt_app.schedule_repo.get(before.id) is None
 
         qt_app.banner.undo_button.click()
@@ -271,7 +272,7 @@ class TestUndoingADelete:
 
     def test_a_group_removed_meanwhile_stays_out(self, qt_app, groups):
         before = self.make(qt_app, groups)
-        qt_app.views["publish"].delete_schedule(before.id)
+        qt_app.views["repeating"].delete_schedule(before.id)
         undo = qt_app.banner.undo_button
         qt_app.group_repo.remove(groups[1].id)
 
