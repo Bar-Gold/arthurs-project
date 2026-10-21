@@ -212,3 +212,19 @@ class TestChromeClosesWithTheApp:
 
         win = window()
         assert win.app._close_chrome() == tabs.GONE
+
+
+class TestPostsToLookAtAreWarnings:
+    """A post that might have gone out, and a post Facebook gave no id, are
+    each something to look at, so neither may read as "that went fine"."""
+
+    @pytest.mark.parametrize("kind", ["unconfirmed", "no_post_id"])
+    def test_they_show_as_warnings(self, qt_app, monkeypatch, kind):
+        from fbposter.worker import WorkerEvent
+
+        shown = []
+        monkeypatch.setattr(
+            qt_app, "toast", lambda message, level="info", undo=None: shown.append(level)
+        )
+        qt_app._handle_worker_event(WorkerEvent(kind, "Look at the group."))
+        assert shown == ["warning"]

@@ -7,9 +7,12 @@ next-morning deferrals -- is exercised instantly and deterministically.
 
 from __future__ import annotations
 
+import os
 import queue
 import random
+import time
 from datetime import timedelta
+from pathlib import Path
 
 import pytest
 
@@ -32,8 +35,24 @@ from fbposter.db.models import (
     TASK_RUNNING,
     from_iso,
 )
-from fbposter.db.repo import GROUP_REMOVED, GroupRepo, SettingsRepo, TaskRepo
-from fbposter.errors import AutomationHalted, ConnectionFailed, PostNotVerified
+from fbposter import attachments
+from fbposter.db.repo import (
+    GROUP_REMOVED,
+    AttachmentRepo,
+    GroupRepo,
+    GroupSetRepo,
+    ScheduleRepo,
+    SettingsRepo,
+    TaskRepo,
+    TemplateRepo,
+)
+from fbposter.errors import (
+    AutomationHalted,
+    ConnectionFailed,
+    GroupUnavailable,
+    PageLoadFailed,
+    PostNotVerified,
+)
 from fbposter.power import SleepBlocker
 from fbposter.worker import (
     CONNECTION_GIVE_UP,
@@ -42,6 +61,7 @@ from fbposter.worker import (
     FOLLOW_UP_PER_SWEEP,
     KEEP_AWAKE_HORIZON,
     MISSED_GRACE,
+    PAGE_LOAD_GIVE_UP,
     PAUSED_KEY,
     PostingWorker,
 )
@@ -64,13 +84,23 @@ class FakePoster:
         self.verify_calls: list[str] = []
         self.verdict = "unknown"
         self.verdict_calls: list[str] = []
+        # What a held post's own link shows: its live link, "" while held or
+        # declined, None when the page would not load. Scripted per test.
+        self.live: str | None = ""
+        self.live_calls: list[str] = []
 
     def post(self, request: PostRequest) -> PostOutcome:
         self.requests.append(request)
         problem = self.raises.get(request.group_url)
         if problem is not None:
             raise problem
-        return PostOutcome(posted=True, verified=True, detail="ok")
+        # Facebook's reply gives every post its own link, as it does live.
+        return PostOutcome(
+            posted=True,
+            verified=True,
+            detail="ok",
+            post_url=f"{request.group_url.rstrip('/')}/permalink/1/",
+        )
 
     def verify(self, group_url: str, body: str) -> bool:
         self.verify_calls.append(group_url)
@@ -80,6 +110,10 @@ class FakePoster:
         """What an admin did with a post awaiting approval. Scripted per test."""
         self.verdict_calls.append(group_url)
         return self.verdict
+
+    def live_link(self, held_url: str) -> str | None:
+        self.live_calls.append(held_url)
+        return self.live
 
     @property
     def group_urls(self) -> list[str]:
@@ -613,11 +647,23 @@ class TestCrashRecovery:
         worker = make_worker(db, poster)
         worker.recover()
 
-        assert tasks.targets_for(task.id)[0].state == TARGET_DONE
         assert poster.verify_calls == [group.url]
-
         drain(worker)
         assert poster.requests == [], "posted again after recovery"
+
+    def test_words_alone_say_it_might_have_posted(self, db, repos):
+        """Facebook's reply went with the crash, and the words may be someone
+        else's identical post: never called posted on that (2026-10-20)."""
+        _, tasks, _ = repos
+        task, _, _ = self._interrupted(db, repos)
+
+        worker = make_worker(db, FakePoster(verify_result=True))
+        worker.recover()
+
+        stored = tasks.targets_for(task.id)[0]
+        assert stored.state == TARGET_UNCONFIRMED
+        assert "cannot be sure" in stored.error
+        assert "unconfirmed" in kinds(worker)
 
     def test_a_post_that_did_not_go_out_is_requeued(self, db, repos):
         """Not in the feed *and* not in the group's own list of your posts.
@@ -954,7 +1000,8 @@ class TestRecoveryWaitsForChrome:
         ticker.advance(seconds=CONNECTION_RETRY.total_seconds() + 1)
         worker.run_once()
 
-        assert tasks.targets_for(task.id)[0].state == TARGET_DONE
+        # Found by its words, so not sent again, and not called posted either.
+        assert tasks.targets_for(task.id)[0].state == TARGET_UNCONFIRMED
 
     def test_it_is_announced_once(self, db, repos):
         self.interrupted(db, repos)
@@ -1968,7 +2015,8 @@ class TestRecoveryLooksTwiceBeforeSendingAgain:
         _, tasks, _ = repos
         task, _, poster, worker = self._recovered_with(db, repos, "approved")
 
-        assert tasks.targets_for(task.id)[0].state == TARGET_DONE
+        # Not sent again. Found by its words, so "might have posted".
+        assert tasks.targets_for(task.id)[0].state == TARGET_UNCONFIRMED
         drain(worker)
         assert poster.requests == []
 
@@ -2301,6 +2349,258 @@ class TestAMightHavePostedCountsAsSent:
         assert tasks.posted_count_since(clock.start_of_local_day(ticker.now)) == 1
 
 
+HELD_LINK = "https://www.facebook.com/groups/g0/pending_posts/980420387798121/"
+LIVE_LINK = "https://www.facebook.com/groups/g0/posts/980420387798121/"
+
+
+class TestFollowingUpAHeldPostByItsLink:
+    """Facebook's reply gives a held post its own link (read live 2026-10-21).
+    Once an admin approves, that link opens the live post, so "approved"
+    needs no words, and a post of pictures alone is followed up too."""
+
+    def waiting(self, groups, tasks, body=BODY, link=HELD_LINK):
+        from fbposter.db.models import to_iso
+
+        one, _ = add_groups(groups)
+        task = tasks.create(body, [(one.id, body)])
+        target = tasks.targets_for(task.id)[0]
+        tasks.mark_target(
+            target.id, TARGET_AWAITING_APPROVAL, posted=True, post_url=link
+        )
+        tasks.db.write(
+            "UPDATE task_targets SET posted_at = ? WHERE id = ?",
+            (to_iso(NOON - timedelta(hours=3)), target.id),
+        )
+        return task
+
+    def follow_up(self, db, live, verdict="unknown"):
+        poster = FakePoster()
+        poster.live = live
+        poster.verdict = verdict
+        make_worker(db, poster, Clock())._follow_up_pending(NOON)
+        return poster
+
+    def test_approved_by_its_link_is_posted(self, db, repos):
+        groups, tasks, _ = repos
+        task = self.waiting(groups, tasks)
+        poster = self.follow_up(db, LIVE_LINK)
+        stored = tasks.targets_for(task.id)[0]
+        assert stored.state == TARGET_DONE
+        assert stored.post_url == LIVE_LINK, "the link now opens the live post"
+        assert "link" in stored.error
+        assert poster.live_calls == [HELD_LINK]
+        assert poster.verdict_calls == [], "no words were needed"
+
+    def test_pictures_are_followed_up_by_their_link(self, db, repos):
+        groups, tasks, _ = repos
+        task = self.waiting(groups, tasks, body="")
+        self.follow_up(db, LIVE_LINK)
+        assert tasks.targets_for(task.id)[0].state == TARGET_DONE
+
+    def test_pictures_not_approved_stay_waiting(self, db, repos):
+        """Held or declined cannot be told apart without words: the safe side."""
+        groups, tasks, _ = repos
+        task = self.waiting(groups, tasks, body="")
+        poster = self.follow_up(db, "")
+        assert tasks.targets_for(task.id)[0].state == TARGET_AWAITING_APPROVAL
+        assert poster.verdict_calls == []
+
+    def test_words_cannot_call_it_live_when_its_link_says_not(self, db, repos):
+        groups, tasks, _ = repos
+        task = self.waiting(groups, tasks)
+        self.follow_up(db, "", verdict="approved")
+        assert tasks.targets_for(task.id)[0].state == TARGET_AWAITING_APPROVAL
+
+    def test_still_held_is_left_alone(self, db, repos):
+        groups, tasks, _ = repos
+        task = self.waiting(groups, tasks)
+        self.follow_up(db, "", verdict="pending")
+        stored = tasks.targets_for(task.id)[0]
+        assert stored.state == TARGET_AWAITING_APPROVAL
+        assert stored.resolve_misses == 0
+
+    def test_declined_still_takes_two_misses(self, db, repos):
+        groups, tasks, _ = repos
+        task = self.waiting(groups, tasks)
+        self.follow_up(db, "", verdict="declined")
+        stored = tasks.targets_for(task.id)[0]
+        assert stored.state == TARGET_AWAITING_APPROVAL
+        assert stored.resolve_misses == 1
+
+    def test_a_link_that_would_not_load_changes_nothing(self, db, repos):
+        groups, tasks, _ = repos
+        task = self.waiting(groups, tasks)
+        poster = self.follow_up(db, None, verdict="declined")
+        stored = tasks.targets_for(task.id)[0]
+        assert stored.state == TARGET_AWAITING_APPROVAL
+        assert stored.resolve_misses == 0
+        assert poster.verdict_calls == []
+
+    def test_a_live_link_is_not_followed(self, db, repos):
+        """Only a held post's link says anything about an admin."""
+        groups, tasks, _ = repos
+        self.waiting(groups, tasks, link=LIVE_LINK)
+        poster = self.follow_up(db, LIVE_LINK, verdict="pending")
+        assert poster.live_calls == []
+        assert poster.verdict_calls, "the words decide, as before"
+
+    def test_a_held_post_keeps_its_link(self, db, repos):
+        groups, tasks, _ = repos
+        one, _ = add_groups(groups)
+        task = tasks.create(BODY, [(one.id, BODY)])
+
+        class Held(FakePoster):
+            def post(self, request):
+                self.requests.append(request)
+                return PostOutcome(
+                    posted=True, verified=False, pending=True, detail="Held.",
+                    post_url=HELD_LINK,
+                )
+
+        make_worker(db, Held(), Clock()).run_once()
+        stored = tasks.targets_for(task.id)[0]
+        assert (stored.state, stored.post_url) == (TARGET_AWAITING_APPROVAL, HELD_LINK)
+
+
+class PostsFoundByWords(FakePoster):
+    """No id from Facebook: the first group's words were there before."""
+
+    def post(self, request):
+        self.requests.append(request)
+        if len(self.requests) == 1:
+            return PostOutcome(
+                posted=True,
+                verified=False,
+                unconfirmed=True,
+                detail="The same words were there before.",
+            )
+        return PostOutcome(posted=True, verified=True, detail="Found by its words.")
+
+
+class TestPostsFoundOnlyByTheirWords:
+    """Without Facebook's id, words already in the group cannot prove a post.
+    It might have posted, and the batch carries on (the user's choice,
+    2026-10-20)."""
+
+    def test_it_might_have_posted(self, db, repos):
+        groups, tasks, _ = repos
+        one, two = add_groups(groups)
+        task = tasks.create(BODY, [(one.id, BODY), (two.id, BODY)])
+
+        make_worker(db, PostsFoundByWords(), Clock()).run_once()
+
+        first = tasks.targets_for(task.id)[0]
+        assert (first.state, first.error) == (
+            TARGET_UNCONFIRMED, "The same words were there before."
+        )
+        assert groups.get(one.id).last_posted_at is not None, "counts as sent"
+
+    def test_the_batch_carries_on_after_the_gap(self, db, repos):
+        groups, tasks, _ = repos
+        one, two = add_groups(groups)
+        task = tasks.create(BODY, [(one.id, BODY), (two.id, BODY)])
+        poster = PostsFoundByWords()
+        ticker = Clock()
+        worker = make_worker(db, poster, ticker)
+
+        worker.run_once()
+        assert tasks.get(task.id).state == TASK_RUNNING
+        assert tasks.get(task.id).resume_at is not None, "the gap still applies"
+
+        ticker.advance(minutes=30)
+        drain(worker)
+        assert poster.group_urls == [one.url, two.url]
+        states = [t.state for t in tasks.targets_for(task.id)]
+        assert states == [TARGET_UNCONFIRMED, TARGET_DONE]
+        assert tasks.get(task.id).state == TASK_DONE
+
+    def test_the_user_is_told(self, db, repos):
+        groups, tasks, _ = repos
+        one, _ = add_groups(groups)
+        tasks.create(BODY, [(one.id, BODY)])
+        worker = make_worker(db, PostsFoundByWords(), Clock())
+        worker.run_once()
+        assert "unconfirmed" in kinds(worker)
+
+
+class TestAPostWithoutItsId:
+    """Facebook's reply gives every post an id; one without means the reply
+    changed, and the checks fell back to words. Said once per batch."""
+
+    def test_it_is_said_once_per_batch(self, db, repos):
+        groups, tasks, _ = repos
+        one, two = add_groups(groups)
+        tasks.create(BODY, [(one.id, BODY), (two.id, BODY)])
+
+        class NoId(FakePoster):
+            def post(self, request):
+                self.requests.append(request)
+                return PostOutcome(posted=True, verified=True, detail="By its words.")
+
+        ticker = Clock()
+        worker = make_worker(db, NoId(), ticker)
+        worker.run_once()
+        ticker.advance(minutes=30)
+        drain(worker)
+        assert kinds(worker).count("no_post_id") == 1
+
+    def test_a_post_with_its_id_says_nothing(self, db, repos):
+        groups, tasks, _ = repos
+        one, _ = add_groups(groups)
+        tasks.create(BODY, [(one.id, BODY)])
+        worker = make_worker(db, FakePoster(), Clock())
+        worker.run_once()
+        assert "no_post_id" not in kinds(worker)
+
+    def test_a_held_post_with_its_id_says_nothing(self, db, repos):
+        """A held post's reply carries an id too (read live 2026-10-21)."""
+        groups, tasks, _ = repos
+        one, _ = add_groups(groups)
+        tasks.create(BODY, [(one.id, BODY)])
+
+        class Held(FakePoster):
+            def post(self, request):
+                self.requests.append(request)
+                return PostOutcome(
+                    posted=True, verified=False, pending=True, detail="Held.",
+                    post_url=HELD_LINK,
+                )
+
+        worker = make_worker(db, Held(), Clock())
+        worker.run_once()
+        assert "no_post_id" not in kinds(worker)
+
+    def test_a_held_post_without_its_id_is_said(self, db, repos):
+        groups, tasks, _ = repos
+        one, _ = add_groups(groups)
+        tasks.create(BODY, [(one.id, BODY)])
+
+        class Held(FakePoster):
+            def post(self, request):
+                self.requests.append(request)
+                return PostOutcome(
+                    posted=True, verified=False, pending=True, detail="Held."
+                )
+
+        worker = make_worker(db, Held(), Clock())
+        worker.run_once()
+        assert "no_post_id" in kinds(worker)
+
+    def test_a_dry_run_says_nothing(self, db, repos):
+        groups, tasks, _ = repos
+        one, _ = add_groups(groups)
+        tasks.create(BODY, [(one.id, BODY)])
+
+        class Rehearsal(FakePoster):
+            def post(self, request):
+                self.requests.append(request)
+                return PostOutcome(posted=False, dry_run=True, detail="Dry run.")
+
+        worker = make_worker(db, Rehearsal(), Clock())
+        worker.run_once()
+        assert "no_post_id" not in kinds(worker)
+
+
 class TestPicturesNobodyConfirmed:
     def test_the_queue_is_told_it_was_not_checked(self, db, repos, tmp_path):
         groups, tasks, _ = repos
@@ -2352,3 +2652,332 @@ class TestTheDayIsAnIsraeliDay:
         )
         assert groups.sent_on_day(one.id, clock.parse_local("2026-08-10 08:00")) == [BODY]
         assert groups.sent_on_day(one.id, clock.parse_local("2026-08-11 00:30")) == []
+
+
+def a_repeating_post(db, group_ids=(), set_ids=(), media_paths=()):
+    return ScheduleRepo(db).create(
+        name="Flats",
+        bodies=[BODY],
+        group_ids=list(group_ids),
+        set_ids=list(set_ids),
+        times=["12:00"],
+        media_paths=list(media_paths),
+        next_run_at=NOON + timedelta(days=1),
+    )
+
+
+class TestAGroupThatIsGoneIsSkipped:
+    """A group Facebook says is no longer available (the account left it, was
+    removed, or it was deleted) used to halt the whole batch. The user's
+    choice, 2026-10-20: it leaves this post's groups, the rest carry on, and a
+    repeating post it came from stops trying it."""
+
+    def gone(self, group):
+        return FakePoster(raises={group.url: GroupUnavailable("This group isn't available.")})
+
+    def test_the_rest_of_the_batch_carries_on(self, db, repos):
+        groups, tasks, _ = repos
+        one, two = add_groups(groups)
+        task = tasks.create(BODY, [(one.id, BODY), (two.id, BODY)])
+
+        poster = self.gone(one)
+        drain(make_worker(db, poster, Clock()))
+
+        first, second = tasks.targets_for(task.id)
+        assert first.state == TARGET_FAILED
+        assert "isn't available" in first.error
+        assert second.state == TARGET_DONE
+        assert tasks.get(task.id).state == TASK_DONE
+        assert poster.group_urls == [one.url, two.url]
+
+    def test_no_gap_follows_it_because_nothing_was_posted(self, db, repos):
+        groups, tasks, settings = repos
+        one, two = add_groups(groups)
+        tasks.create(BODY, [(one.id, BODY), (two.id, BODY)])
+
+        poster = self.gone(one)
+        worker = make_worker(db, poster, Clock())
+        worker.run_once()
+        assert settings.get("next_post_after", "") == ""
+        worker.run_once()
+        assert poster.group_urls == [one.url, two.url], "waited a gap after a skip"
+
+    def test_it_is_said_as_a_warning(self, db, repos):
+        groups, tasks, _ = repos
+        one, _ = add_groups(groups)
+        tasks.create(BODY, [(one.id, BODY)])
+        worker = make_worker(db, self.gone(one), Clock())
+        worker.run_once()
+        assert "unavailable" in kinds(worker)
+
+    def test_the_only_group_finishes_the_batch(self, db, repos):
+        groups, tasks, _ = repos
+        one, _ = add_groups(groups)
+        task = tasks.create(BODY, [(one.id, BODY)])
+        drain(make_worker(db, self.gone(one), Clock()))
+        assert tasks.get(task.id).state == TASK_DONE
+
+    def test_it_leaves_the_repeating_post_it_came_from(self, db, repos):
+        groups, tasks, _ = repos
+        one, two = add_groups(groups)
+        schedule = a_repeating_post(db, [one.id, two.id])
+        task = tasks.create(
+            BODY, [(one.id, BODY), (two.id, BODY)], schedule_id=schedule.id
+        )
+
+        drain(make_worker(db, self.gone(one), Clock()))
+
+        assert ScheduleRepo(db).get(schedule.id).group_ids == [two.id]
+        assert "taken out of the repeating post Flats" in tasks.targets_for(task.id)[0].error
+
+    def test_a_group_a_set_brings_stays_in_the_set(self, db, repos):
+        """The set is other posts' too, so the note says what to do instead."""
+        groups, tasks, _ = repos
+        one, two = add_groups(groups)
+        made = GroupSetRepo(db).create("Tel Aviv", [one.id])
+        schedule = a_repeating_post(db, [two.id], set_ids=[made.id])
+        task = tasks.create(
+            BODY, [(one.id, BODY), (two.id, BODY)], schedule_id=schedule.id
+        )
+
+        drain(make_worker(db, self.gone(one), Clock()))
+
+        assert GroupSetRepo(db).get(made.id).group_ids == [one.id]
+        assert ScheduleRepo(db).get(schedule.id).group_ids == [two.id]
+        assert "Tel Aviv" in tasks.targets_for(task.id)[0].error
+
+
+class TestAPageThatWouldNotLoadIsTriedAgain:
+    """A client's laptop woke from sleep mid-batch and the group page came
+    back net::ERR_NETWORK_IO_SUSPENDED, which halted the batch. Nothing had
+    been typed: the page never loaded. So it waits five minutes and tries
+    again, for an hour (the user's choice, 2026-10-20), then stops."""
+
+    def broken(self, db, group, ticker):
+        poster = FakePoster(raises={group.url: PageLoadFailed("The group page would not open.")})
+        return poster, make_worker(db, poster, ticker)
+
+    def test_the_group_goes_back_in_the_queue(self, db, repos):
+        groups, tasks, _ = repos
+        one, _ = add_groups(groups)
+        task = tasks.create(BODY, [(one.id, BODY)])
+
+        ticker = Clock()
+        _, worker = self.broken(db, one, ticker)
+        worker.run_once()
+
+        target = tasks.targets_for(task.id)[0]
+        assert target.state == TARGET_PENDING
+        assert target.attempted_at is None
+        assert tasks.get(task.id).state != TASK_HALTED
+        assert tasks.get(task.id).resume_at == ticker.now + CONNECTION_RETRY
+
+    def test_it_posts_once_the_page_loads(self, db, repos):
+        groups, tasks, _ = repos
+        one, _ = add_groups(groups)
+        task = tasks.create(BODY, [(one.id, BODY)])
+
+        ticker = Clock()
+        poster, worker = self.broken(db, one, ticker)
+        worker.run_once()
+        poster.raises = {}
+        ticker.advance(seconds=CONNECTION_RETRY.total_seconds() + 1)
+        drain(worker)
+
+        assert tasks.targets_for(task.id)[0].state == TARGET_DONE
+        assert tasks.get(task.id).state == TASK_DONE
+
+    def test_it_says_why_once(self, db, repos):
+        groups, tasks, _ = repos
+        one, _ = add_groups(groups)
+        task = tasks.create(BODY, [(one.id, BODY)])
+
+        ticker = Clock()
+        _, worker = self.broken(db, one, ticker)
+        for _ in range(6):
+            worker.run_once()
+            ticker.advance(seconds=CONNECTION_RETRY.total_seconds() + 1)
+
+        assert kinds(worker).count("deferred") == 1
+        assert "would not open" in tasks.get(task.id).error
+
+    def test_it_stops_trying_after_an_hour(self, db, repos):
+        groups, tasks, _ = repos
+        one, _ = add_groups(groups)
+        task = tasks.create(BODY, [(one.id, BODY)])
+
+        ticker = Clock()
+        _, worker = self.broken(db, one, ticker)
+        worker.run_once()
+        ticker.advance(seconds=PAGE_LOAD_GIVE_UP.total_seconds() + 60)
+        worker.run_once()
+
+        target = tasks.targets_for(task.id)[0]
+        assert tasks.get(task.id).state == TASK_HALTED
+        assert target.state == TARGET_FAILED, "nothing was posted, so not 'might have'"
+        assert "internet" in target.error and "an hour" in target.error
+
+    def test_chrome_being_away_keeps_its_two_hours(self, db, repos):
+        assert PAGE_LOAD_GIVE_UP == timedelta(hours=1)
+        assert CONNECTION_GIVE_UP == timedelta(hours=2)
+        groups, tasks, _ = repos
+        one, _ = add_groups(groups)
+        task = tasks.create(BODY, [(one.id, BODY)])
+
+        ticker = Clock()
+        poster = FakePoster(raises={one.url: ConnectionFailed("port 9222 shut")})
+        worker = make_worker(db, poster, ticker)
+        worker.run_once()
+        ticker.advance(minutes=90)
+        worker.run_once()
+        assert tasks.get(task.id).state != TASK_HALTED
+
+
+class TestAttachmentsAreKeptInTheAppsFolder:
+    """A client attached pictures from Downloads and the Desktop. A repeating
+    post keeps its paths for weeks, and tidying either folder would stop every
+    later run. The worker keeps each in the app's own folder (2026-10-20)."""
+
+    def picture(self, tmp_path, name="flat.png"):
+        folder = tmp_path / "Downloads"
+        folder.mkdir(exist_ok=True)
+        path = folder / name
+        path.write_bytes(b"picture bytes")
+        return path
+
+    def test_a_queued_post_is_pointed_at_a_stored_file(self, db, repos, tmp_path):
+        groups, tasks, _ = repos
+        one, _ = add_groups(groups)
+        original = self.picture(tmp_path)
+        task = tasks.create(BODY, [(one.id, BODY)], media_paths=[str(original)])
+
+        worker = make_worker(db)
+        worker._store_attachments()
+
+        stored = tasks.get(task.id).media_paths[0]
+        assert attachments.is_stored(stored, worker.media_root)
+        assert Path(stored).name == "flat.png", "the name on screen must not change"
+        assert Path(stored).read_bytes() == b"picture bytes"
+
+    def test_the_folder_is_beside_the_database(self, db):
+        assert make_worker(db).media_root == db.path.parent / attachments.MEDIA_DIRNAME
+
+    def test_deleting_the_original_no_longer_stops_the_post(self, db, repos, tmp_path):
+        groups, tasks, _ = repos
+        one, _ = add_groups(groups)
+        original = self.picture(tmp_path)
+        task = tasks.create(BODY, [(one.id, BODY)], media_paths=[str(original)])
+
+        poster = FakePoster()
+        worker = make_worker(db, poster)
+        worker._store_attachments()
+        original.unlink()
+        worker.run_once()
+
+        assert tasks.targets_for(task.id)[0].state == TARGET_DONE
+        assert attachments.is_stored(poster.requests[0].media_paths[0], worker.media_root)
+
+    def test_repeating_posts_and_templates_are_kept_too(self, db, repos, tmp_path):
+        groups, _, _ = repos
+        one, _ = add_groups(groups)
+        original = self.picture(tmp_path)
+        schedule = a_repeating_post(db, [one.id], media_paths=[str(original)])
+        TemplateRepo(db).save("Flat", BODY, [str(original)])
+
+        worker = make_worker(db)
+        worker._store_attachments()
+
+        assert attachments.is_stored(
+            ScheduleRepo(db).get(schedule.id).media_paths[0], worker.media_root
+        )
+        assert attachments.is_stored(
+            TemplateRepo(db).get_by_name("Flat").media_paths[0], worker.media_root
+        )
+
+    def test_a_stored_file_is_not_stored_again(self, db, repos, tmp_path):
+        groups, tasks, _ = repos
+        one, _ = add_groups(groups)
+        task = tasks.create(BODY, [(one.id, BODY)], media_paths=[str(self.picture(tmp_path))])
+        worker = make_worker(db)
+        worker._store_attachments()
+        first = tasks.get(task.id).media_paths
+        worker._store_attachments()
+        assert tasks.get(task.id).media_paths == first
+        assert len(list(worker.media_root.iterdir())) == 1
+
+    def test_a_finished_batch_is_left_as_it_was(self, db, repos, tmp_path):
+        groups, tasks, _ = repos
+        one, _ = add_groups(groups)
+        original = str(self.picture(tmp_path))
+        task = tasks.create(BODY, [(one.id, BODY)], media_paths=[original])
+        tasks.mark_task(task.id, TASK_DONE, finished=True)
+
+        make_worker(db)._store_attachments()
+        assert tasks.get(task.id).media_paths == [original]
+
+    def test_it_happens_while_posting_is_paused(self, db):
+        """Storing a file is not Facebook, so a pause does not hold it."""
+        worker = make_worker(db)
+        worker.pause()
+        calls = []
+
+        def store():
+            calls.append("stored")
+            worker._stop.set()
+
+        worker._store_attachments = store
+        worker._loop()
+        assert calls == ["stored"]
+
+    def test_a_row_saved_meanwhile_is_left_to_the_window(self, db, repos, tmp_path):
+        TemplateRepo(db).save("Flat", BODY, [str(self.picture(tmp_path))])
+        rows = AttachmentRepo(db)
+        holder = rows.holders()[0]
+        TemplateRepo(db).save("Flat", BODY, ["C:/somewhere/else.png"])
+        assert rows.repoint(holder, ["C:/stored.png"]) is False
+        assert TemplateRepo(db).get_by_name("Flat").media_paths == ["C:/somewhere/else.png"]
+
+    def test_a_file_that_cannot_be_kept_is_said_once_and_posted_as_it_is(
+        self, db, repos, tmp_path, monkeypatch
+    ):
+        groups, tasks, _ = repos
+        one, _ = add_groups(groups)
+        original = str(self.picture(tmp_path))
+        task = tasks.create(BODY, [(one.id, BODY)], media_paths=[original])
+
+        def full(*_args):
+            raise OSError("the disk is full")
+
+        monkeypatch.setattr(attachments, "store_one", full)
+        worker = make_worker(db)
+        worker._store_attachments()
+        worker._store_attachments()
+
+        assert kinds(worker).count("error") == 1
+        assert tasks.get(task.id).media_paths == [original]
+
+    def test_unused_stored_files_are_cleared_once_a_day(self, db, repos, tmp_path):
+        groups, tasks, _ = repos
+        one, _ = add_groups(groups)
+        task = tasks.create(BODY, [(one.id, BODY)], media_paths=[str(self.picture(tmp_path))])
+        worker = make_worker(db)
+        worker._store_attachments()
+        kept = Path(tasks.get(task.id).media_paths[0]).parent
+
+        orphan = worker.media_root / "deadbeef"
+        orphan.mkdir()
+        (orphan / "old.png").write_bytes(b"x")
+        two_days_ago = time.time() - 2 * 86400
+        for folder in (orphan, kept):
+            os.utime(folder, (two_days_ago, two_days_ago))
+
+        now = clock.utcnow()
+        worker._maybe_prune_media(now)
+        assert not orphan.exists()
+        assert kept.exists(), "a batch still to go out lost its picture"
+
+        # Once a day: a new orphan straight after is left for tomorrow.
+        orphan.mkdir()
+        os.utime(orphan, (two_days_ago, two_days_ago))
+        worker._maybe_prune_media(now + timedelta(hours=1))
+        assert orphan.exists()

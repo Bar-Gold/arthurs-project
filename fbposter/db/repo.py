@@ -628,6 +628,75 @@ class TemplateRepo:
         self.db.write("DELETE FROM templates WHERE id = ?", (template_id,))
 
 
+class AttachmentHolder(NamedTuple):
+    """One row that keeps attachment paths: a batch, a repeating post or a
+    template. `raw` is the column as read, so a rewrite can check nobody
+    saved the row since."""
+
+    table: str
+    row_id: int
+    paths: list[str]
+    raw: str
+
+
+class AttachmentRepo:
+    """Every row whose pictures and videos are still to be posted.
+
+    The worker uses it to keep those files in the app's own folder
+    (`fbposter/attachments.py`): batches still to go out, every repeating post
+    and every template. A finished batch has posted its files and is left as
+    it was.
+    """
+
+    def __init__(self, db: Database) -> None:
+        self.db = db
+
+    def holders(self) -> list[AttachmentHolder]:
+        found: list[AttachmentHolder] = []
+        for table, where, params in (
+            ("tasks", "state IN (?, ?)", (TASK_PENDING, TASK_RUNNING)),
+            ("schedules", "1", ()),
+            ("templates", "1", ()),
+        ):
+            for row in self.db.query(
+                f"SELECT id, media_paths FROM {table} "
+                f"WHERE {where} AND media_paths != '[]'",
+                params,
+            ):
+                raw = row["media_paths"] or "[]"
+                found.append(
+                    AttachmentHolder(table, row["id"], [str(p) for p in json.loads(raw)], raw)
+                )
+        return found
+
+    def repoint(self, holder: AttachmentHolder, paths: Sequence[str]) -> bool:
+        """Point a row at its stored files. False if it changed meanwhile.
+
+        Conditional on the column still reading what `holders` read: the
+        window may have saved the repeating post or template since, with
+        paths of its own, and those win. The worker comes round again.
+        """
+        with self.db.transaction() as connection:
+            cursor = connection.execute(
+                f"UPDATE {holder.table} SET media_paths = ? "
+                "WHERE id = ? AND media_paths = ?",
+                (json.dumps([str(p) for p in paths]), holder.row_id, holder.raw),
+            )
+            return cursor.rowcount == 1
+
+    def in_use(self, finished_since: datetime) -> set[str]:
+        """Every attachment path still referred to: everything `holders`
+        finds, and batches finished since `finished_since`, whose cancel can
+        still be undone."""
+        paths = {path for holder in self.holders() for path in holder.paths}
+        for row in self.db.query(
+            "SELECT media_paths FROM tasks WHERE finished_at >= ? AND media_paths != '[]'",
+            (to_iso(finished_since),),
+        ):
+            paths.update(str(p) for p in json.loads(row["media_paths"] or "[]"))
+        return paths
+
+
 class TaskRepo:
     def __init__(self, db: Database) -> None:
         self.db = db
@@ -932,7 +1001,7 @@ class TaskRepo:
         )
 
     def resolve_pending(
-        self, target_id: int, approved: bool, note: str = ""
+        self, target_id: int, approved: bool, note: str = "", post_url: str = ""
     ) -> bool:
         """Record what an admin did with a post that was awaiting approval.
 
@@ -943,6 +1012,7 @@ class TaskRepo:
         `note` says how it was found out -- the worker resolves these on its
         own, and a row saying the user confirmed it when they did nothing of
         the sort is a small lie the queue screen would go on repeating.
+        `post_url`, when given, replaces the held post's link with its live one.
 
         Conditional on the target still being `awaiting_approval`, so this can
         only ever resolve a genuinely pending post -- it cannot resurrect a
@@ -956,9 +1026,10 @@ class TaskRepo:
         )
         with self.db.transaction() as connection:
             cursor = connection.execute(
-                "UPDATE task_targets SET state = ?, error = ? "
+                "UPDATE task_targets SET state = ?, error = ?, "
+                "post_url = CASE WHEN ? != '' THEN ? ELSE post_url END "
                 "WHERE id = ? AND state = ?",
-                (state, note, target_id, TARGET_AWAITING_APPROVAL),
+                (state, note, post_url, post_url, target_id, TARGET_AWAITING_APPROVAL),
             )
             return cursor.rowcount == 1
 
@@ -1411,6 +1482,18 @@ class ScheduleRepo:
     def set_state(self, schedule_id: int, state: str) -> None:
         self.db.write(
             "UPDATE schedules SET state = ? WHERE id = ?", (state, schedule_id)
+        )
+
+    def drop_group(self, schedule_id: int, group_id: int) -> None:
+        """Take one of its own groups out of a repeating post.
+
+        The worker's, for a group Facebook says is no longer available. Like
+        removing a group, a post left with no groups is paused when it next
+        comes due (`worker._fire_schedule`).
+        """
+        self.db.write(
+            "DELETE FROM schedule_targets WHERE schedule_id = ? AND group_id = ?",
+            (schedule_id, group_id),
         )
 
     def set_bodies(self, schedule_id: int, bodies: Sequence[str]) -> None:

@@ -34,7 +34,7 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
-from . import clock, media, recurrence, session, tabs
+from . import attachments, clock, media, recurrence, session, strings, tabs
 from .automation import GroupPoster
 from .automation.humanize import Humanizer
 from .automation.poster import PostOutcome, PostRequest
@@ -60,8 +60,24 @@ from .db.models import (
     from_iso,
     to_iso,
 )
-from .db.repo import GROUP_REMOVED, GroupRepo, ScheduleRepo, SettingsRepo, TaskRepo
-from .errors import AutomationHalted, ConnectionFailed, FBPosterError, PostNotVerified
+from .db.repo import (
+    GROUP_REMOVED,
+    AttachmentRepo,
+    GroupRepo,
+    GroupSetRepo,
+    ScheduleRepo,
+    SettingsRepo,
+    TaskRepo,
+    TemplateRepo,
+)
+from .errors import (
+    AutomationHalted,
+    ConnectionFailed,
+    FBPosterError,
+    GroupUnavailable,
+    PageLoadFailed,
+    PostNotVerified,
+)
 from .power import SleepBlocker
 from .text import normalise
 
@@ -86,6 +102,11 @@ KEEP_AWAKE_HORIZON = timedelta(minutes=30)
 # the queue looking alive.
 CONNECTION_RETRY = timedelta(minutes=5)
 CONNECTION_GIVE_UP = timedelta(hours=2)
+# The group page itself would not load (PageLoadFailed): the internet dropped,
+# or the machine had just woken up. Also before any post box exists, so it is
+# retried on the same five minutes, but given up on sooner (the user's choice,
+# 2026-10-20): an hour without internet is not a blip.
+PAGE_LOAD_GIVE_UP = timedelta(hours=1)
 
 # Facebook publishes a video post only once it has processed the video, a
 # minute or two after Post (seen live, 2026-10-15). Until then the post is in
@@ -95,6 +116,9 @@ VIDEO_SETTLE = timedelta(minutes=10)
 
 # How often the finished-batch history is pruned. Housekeeping, not a deadline.
 PRUNE_EVERY = timedelta(days=1)
+# Stored attachments a batch finished this recently still refers to are kept,
+# so the batch's Cancel can still be undone with its files in place.
+MEDIA_KEEP_AFTER_FINISH = timedelta(days=7)
 
 # How often posts awaiting an admin are followed up, and how long to leave one
 # alone first -- an admin who has just been sent something needs a moment.
@@ -167,6 +191,8 @@ class Poster(Protocol):
 
     def pending_verdict(self, group_url: str, body: str) -> str: ...
 
+    def live_link(self, held_url: str) -> str | None: ...
+
 
 class LivePoster:
     """Drives real Chrome. One page per group, opened and closed each time.
@@ -202,6 +228,10 @@ class LivePoster:
         with self._page() as page:
             return GroupPoster(page).pending_verdict(group_url, body)
 
+    def live_link(self, held_url: str) -> str | None:
+        with self._page() as page:
+            return GroupPoster(page).live_link(held_url)
+
     @contextmanager
     def _page(self):
         """A page of the worker's own, marked so nothing closes it mid-post.
@@ -236,12 +266,21 @@ class PostingWorker:
         blocker: SleepBlocker | None = None,
         on_battery: Callable[[], bool | None] = lambda: None,
         tick_seconds: float = TICK_SECONDS,
+        media_root: Path | None = None,
     ) -> None:
         self.db = db
+        # Beside the database by default, so a test's temporary database keeps
+        # its attachments in its own temporary folder.
+        self.media_root = media_root or attachments.media_dir(db.path)
+        self.attachment_rows = AttachmentRepo(db)
+        # Files that could not be stored, said once each rather than every tick.
+        self._store_failed: set[str] = set()
         self.tasks = TaskRepo(db)
         self.groups = GroupRepo(db)
         self.settings = SettingsRepo(db)
         self.schedules = ScheduleRepo(db)
+        self.group_sets = GroupSetRepo(db)
+        self.templates = TemplateRepo(db)
         self.poster = poster if poster is not None else LivePoster()
         self.events: "queue.Queue[WorkerEvent]" = events or queue.Queue()
         self._now = now
@@ -261,6 +300,8 @@ class PostingWorker:
             self._paused.set()
         self._busy = False
         self._battery_warned = False
+        # Batches already told that Facebook sent a post no id.
+        self._no_post_id_warned: set[int] = set()
         # When Chrome first went missing, per batch. In memory rather than in
         # the database on purpose: a restart is itself a fresh chance for the
         # browser to be there, so the patience starting over is the right
@@ -330,6 +371,9 @@ class PostingWorker:
     def _loop(self) -> None:
         recovered = False
         while not self._stop.is_set():
+            # Before the pause: storing a file is not Facebook, and a post
+            # queued while paused needs its files kept just the same.
+            self._store_attachments()
             if self._paused.is_set():
                 self.blocker.release()
                 self._stop.wait(self.tick_seconds)
@@ -391,12 +435,35 @@ class PostingWorker:
             "the batch short. Plug in to be sure it finishes.",
         )
 
+    def _warn_if_no_post_id(self, task: Task, outcome: PostOutcome) -> None:
+        """Say so once per batch when Facebook's reply gave a post no id.
+
+        The id is what proves a post: it came back for every post, text and
+        pictures alike, live and held for an admin, when read live (2026-10-07,
+        confirmed 2026-10-10; held, 2026-10-21). Without it the app falls back
+        to the post's words, which is weaker, and the likeliest cause is
+        Facebook changing its reply, which needs the app updated.
+        """
+        if not outcome.posted or outcome.post_url:
+            return
+        if task.id in self._no_post_id_warned:
+            return
+        self._no_post_id_warned.add(task.id)
+        self.emit(
+            "no_post_id",
+            "Facebook did not send the post's id, so the app checked it by its "
+            "words, which is less certain. Tell the developer: the app may need "
+            "an update.",
+            task.id,
+        )
+
     # -- one iteration -----------------------------------------------------
     def run_once(self) -> bool:
         """Advance the queue by at most one step. Returns True if it did."""
         now = self._now()
         self._retry_recovery(now)
         self._maybe_prune(now)
+        self._maybe_prune_media(now)
         self._follow_up_pending(now)
         self._note_due(now)
         if self._materialise_schedules(now):
@@ -525,6 +592,64 @@ class PostingWorker:
             return False
         return bool(removed)
 
+    def _store_attachments(self) -> None:
+        """Keep every attachment still to be posted in the app's own folder.
+
+        Batches still to go out, every repeating post and every template: a
+        path outside `media_root` is stored there (`attachments.store`) and
+        the row pointed at the stored file, so the user tidying Downloads or
+        the Desktop can no longer break a post. It runs here, on the worker's
+        thread, so a big copy never freezes the window, and the window's
+        screens simply save the paths the user picked. Old rows from before
+        this existed are taken in the same way, on the first turn.
+
+        A failure is reported once per file and swallowed: housekeeping must
+        never stop the posting. The post then goes out from the original.
+        """
+        try:
+            holders = self.attachment_rows.holders()
+        except Exception as exc:
+            self.emit("error", f"Could not check the attachments: {exc}")
+            return
+        for holder in holders:
+            if all(attachments.is_stored(p, self.media_root) for p in holder.paths):
+                continue
+            stored = []
+            for path in holder.paths:
+                try:
+                    stored.append(attachments.store_one(path, self.media_root))
+                except Exception as exc:
+                    stored.append(path)
+                    if path not in self._store_failed:
+                        self._store_failed.add(path)
+                        self.emit(
+                            "error",
+                            f"Could not keep a copy of {Path(path).name} in the app's "
+                            f"folder ({exc}). The post still uses the original, so "
+                            "do not move or delete it until it has gone out.",
+                        )
+            if stored != holder.paths:
+                try:
+                    self.attachment_rows.repoint(holder, stored)
+                except Exception as exc:
+                    self.emit("error", f"Could not update an attachment: {exc}")
+
+    def _maybe_prune_media(self, now) -> None:
+        """Once a day, delete stored attachments nothing refers to any more.
+
+        Files only, never a row. Tracked in the database like `_maybe_prune`,
+        and like it, a failure is reported and swallowed.
+        """
+        last = from_iso(self.settings.get("last_media_prune_at", ""))
+        if last is not None and now - last < PRUNE_EVERY:
+            return
+        try:
+            in_use = self.attachment_rows.in_use(now - MEDIA_KEEP_AFTER_FINISH)
+            attachments.prune(self.media_root, in_use, now)
+            self.settings.set("last_media_prune_at", to_iso(now) or "")
+        except Exception as exc:  # tidying up is never worth a stalled queue
+            self.emit("error", f"Attachment cleanup skipped: {exc}")
+
     def _follow_up_pending(self, now) -> bool:
         """Find out what admins did with posts awaiting approval.
 
@@ -569,10 +694,11 @@ class PostingWorker:
             if age is not None and (age < FOLLOW_UP_AFTER or age > FOLLOW_UP_GIVE_UP):
                 continue
 
-            if not target.body.strip():
-                # Pictures only: the pending list is searched by the post's
-                # words, so it can only ever answer "unknown". It stays awaiting
-                # for the user to settle from the Queue, and costs no browser.
+            if not target.body.strip() and not _held_link(target):
+                # Pictures only, and no link of Facebook's to follow: the
+                # pending list is searched by the post's words, so it can only
+                # ever answer "unknown". It stays awaiting, which counts as
+                # sent, and costs no browser.
                 continue
 
             group = self.groups.active(target.group_id)
@@ -594,7 +720,7 @@ class PostingWorker:
             self.settings.set("follow_up_cursor", target.id)
 
             try:
-                verdict = self.poster.pending_verdict(group.url, target.body)
+                verdict, live = self._held_verdict(target, group)
             except AutomationHalted as exc:
                 # A checkpoint, a login screen or a rate-limit warning. Opening
                 # more group pages into that is precisely the wrong move, so the
@@ -614,19 +740,17 @@ class PostingWorker:
 
             if verdict == "pending":
                 self.tasks.clear_resolve_misses(target.id)
-            elif verdict == "approved" and self._sent_before(
-                group.id, target.body, besides=1
-            ):
-                # "Approved" means the words were found in the feed, and the
-                # same words went to this group before: what was found may be
-                # the older post. Left waiting, for another look or for the
-                # Queue's two buttons, rather than called live on that.
-                pass
             elif verdict == "approved":
                 self.tasks.resolve_pending(
                     target.id,
                     approved=True,
-                    note="An admin approved it; confirmed visible in the group.",
+                    note=(
+                        "An admin approved it. Facebook's link for the post now "
+                        "opens it in the group."
+                        if live
+                        else "An admin approved it; confirmed visible in the group."
+                    ),
+                    post_url=live,
                 )
                 self.emit(
                     "posted",
@@ -656,6 +780,35 @@ class PostingWorker:
                     )
             # "unknown" falls through untouched and is tried again next time.
         return checked > 0
+
+    def _held_verdict(self, target: TaskTarget, group) -> tuple[str, str]:
+        """What an admin did with a held post, and its live link if approved.
+
+        The post's own link from Facebook's reply decides "approved", with no
+        words (read live 2026-10-21): approved, it opens the live post. It
+        cannot tell a post still held from a declined one, so the words in the
+        group's pending list decide between those, as before. A post of
+        pictures alone has no words, so unless its link shows it approved it
+        stays waiting, the safe side.
+        """
+        held_url = _held_link(target)
+        if held_url:
+            live = self.poster.live_link(held_url)
+            if live:
+                return "approved", live
+            if live is None or not target.body.strip():
+                return "unknown", ""
+            verdict = self.poster.pending_verdict(group.url, target.body)
+            # Its own link says it is not live, so words found in the feed are
+            # another post's.
+            return ("unknown" if verdict == "approved" else verdict), ""
+        verdict = self.poster.pending_verdict(group.url, target.body)
+        if verdict == "approved" and self._sent_before(group.id, target.body, besides=1):
+            # "Approved" means the words were found in the feed, and the same
+            # words went to this group before: what was found may be the older
+            # post. Left waiting for another look rather than called live.
+            return "unknown", ""
+        return verdict, ""
 
     def _follow_up_order(self, waiting: list[TaskTarget]) -> list[TaskTarget]:
         """Round-robin, so a sweep's budget is not spent on the same few.
@@ -855,6 +1008,17 @@ class PostingWorker:
             # that never goes out at all.
             self._defer_for_connection(task, target, exc)
             return True
+        except PageLoadFailed as exc:
+            # The second, and only other, failure safe to wait out: the group
+            # page itself would not load, so no post box ever existed. A
+            # client's laptop woke from sleep mid-batch and this halted it.
+            self._defer_for_connection(task, target, exc)
+            return True
+        except GroupUnavailable as exc:
+            # One group is gone, not the account, and nothing was typed: the
+            # batch carries on without it rather than halting.
+            self._skip_unavailable(task, target, group, str(exc))
+            return True
         except (AutomationHalted, PostNotVerified) as exc:
             # Deliberately not a retry: after the Post click it may well have
             # posted, and the exception says whether that point was reached.
@@ -891,7 +1055,12 @@ class PostingWorker:
             # moment an admin approves. Recording it as failed would tell the
             # user it did not go out and invite the same text being sent
             # again -- two live posts once both are approved.
-            self._record_sent(target, TARGET_AWAITING_APPROVAL, error=outcome.detail)
+            self._record_sent(
+                target,
+                TARGET_AWAITING_APPROVAL,
+                error=outcome.detail,
+                post_url=outcome.post_url,
+            )
             self.emit(
                 "pending",
                 f"{group.display_name} holds posts for admin approval. The post is "
@@ -912,6 +1081,19 @@ class PostingWorker:
                 task.id,
                 target.id,
             )
+        elif outcome.unconfirmed:
+            # Found by its words alone, and the same words were in the group
+            # before this post. Counted as sent and never called posted, and
+            # the batch carries on (the user's choice, 2026-10-20): going on to
+            # the next group cannot post twice to this one.
+            self._record_sent(target, TARGET_UNCONFIRMED, error=outcome.detail)
+            self.emit(
+                "unconfirmed",
+                f"{group.display_name}: might have posted. The same words were in "
+                "the group before, so the app cannot be sure. Look at the group.",
+                task.id,
+                target.id,
+            )
         else:
             # A note only when nothing confirmed it: pictures, with no reply
             # from Facebook to go on.
@@ -922,6 +1104,7 @@ class PostingWorker:
                 error="" if outcome.verified else outcome.detail,
             )
             self.emit("posted", f"Posted to {group.display_name}.", task.id, target.id)
+        self._warn_if_no_post_id(task, outcome)
 
         # One gap, written in two places. The global stamp spaces every post
         # the app makes, including the first of the *next* batch -- a batch
@@ -989,27 +1172,39 @@ class PostingWorker:
             self.groups.mark_posted(target.group_id, at)
 
     def _defer_for_connection(
-        self, task: Task, target: TaskTarget, exc: ConnectionFailed
+        self, task: Task, target: TaskTarget, exc: ConnectionFailed | PageLoadFailed
     ) -> None:
-        """Put the group back and wait for Chrome, rather than failing it.
+        """Put the group back and wait, rather than failing it.
 
+        For Chrome not being reachable (ConnectionFailed), or the group page
+        not loading (PageLoadFailed): both happen before any post box exists.
         The claim is handed back first, so the target is `pending` again and
         the batch picks up exactly where it was. It is not marked attempted:
         it was not attempted.
         """
         self.tasks.release_target(target.id)
         first = self._connection_trouble.setdefault(task.id, self._now())
+        page_load = isinstance(exc, PageLoadFailed)
+        give_up = PAGE_LOAD_GIVE_UP if page_load else CONNECTION_GIVE_UP
 
-        if self._now() - first > CONNECTION_GIVE_UP:
+        if self._now() - first > give_up:
             self._forget_connection_trouble(task.id)
-            hours = int(CONNECTION_GIVE_UP.total_seconds() // 3600)
-            self._halt(
-                task,
-                target,
-                f"Chrome has not been reachable for {hours} hours, so this batch "
-                "stopped waiting for it. Nothing was posted. Once the connection "
-                "light says Connected, queue the batch again.",
-            )
+            hours = int(give_up.total_seconds() // 3600)
+            how_long = "an hour" if hours == 1 else f"{hours} hours"
+            if page_load:
+                gave_up = (
+                    f"The group page has not opened for {how_long} because of "
+                    "internet trouble, so this batch stopped trying. Nothing was "
+                    "posted to this group. Once the internet is back, queue the "
+                    "batch again."
+                )
+            else:
+                gave_up = (
+                    f"Chrome has not been reachable for {how_long}, so this batch "
+                    "stopped waiting for it. Nothing was posted. Once the connection "
+                    "light says Connected, queue the batch again."
+                )
+            self._halt(task, target, gave_up)
             return
 
         # No blocker.release() here on purpose. _sync_power runs after every
@@ -1017,10 +1212,15 @@ class PostingWorker:
         # within KEEP_AWAKE_HORIZON -- and a five-minute retry is. Releasing
         # here would be undone a moment later, which is worse than not doing
         # it: it reads like a decision when nothing decides it.
+        why = (
+            "the group page would not open (the internet dropped, or the computer "
+            "had just woken up)"
+            if page_load
+            else "Chrome is not reachable"
+        )
         message = (
-            "Waiting: Chrome is not reachable, so nothing was posted. The batch "
-            f"tries again every {int(CONNECTION_RETRY.total_seconds() // 60)} "
-            "minutes."
+            f"Waiting: {why}, so nothing was posted. The batch tries again every "
+            f"{int(CONNECTION_RETRY.total_seconds() // 60)} minutes."
         )
         self.tasks.set_resume_at(task.id, self._now() + CONNECTION_RETRY, note=message)
 
@@ -1030,6 +1230,44 @@ class PostingWorker:
         if task.id not in self._connection_announced:
             self._connection_announced.add(task.id)
             self.emit("deferred", message, task.id)
+
+    def _skip_unavailable(self, task: Task, target: TaskTarget, group, reason: str) -> None:
+        """One group is gone: record it as not posted, and carry on.
+
+        The user's choice (2026-10-20): it leaves this post's groups and the
+        batch goes on with the rest, and a repeating post it came from stops
+        trying it for good. A group the post follows through a set is left in
+        the set, because the set is other posts' too; the note says so.
+
+        No gap is set, because nothing was posted (see `_attempt`).
+        """
+        # The page loaded, so whatever connection trouble there was is over.
+        self._forget_connection_trouble(task.id)
+        note = reason
+        schedule = self.schedules.get(task.schedule_id) if task.schedule_id else None
+        if schedule is not None:
+            if group.id in schedule.group_ids:
+                self.schedules.drop_group(schedule.id, group.id)
+                note += (
+                    f" It was taken out of the repeating post {schedule.display_name}, "
+                    "so its next runs will not try it."
+                )
+            else:
+                sets = [
+                    found.name
+                    for found in (self.group_sets.get(set_id) for set_id in schedule.set_ids)
+                    if found is not None and group.id in found.group_ids
+                ]
+                if sets:
+                    note += (
+                        f" The repeating post {schedule.display_name} reaches it through "
+                        f"the group set {sets[0]}; take it out of that set to stop "
+                        "trying it."
+                    )
+        self.tasks.mark_target(target.id, TARGET_FAILED, error=note, attempted=True)
+        self.emit("unavailable", f"{group.display_name}: {note}", task.id, target.id)
+        if self.tasks.remaining_targets(task.id) == 0:
+            self._finish(task)
 
     def _forget_connection_trouble(self, task_id: int) -> None:
         """Both halves, always together -- a stale 'already announced' would
@@ -1192,14 +1430,7 @@ class PostingWorker:
                 continue
 
             if already_posted:
-                self._record_sent(target, TARGET_DONE, at=target.attempted_at)
-                self.emit(
-                    "recovered",
-                    f"{group.display_name} had already been posted to before the "
-                    "interruption; not posting again.",
-                    target.task_id,
-                    target.id,
-                )
+                self._found_by_words_after_crash(target, group)
             elif not self._resolve_unfound(target, group):
                 return
 
@@ -1208,6 +1439,34 @@ class PostingWorker:
         # that will be spoken again rather than swallowed as a repeat.
         self._recovery_trouble = None
         self._recovery_announced = False
+
+    def _found_by_words_after_crash(self, target: TaskTarget, group) -> None:
+        """A crashed post whose words are in the group: never sent again.
+
+        Never called posted on that alone either (2026-10-20). Facebook's
+        reply, the one proof of *this* post, went with the crash, and the
+        words may belong to an identical post made by someone else or by
+        hand, which the app's own history cannot know about. Crashes are
+        rare, so this stays rare.
+        """
+        self._record_sent(
+            target,
+            TARGET_UNCONFIRMED,
+            error=(
+                "The app was interrupted while posting to this group. Afterwards "
+                "the post's words were in the group, so it was not posted again, "
+                "but without Facebook's id for it the app cannot be sure the post "
+                "it found is this one. Look at the group."
+            ),
+            at=target.attempted_at,
+        )
+        self.emit(
+            "unconfirmed",
+            f"{group.display_name} was interrupted, and the post's words are in "
+            "the group, so it is not posted again. Look at the group to be sure.",
+            target.task_id,
+            target.id,
+        )
 
     def _resolve_unfound(self, target: TaskTarget, group) -> bool:
         """Decide about a crashed target `verify()` could not find in the feed.
@@ -1252,14 +1511,7 @@ class PostingWorker:
             # The pending list looked, and then found it live. The earlier
             # verify() was a false negative, which is exactly the case this
             # second look exists to catch.
-            self._record_sent(target, TARGET_DONE, at=target.attempted_at)
-            self.emit(
-                "recovered",
-                f"{group.display_name} had already been posted to before the "
-                "interruption; not posting again.",
-                target.task_id,
-                target.id,
-            )
+            self._found_by_words_after_crash(target, group)
             return True
 
         if verdict == "unknown":
@@ -1292,3 +1544,8 @@ class PostingWorker:
             return True
         self._defer_recovery(reason)
         return False
+
+
+def _held_link(target: TaskTarget) -> str:
+    """The held post's own link from Facebook's reply, or ""."""
+    return target.post_url if strings.HELD_POST_PATH in target.post_url else ""

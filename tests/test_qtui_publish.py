@@ -490,6 +490,82 @@ class TestManagingRepeatingPosts:
         assert publish.schedule_box.count() == 2  # one card plus the stretch
 
 
+def start_again(qt_app, body=BODY, mode=REPEAT):
+    """A post that goes out starts a fresh one, so the next is written anew."""
+    qt_app.show_view("groups")
+    qt_app.views["groups"].set_all(True)
+    compose = qt_app.views["compose"]
+    qt_app.show_view("compose")
+    compose._show(body)
+    compose.capture()
+    publish = qt_app.views["publish"]
+    qt_app.show_view("publish")
+    publish.set_mode(mode)
+    return publish
+
+
+class TestTheSameRepeatingPostTwice:
+    """A client set up the same repeating post twice, 31 seconds apart, which
+    sends every group the same post twice at every slot. An exact copy is
+    refused; anything else goes through (the user's choice, 2026-10-20)."""
+
+    def test_an_exact_copy_is_refused_and_says_which(self, qt_app, views):
+        _compose, publish = views
+        publish.set_mode(REPEAT)
+        publish.name_entry.setText("Flats")
+        assert publish.publish() is True
+
+        again = start_again(qt_app)
+        assert again.publish() is False
+        assert len(qt_app.schedule_repo.list()) == 1
+        assert "Flats" in qt_app.toast_label.text()
+
+    def test_a_refused_copy_keeps_the_form(self, qt_app, views):
+        _compose, publish = views
+        publish.set_mode(REPEAT)
+        publish.publish()
+
+        again = start_again(qt_app)
+        again.publish()
+        assert qt_app.views["compose"].base_body() == BODY
+        assert again.mode == REPEAT
+
+    def test_the_same_post_at_another_time_goes_through(self, qt_app, views):
+        """Morning and evening, like a client's two posts of one listing."""
+        _compose, publish = views
+        publish.set_mode(REPEAT)
+        publish.publish()
+
+        again = start_again(qt_app)
+        again._time_rows[0].setTime(again._time_rows[0].time().addSecs(3600 * 9))
+        assert again.publish() is True
+        assert len(qt_app.schedule_repo.list()) == 2
+
+    def test_the_same_post_to_other_groups_goes_through(self, qt_app, views):
+        _compose, publish = views
+        publish.set_mode(REPEAT)
+        publish.publish()
+
+        again = start_again(qt_app)
+        first = qt_app.selected_group_ids()[0]
+        qt_app.selected_groups.discard(first)
+        assert again.publish() is True
+        assert len(qt_app.schedule_repo.list()) == 2
+
+    def test_other_words_go_through(self, qt_app, views):
+        _compose, publish = views
+        publish.set_mode(REPEAT)
+        publish.publish()
+        assert start_again(qt_app, body="Another flat").publish() is True
+
+    def test_posting_now_twice_is_never_refused(self, qt_app, views):
+        _compose, publish = views
+        publish.set_mode(NOW)
+        assert publish.publish() is True
+        assert start_again(qt_app, mode=NOW).publish() is True
+        assert len(qt_app.task_repo.list_recent()) == 2
+
+
 class TestTheWindowItself:
     def test_every_view_builds(self, qt_app):
         # "welcome" is built like the rest but deliberately kept out of the

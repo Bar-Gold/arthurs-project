@@ -21,8 +21,16 @@ from fbposter.automation.poster import (
     PostRequest,
     created_post_url,
     distinctive_snippet,
+    read_created_post,
 )
-from fbposter.errors import AutomationHalted, ComposerNotFound, PostNotVerified
+from fbposter.automation.poster import GROUP_UNAVAILABLE
+from fbposter.errors import (
+    AutomationHalted,
+    ComposerNotFound,
+    GroupUnavailable,
+    PageLoadFailed,
+    PostNotVerified,
+)
 
 from .fake_page import FakePage
 
@@ -330,6 +338,96 @@ class TestAnomaliesHalt:
         assert len([c for c in page.calls if c[0] == "goto"]) == 1
 
 
+class TestUnavailableWordsInAGoodGroup:
+    """A client's batch halted at a group that posted fine an hour later. The
+    page text is the whole page, other people's posts included, and a shared
+    post whose original was deleted reads "This content isn't available right
+    now" in the middle of a perfectly good feed. The post box decides."""
+
+    FEED = f"Someone shared this. {strings.UNAVAILABLE_MARKERS[1]} Another post."
+
+    def test_a_group_with_a_post_box_is_posted_to(self):
+        page = FakePage(body_text=self.FEED)
+        outcome = make_poster(page).post(request(body="An ordinary post"))
+        assert outcome.posted and outcome.verified
+        assert page.clicked(POST_BUTTON)
+
+    def test_the_words_in_our_own_post_do_not_stop_it(self):
+        """Once typed, the post box's own text is page text too."""
+        body = f"Flat for rent. {strings.UNAVAILABLE_MARKERS[0]} is not true here."
+        page = FakePage()
+        original = page.inner_text
+        page.inner_text = lambda s: page.typed_text or original(s)
+
+        outcome = make_poster(page).post(request(body=body))
+        assert outcome.posted
+        assert page.clicked(POST_BUTTON)
+
+    def test_a_block_still_halts_however_the_feed_reads(self):
+        page = FakePage(body_text=f"{self.FEED} You're Temporarily Blocked")
+        with pytest.raises(AutomationHalted) as caught:
+            make_poster(page).post(request())
+        assert caught.value.verdict.value == "rate_limit"
+        assert page.typed_text == ""
+
+    def test_a_checkpoint_still_halts_on_arrival(self):
+        page = FakePage(
+            body_text=self.FEED, redirect_to="https://www.facebook.com/checkpoint/1/"
+        )
+        with pytest.raises(AutomationHalted):
+            make_poster(page).post(request())
+
+
+class TestAGroupThatIsReallyGone:
+    def unavailable(self):
+        return FakePage(body_text=strings.UNAVAILABLE_MARKERS[0], missing=NO_COMPOSER)
+
+    def test_it_raises_group_unavailable_not_a_halt(self):
+        page = self.unavailable()
+        with pytest.raises(GroupUnavailable) as caught:
+            make_poster(page).post(request())
+        assert not isinstance(caught.value, AutomationHalted)
+        assert str(caught.value) == GROUP_UNAVAILABLE
+
+    def test_nothing_is_typed_or_clicked(self):
+        page = self.unavailable()
+        with pytest.raises(GroupUnavailable):
+            make_poster(page).post(request())
+        assert page.typed_text == ""
+        assert not page.clicked(POST_BUTTON)
+
+    def test_a_missing_post_box_without_those_words_is_still_an_error(self):
+        page = FakePage(missing=NO_COMPOSER)
+        with pytest.raises(ComposerNotFound):
+            make_poster(page).post(request())
+
+    def test_the_words_in_each_language_are_recognised(self):
+        for marker in strings.UNAVAILABLE_MARKERS:
+            page = FakePage(body_text=marker, missing=NO_COMPOSER)
+            with pytest.raises(GroupUnavailable):
+                make_poster(page).post(request())
+
+
+class TestAPageThatWouldNotLoad:
+    """A client's laptop woke from sleep and the page load came back
+    net::ERR_NETWORK_IO_SUSPENDED. That is before any post box exists."""
+
+    def test_it_raises_page_load_failed(self):
+        page = FakePage(goto_error="net::ERR_NETWORK_IO_SUSPENDED")
+        with pytest.raises(PageLoadFailed) as caught:
+            make_poster(page).post(request())
+        assert "ERR_NETWORK_IO_SUSPENDED" in str(caught.value)
+        assert "Nothing was typed or posted" in str(caught.value)
+
+    def test_nothing_is_typed_or_clicked(self):
+        page = FakePage(goto_error="net::ERR_INTERNET_DISCONNECTED")
+        with pytest.raises(PageLoadFailed):
+            make_poster(page).post(request())
+        assert page.typed_text == ""
+        assert not page.clicked(POST_BUTTON)
+        assert ("press", "Escape") not in page.calls, "there was no draft to clear"
+
+
 class TestMissingElements:
     def test_a_missing_composer_is_an_error_not_a_guess(self):
         page = FakePage(missing=NO_COMPOSER)
@@ -409,11 +507,13 @@ class TestVerificationIsPatient:
         original = page.inner_text
         page.inner_text = lambda s: (BODY if appears["yet"] else original(s))
 
-        # The post surfaces only once the feed has been nudged.
+        # The post surfaces only once the feed has been nudged after posting.
+        # The scroll on arrival comes before it exists.
         original_wheel = page.mouse.wheel
 
         def wheel(x, y):
-            appears["yet"] = True
+            if page.keyboard.typed:
+                appears["yet"] = True
             original_wheel(x, y)
 
         page.mouse.wheel = wheel
@@ -424,7 +524,7 @@ class TestVerificationIsPatient:
     def test_it_finds_the_post_in_the_page_text_alone(self):
         """Even when the locator never matches, the text being on the page is
         proof enough that it published."""
-        page = FakePage(missing=(f"text={distinctive_snippet(BODY)}",), body_text=BODY)
+        page = FakePage(missing=(f"text={distinctive_snippet(BODY)}",), after_post_text=BODY)
         outcome = make_poster(page).post(request())
         assert outcome.verified
 
@@ -525,6 +625,20 @@ class TestProbe:
         make_poster(page).probe(GROUP_URL)
         assert ("press", "Escape") in page.calls
 
+    def test_unavailable_words_with_a_post_box_are_reported_not_a_failure(self):
+        """The probe judges a page exactly as posting does."""
+        page = FakePage(body_text=strings.UNAVAILABLE_MARKERS[0])
+        report = make_poster(page).probe(GROUP_URL)
+        assert report.ok
+        assert any("someone's post" in note for note in report.notes)
+
+    def test_unavailable_words_and_no_post_box_fail_the_probe(self):
+        page = FakePage(body_text=strings.UNAVAILABLE_MARKERS[0], missing=NO_COMPOSER)
+        report = make_poster(page).probe(GROUP_URL)
+        assert not report.ok
+        assert not report.page_ok
+        assert GROUP_UNAVAILABLE in report.notes
+
 
 class TestAGroupThatHoldsPostsForApproval:
     """Verified against a live moderated group on 2026-08-17.
@@ -570,7 +684,8 @@ class TestAGroupThatHoldsPostsForApproval:
         the banner is about some other post of ours.
         """
         page = FakePage(
-            body_text=f"{BODY} ... {self.BANNER}",
+            body_text=f"A group feed. {self.BANNER}",
+            after_post_text=BODY,
             pending_page_text=f"{self.CONTENT_PAGE} some other post of ours",
         )
         outcome = make_poster(page).post(request())
@@ -607,7 +722,7 @@ class TestAGroupThatHoldsPostsForApproval:
                     raise RuntimeError("that page would not load")
                 return super().goto(url, **kwargs)
 
-        page = Awkward(body_text=f"{BODY} ... {self.BANNER}")
+        page = Awkward(body_text=f"A group feed. {self.BANNER}", after_post_text=BODY)
         outcome = make_poster(page).post(request())
         assert outcome.verified is True
         assert outcome.pending is False
@@ -768,13 +883,22 @@ class TestAFailureAfterThePostClick:
         assert caught.value.may_have_posted is False
 
 
-def creation_reply(post_id: str = "1746810129710285", url: bool = True) -> str:
-    """Shaped like Facebook's reply read live on 2026-10-07, trimmed."""
+def creation_reply(
+    post_id: str = "1746810129710285", url: bool = True, held: bool = False
+) -> str:
+    """Shaped like Facebook's reply read live on 2026-10-07, trimmed.
+
+    `held` is a group holding the post for an admin, read live on 2026-10-21:
+    the same reply, with a link of its own shape.
+    """
     story = {
         "id": "UzpfSTEwMDAxMDIyMDcwNzIyNTpWSzoxNzQ2ODEwMTI5NzEwMjg1",
         "legacy_story_hideable_id": post_id,
     }
-    if url:
+    if held:
+        story["url"] = f"{GROUP_URL}pending_posts/{post_id}/"
+        story["if_viewer_can_learn_more_about_pending_post"] = {"__typename": "Story"}
+    elif url:
         story["url"] = f"{GROUP_URL}permalink/{post_id}/"
     return json.dumps(
         {
@@ -809,6 +933,22 @@ class TestReadingFacebooksReply:
 
     def test_the_old_json_guard_prefix_is_read_through(self):
         assert created_post_url("for (;;);" + creation_reply()).endswith("/1746810129710285/")
+
+    def test_facebooks_own_link_says_live(self):
+        created = read_created_post(creation_reply())
+        assert created.from_facebook and created.live and not created.held
+
+    def test_facebooks_own_link_says_held(self):
+        """Read live on 2026-10-21 in a group with post approval."""
+        created = read_created_post(creation_reply("42", held=True))
+        assert created.url == f"{GROUP_URL}pending_posts/42/"
+        assert created.held and not created.live
+
+    def test_a_link_built_from_the_number_says_neither(self):
+        created = read_created_post(creation_reply("42", url=False), GROUP_URL)
+        assert created.url == f"{GROUP_URL}permalink/42/"
+        assert not created.from_facebook
+        assert not created.held and not created.live
 
 
 class TestFacebooksReplyConfirmsThePost:
@@ -853,9 +993,38 @@ class TestFacebooksReplyConfirmsThePost:
         with pytest.raises(RuntimeError):
             seen[0].text()
 
-    def test_a_group_holding_posts_is_still_pending(self):
+    def test_a_held_post_is_pending_by_its_own_link(self):
+        """No banner and no words needed: the reply says so (2026-10-21)."""
+        page = FakePage(created_reply=creation_reply("42", held=True))
+        outcome = make_poster(page).post(
+            request(body="", media_paths=(Path("a.png"),))
+        )
+        assert outcome.pending is True
+        assert outcome.post_url == f"{GROUP_URL}pending_posts/42/"
+
+    def test_a_held_text_post_needs_no_look_at_the_pending_list(self):
+        page = FakePage(created_reply=creation_reply("42", held=True))
+        outcome = make_poster(page).post(request())
+        assert outcome.pending is True
+        assert not any(
+            strings.MY_CONTENT_PATH in str(call[1]) for call in page.calls if call[0] == "goto"
+        )
+
+    def test_a_live_link_is_live_whatever_the_banner_says(self):
+        """The banner shows while any post of ours is held. Facebook's own
+        link says this one was published."""
         page = FakePage(
             created_reply=creation_reply(),
+            body_text=f"A group feed. {strings.PENDING_APPROVAL_MARKERS[0]}",
+        )
+        outcome = make_poster(page).post(
+            request(body="", media_paths=(Path("a.png"),))
+        )
+        assert outcome.pending is False and outcome.verified is True
+
+    def test_a_link_built_from_the_number_leaves_it_to_the_banner(self):
+        page = FakePage(
+            created_reply=creation_reply(url=False),
             body_text=f"A group feed. {strings.PENDING_APPROVAL_MARKERS[0]}",
         )
         outcome = make_poster(page).post(
@@ -883,15 +1052,69 @@ class TestWithoutFacebooksReply:
     checks decide, and they must not be fooled by an older post."""
 
     def test_text_never_sent_before_is_found_by_its_words(self):
-        outcome = make_poster(FakePage()).post(request())
+        outcome = make_poster(FakePage(after_post_text=BODY)).post(request())
         assert outcome.verified
+        assert not outcome.unconfirmed
 
-    def test_text_sent_before_is_not_confirmed_by_its_words(self):
-        """The words may belong to yesterday's post."""
-        with pytest.raises(PostNotVerified) as caught:
-            make_poster(FakePage()).post(request(sent_before=True))
-        assert caught.value.may_have_posted is True
-        assert "posted there before" in str(caught.value)
+    def test_text_sent_before_might_have_posted(self):
+        """The words may belong to yesterday's post. Not a halt: the batch
+        carries on (the user's choice, 2026-10-20)."""
+        outcome = make_poster(FakePage()).post(request(sent_before=True))
+        assert outcome.posted and outcome.unconfirmed
+        assert not outcome.verified
+        assert "same words were there before" in outcome.detail
+
+    def test_words_already_in_the_group_might_have_posted(self):
+        """A colleague's identical listing, or a post made by hand: the app's
+        own history knows about neither, the look on arrival does."""
+        page = FakePage(body_text=f"A group feed. Someone else wrote: {BODY}")
+        outcome = make_poster(page).post(request())
+        assert outcome.posted and outcome.unconfirmed
+        assert not outcome.verified
+
+    def test_words_shown_by_the_scroll_on_arrival_count_too(self):
+        page = FakePage()
+        original_wheel = page.mouse.wheel
+
+        def wheel(x, y):
+            # Further down the feed, before anything has been typed.
+            if not page.keyboard.typed:
+                page.body_text = f"An older post: {BODY}"
+            original_wheel(x, y)
+
+        page.mouse.wheel = wheel
+        outcome = make_poster(page).post(request())
+        assert outcome.unconfirmed
+
+    def test_the_words_are_matched_as_a_person_reads_them(self):
+        """Case, spacing and marks that print nothing do not hide them."""
+        shown = "‏" + "  ".join(BODY.upper().split())
+        outcome = make_poster(FakePage(body_text=shown)).post(request())
+        assert outcome.unconfirmed
+
+    def test_the_look_on_arrival_adds_no_waiting(self):
+        """It reads the text the page already shows (the user's choice,
+        2026-10-20): no extra pause and no extra scrolling."""
+        page = FakePage(after_post_text=BODY)
+        make_poster(page).post(request())
+        names = page.call_names()
+        assert set(names[: names.index("hover")]) == {"goto", "wheel"}
+
+    def test_the_reply_decides_even_when_the_words_were_there(self):
+        page = FakePage(created_reply=creation_reply(), body_text=f"Old: {BODY}")
+        outcome = make_poster(page).post(request(sent_before=True))
+        assert outcome.verified and not outcome.unconfirmed
+        assert outcome.post_url
+
+    def test_a_group_holding_the_post_is_still_pending(self):
+        """Seen in the feed, the banner up, and on the group's pending list:
+        held for an admin, whatever was in the group before."""
+        page = FakePage(
+            body_text=f"Old: {BODY} {strings.PENDING_APPROVAL_MARKERS[0]}",
+            pending_page_text=f"Your content {BODY}",
+        )
+        outcome = make_poster(page).post(request(sent_before=True))
+        assert outcome.pending and not outcome.unconfirmed
 
     def test_pictures_say_they_could_not_be_checked(self):
         outcome = make_poster(FakePage()).post(
@@ -899,3 +1122,43 @@ class TestWithoutFacebooksReply:
         )
         assert outcome.posted and not outcome.verified
         assert "could not check that it posted" in outcome.detail
+
+
+class TestAHeldPostsOwnLink:
+    """Once an admin approves, a held post's own link opens the live post at
+    .../posts/<id>/; held or declined, it stays put. Read live on 2026-10-21."""
+
+    HELD = f"{GROUP_URL}pending_posts/42/"
+
+    def test_approved_it_leads_to_the_live_post(self):
+        page = FakePage(redirect_to=f"{GROUP_URL}posts/42/?ref=x")
+        assert make_poster(page).live_link(self.HELD) == f"{GROUP_URL}posts/42/"
+
+    def test_held_or_declined_it_stays_put(self):
+        assert make_poster(FakePage()).live_link(self.HELD) == ""
+
+    def test_a_page_that_would_not_load_is_unknown(self):
+        page = FakePage(goto_error="net::ERR_NETWORK_IO_SUSPENDED")
+        assert make_poster(page).live_link(self.HELD) is None
+
+    def test_somewhere_else_is_unknown(self):
+        page = FakePage(redirect_to=GROUP_URL)
+        assert make_poster(page).live_link(self.HELD) is None
+
+    def test_another_posts_link_is_unknown(self):
+        page = FakePage(redirect_to=f"{GROUP_URL}posts/43/")
+        assert make_poster(page).live_link(self.HELD) is None
+
+    def test_a_checkpoint_halts(self):
+        page = FakePage(redirect_to="https://www.facebook.com/checkpoint/1/")
+        with pytest.raises(AutomationHalted):
+            make_poster(page).live_link(self.HELD)
+
+    def test_unavailable_words_in_the_feed_do_not_hide_it(self):
+        """The live post opens in the group's feed, where someone's shared
+        post can read "content isn't available"."""
+        page = FakePage(
+            redirect_to=f"{GROUP_URL}posts/42/",
+            body_text=f"A feed. {strings.UNAVAILABLE_MARKERS[0]}",
+        )
+        assert make_poster(page).live_link(self.HELD) == f"{GROUP_URL}posts/42/"

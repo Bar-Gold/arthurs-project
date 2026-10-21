@@ -201,12 +201,18 @@ class FakePage:
     on_click: dict[str, Any] = field(default_factory=dict)
     # What Facebook replies when Post is clicked; "" sends no reply at all.
     created_reply: str = ""
+    # Text the page shows only once Post has been clicked: the new post in the
+    # feed, for a test where its words must not be in the group before it.
+    after_post_text: str = ""
     listeners: dict[str, list] = field(default_factory=dict)
     # Upload bars per look (see FakeProgressBars); none by default.
     uploads: list = field(default_factory=list)
     upload_stuck_at: float | None = None
     # Looks for which the Post button reads aria-disabled="true".
     post_disabled_polls: int = 0
+    # What goto raises, as Playwright does when the page cannot load at all
+    # ("net::ERR_NETWORK_IO_SUSPENDED" on a machine just woken); "" loads.
+    goto_error: str = ""
 
     def __post_init__(self) -> None:
         self.keyboard = FakeKeyboard(self)
@@ -241,6 +247,8 @@ class FakePage:
         is_post = any(
             description.endswith(f"role=button:{name}") for name in strings.POST_BUTTONS
         )
+        if is_post and self.after_post_text:
+            self.body_text = f"{self.body_text} {self.after_post_text}"
         if is_post and self.created_reply:
             response = FakeResponse(self, self.created_reply)
             for handler in list(self.listeners.get("response", [])):
@@ -255,6 +263,8 @@ class FakePage:
 
     def goto(self, url: str, timeout: float = 0, wait_until: str = "") -> None:
         self.calls.append(("goto", url))
+        if self.goto_error:
+            raise RuntimeError(f"Page.goto: {self.goto_error} at {url}")
         self.url = self.redirect_to or url
 
     def inner_text(self, selector: str) -> str:

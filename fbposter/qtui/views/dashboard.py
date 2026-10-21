@@ -14,7 +14,7 @@ worker's own vocabulary ("halted", "skipped"): see `task_label` and
 from __future__ import annotations
 
 from PySide6.QtCore import QRectF, Qt
-from PySide6.QtGui import QColor, QFont, QPainter
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter
 from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
@@ -30,8 +30,6 @@ from PySide6.QtWidgets import (
 from fbposter import clock, stats
 from fbposter.worker import PAUSED_KEY
 from fbposter.db.models import (
-    SCHEDULE_ACTIVE,
-    SCHEDULE_PAUSED,
     TARGET_AWAITING_APPROVAL,
     TARGET_DECLINED,
     TARGET_DONE,
@@ -96,11 +94,12 @@ SNIPPET_CHARS = 60
 NAME_CHARS = 48
 RECENT_LIMIT = 15
 TILE_COLUMNS = 4
-# The four numbers that lead the page, big, and the four in the strip under
+# The four numbers that lead the page, big, and the two in the strip under
 # them (the user's choice, 2026-10-20). Eight boxes of one size gave every
-# number the same weight, so none of them led.
+# number the same weight, so none of them led. "Repeating posts" and
+# "Different wordings" were taken out of the strip the same day.
 LEAD_TILES = ("today", "week", "success", "next")
-STRIP_TILES = ("month", "all_time", "repeating", "wordings")
+STRIP_TILES = ("month", "all_time")
 CHART_HEIGHT = 170
 OUTCOME_BAR_HEIGHT = 14
 SWATCH_SIZE = 10
@@ -132,13 +131,18 @@ def task_label(task, targets) -> tuple[str, str]:
     uploaded = sum(1 for t in targets if unverified(t))
     posted = sum(1 for t in targets if t.state == TARGET_DONE) - uploaded
     waiting = sum(1 for t in targets if t.state == TARGET_AWAITING_APPROVAL)
+    # A batch carries on past a group that might have posted (2026-10-20), so
+    # a finished one can hold them, and they are never "nothing posted".
+    unsure = sum(1 for t in targets if t.state == TARGET_UNCONFIRMED)
     if total and posted == total:
         return "Posted", "SUCCESS"
     if total and uploaded and posted + uploaded == total:
         return "Uploaded, not verified", "WARNING"
-    if posted + uploaded + waiting == 0:
+    if total and unsure == total:
+        return "Might have posted", "WARNING"
+    if posted + uploaded + waiting + unsure == 0:
         return "Nothing posted", "WARNING"
-    if waiting == 0 and uploaded == 0:
+    if waiting == 0 and uploaded == 0 and unsure == 0:
         return f"Posted to {posted} of {total} groups", "WARNING"
     return "Finished", "WARNING"
 
@@ -311,6 +315,14 @@ class Tile:
         # A sentence such as "Tomorrow 09:00" does not fit at the size of a
         # number in a quarter of the window.
         self.value.setObjectName("StatSmall" if small else "StatValue" if big else "StatText")
+        if not small:
+            # Every lead tile's value is a number's height, so the four lines
+            # under them sit level. Set smaller, "Today 23:26" pulled its own
+            # line up out of the row.
+            number = QFont(self.value.font())
+            number.setPixelSize(theme.SIZE_STAT)
+            self.value.setMinimumHeight(QFontMetrics(number).height())
+            self.value.setAlignment(Qt.AlignLeft | Qt.AlignBottom)
         layout.addWidget(self.value)
         self.detail = QLabel("")
         self.detail.setObjectName("Muted")
@@ -369,7 +381,11 @@ class DashboardView(QWidget):
     def _heading(self, text: str) -> QLabel:
         label = QLabel(text)
         label.setObjectName("SectionHeading")
-        self.column.addSpacing(theme.PAD_S)
+        # Three times the room above a heading as below it, so each heading
+        # reads as the start of its own section, not the foot of the last.
+        # A margin of the heading's own, not a spacer: when "Going out" is
+        # hidden, a spacer stayed and left a gap twice the others.
+        label.setContentsMargins(0, theme.PAD_L, 0, 0)
         self.column.addWidget(label)
         return label
 
@@ -388,10 +404,7 @@ class DashboardView(QWidget):
             "next": Tile("Next scheduled", big=False),
             "month": Tile("Last 30 days", small=True),
             "all_time": Tile("All time", small=True),
-            "repeating": Tile("Repeating posts", small=True),
-            "wordings": Tile("Different wordings", small=True),
         }
-        self.tiles["wordings"].frame.setToolTip("Different texts sent in the last 7 days.")
 
         grid = QGridLayout()
         grid.setSpacing(theme.PAD_S)
@@ -401,11 +414,13 @@ class DashboardView(QWidget):
             grid.setColumnStretch(column, 1)
         self.column.addLayout(grid)
 
-        # One card, its four cells apart by a hairline.
+        # One card, its two cells apart by a hairline. Half the gap between
+        # the cards above on each side of the line puts it in the middle of
+        # that gap, and each cell's words straight under a lead tile's.
         strip = card()
         cells = QHBoxLayout(strip)
         cells.setContentsMargins(0, theme.PAD_S, 0, theme.PAD_S)
-        cells.setSpacing(0)
+        cells.setSpacing(theme.PAD_S // 2)
         for index, key in enumerate(STRIP_TILES):
             if index:
                 line = QFrame()
@@ -445,12 +460,16 @@ class DashboardView(QWidget):
             line_layout.setContentsMargins(0, 0, 0, 0)
             line_layout.setSpacing(theme.PAD_S)
             line_layout.addWidget(Swatch(colour))
-            line_layout.addWidget(QLabel(words))
-            line_layout.addStretch(1)
+            # The number first, beside its own words (the user's choice,
+            # 2026-10-20). At the far end of its third of the card it sat
+            # nearer the next column's words than its own, and read as theirs.
             count = QLabel("0")
-            count.setObjectName("SectionHeading")
+            count.setObjectName("Strong")
+            count.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
             line_layout.addWidget(count)
             self.outcome_counts[state] = count
+            line_layout.addWidget(QLabel(words))
+            line_layout.addStretch(1)
             legend.addWidget(line, index // 3, index % 3)
         for column in range(3):
             legend.setColumnStretch(column, 1)
@@ -479,8 +498,7 @@ class DashboardView(QWidget):
 
         summary = stats.summary(records, archived, now)
         paused = settings.get(PAUSED_KEY) == "1"
-        self._show_tiles(summary, stats.next_scheduled(tasks, schedules, paused, now),
-                         schedules, now)
+        self._show_tiles(summary, stats.next_scheduled(tasks, schedules, paused, now), now)
 
         days = stats.per_day(records, now)
         self.chart.set_days(days)
@@ -492,13 +510,21 @@ class DashboardView(QWidget):
         self.outcome_bar.set_counts(counts)
         for state, label in self.outcome_counts.items():
             label.setText(str(counts.get(state, 0)))
+        # Every count as wide as the widest, so the words after them line up:
+        # "12 Not posted" under "7 Posted" started a digit further on.
+        widest = 0
+        for label in self.outcome_counts.values():
+            label.ensurePolished()
+            widest = max(widest, label.fontMetrics().horizontalAdvance(label.text()))
+        for label in self.outcome_counts.values():
+            label.setFixedWidth(widest)
 
         self._show_groups(stats.by_group(records, archived, self.app.group_repo.list(), now),
                           now, force)
         self._show_going(tasks, schedules, now, force)
         self._show_recent(repo.recent_targets(RECENT_LIMIT), now, force)
 
-    def _show_tiles(self, summary, next_up, schedules, now) -> None:
+    def _show_tiles(self, summary, next_up, now) -> None:
         tiles = self.tiles
         tiles["today"].show(str(summary.today), "Since midnight, Israel time")
 
@@ -533,15 +559,6 @@ class DashboardView(QWidget):
             )
 
         tiles["next"].show(*self._next_text(next_up, now))
-
-        active = sum(1 for s in schedules if s.state == SCHEDULE_ACTIVE)
-        paused = sum(1 for s in schedules if s.state == SCHEDULE_PAUSED)
-        tiles["repeating"].show(
-            str(active),
-            (f"Active, {paused} paused" if paused else "Active")
-            if schedules else "None set up yet",
-        )
-        tiles["wordings"].show(str(summary.wordings), "Sent in the last 7 days")
 
     @staticmethod
     def _next_text(next_up, now) -> tuple[str, str]:
@@ -588,7 +605,13 @@ class DashboardView(QWidget):
             if 2 <= column <= 4:
                 label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
             grid.addWidget(label, 0, column)
-        for index, (_id, name, members, today, week, total, last) in enumerate(drawn, 1):
+        # A hairline under the headers, so they read as the table's and the
+        # first group as a row like the rest.
+        rule = QFrame()
+        rule.setObjectName("Divider")
+        rule.setFixedHeight(1)
+        grid.addWidget(rule, 1, 0, 1, len(headers))
+        for index, (_id, name, members, today, week, total, last) in enumerate(drawn, 2):
             # One line, shortened if long: a wrapped name sized to fit its
             # cell came out two lines tall in a one-line row and overlapped
             # the next. The full name is on hover.
@@ -643,6 +666,10 @@ class DashboardView(QWidget):
         title = QLabel(snippet_of(task))
         title.setObjectName("Strong")
         title.setWordWrap(True)
+        # At the card's start, above the line under it. Left to itself a
+        # Hebrew post went to the far end, beside its badge. Alignment, not
+        # direction code: the words still read right to left.
+        title.setAlignment(Qt.AlignLeft | Qt.AlignAbsolute | Qt.AlignVCenter)
         header.addWidget(title, 1)
         words, colour = task_label(task, targets)
         header.addWidget(badge(words, colour))

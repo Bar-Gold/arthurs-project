@@ -131,7 +131,6 @@ class TestTheTiles:
         )
         view.refresh()
         assert view.tiles["next"].detail.text() == "Repeating: Bikes"
-        assert view.tiles["repeating"].value.text() == "1"
 
     def test_paused_says_so(self, qt_app, view):
         from fbposter.worker import PAUSED_KEY
@@ -147,6 +146,51 @@ class TestTheTiles:
         assert view.tiles["next"].value.text() == "Nothing scheduled"
         assert not view.chart.isVisibleTo(view)
         assert view.chart_empty.isVisibleTo(view)
+
+    def test_repeating_posts_and_wordings_are_gone(self, view):
+        """Taken out of the strip at the user's request (2026-10-20)."""
+        assert set(view.tiles) == {"today", "week", "success", "next", "month", "all_time"}
+        shown = texts(view)
+        assert "Repeating posts" not in shown
+        assert "Different wordings" not in shown
+
+    def test_the_lead_values_are_one_height(self, view):
+        """So the line under "Today 23:26" sits level with those under the
+        numbers, rather than riding up out of the row."""
+        from fbposter.qtui.views.dashboard import LEAD_TILES
+
+        view.refresh()
+        heights = {view.tiles[key].value.minimumHeight() for key in LEAD_TILES}
+        assert len(heights) == 1 and heights.pop() > 0
+
+
+class TestTheResults:
+    def test_each_number_comes_before_its_own_words(self, qt_app, groups, view):
+        """At the far end of its column, a count read as the next column's
+        (the user's report, 2026-10-20)."""
+        from fbposter.qtui.views.dashboard import OUTCOMES
+
+        post(qt_app, groups[0])
+        view.refresh()
+        for state, words, _colour in OUTCOMES:
+            count = view.outcome_counts[state]
+            layout = count.parentWidget().layout()
+            order = [layout.itemAt(i).widget() for i in range(layout.count())]
+            labels = [w for w in order if isinstance(w, QLabel)]
+            assert labels[0] is count, words
+            assert labels[1].text() == words
+
+    def test_the_words_after_the_numbers_line_up(self, qt_app, groups, view):
+        for _ in range(12):
+            post(qt_app, groups[0])
+        post(qt_app, groups[1], state=TARGET_FAILED)
+        view.refresh()
+        counts = view.outcome_counts.values()
+        assert {label.text() for label in counts} >= {"12", "1", "0"}
+        widths = {(label.minimumWidth(), label.maximumWidth()) for label in counts}
+        assert len(widths) == 1
+        (low, high), = widths
+        assert low == high > 0
 
 
 class TestTheGroupTable:
@@ -307,6 +351,25 @@ class TestTheLabels:
             qt_app.task_repo.mark_target(target.id, TARGET_SKIPPED)
         words, _colour = task_label(*self.finish(qt_app, task, TASK_DONE))
         assert words == "Nothing posted"
+
+    def test_every_group_might_have_posted_is_not_nothing(self, qt_app, groups):
+        """A batch carries on past a group that might have posted (2026-10-20),
+        so a finished one can hold nothing else. It must never read as
+        "Nothing posted"."""
+        task, targets = self.batch(qt_app, groups)
+        for target in targets:
+            qt_app.task_repo.mark_target(target.id, TARGET_UNCONFIRMED, posted=True)
+        assert task_label(*self.finish(qt_app, task, TASK_DONE)) == (
+            "Might have posted", "WARNING"
+        )
+
+    def test_some_posted_and_some_might_have(self, qt_app, groups):
+        task, (first, second) = self.batch(qt_app, groups)
+        qt_app.task_repo.mark_target(first.id, TARGET_DONE, posted=True, post_url="u")
+        qt_app.task_repo.mark_target(second.id, TARGET_UNCONFIRMED, posted=True)
+        assert task_label(*self.finish(qt_app, task, TASK_DONE)) == (
+            "Finished", "WARNING"
+        )
 
     def test_a_stopped_batch(self, qt_app, groups):
         task, _targets = self.batch(qt_app, groups)

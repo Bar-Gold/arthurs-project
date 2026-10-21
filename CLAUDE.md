@@ -12,7 +12,7 @@ Most of these rules already cost a live bug. This file holds what applies everyw
 | `power.md` | Power: sleep, shutdown, and an unattended laptop | `power.py`, `always_on.py`, `worker.py`, `scripts/`, Settings, `installer.iss` |
 | `automation.md` | Rules for the Automation Engine; Selector Strategy; Reading the client's groups off Facebook | `automation/`, `strings.py`, `groups.py`, `media.py` |
 | `chrome-and-login.md` | Handing this to a non-technical user; Changing which Facebook account it posts as; Never call `browser.close()` | `chrome.py`, `keepalive.py`, `tabs.py`, `cdp.py`, `session.py`, `login.py`, `onboarding.py`, `connection.py`, `single.py`, `config.py`, `main.py`, `qtui/app.py`, the wizard, Settings |
-| `data.md` | Database rules; Two retentions; Removing a group archives it; Group sets; The Dashboard replaced the Queue screen | `db/`, `stats.py`, the Dashboard, Groups and Group sets screens |
+| `data.md` | Database rules; Two retentions; Attachments live in `media/`; Removing a group archives it; Group sets; The Dashboard replaced the Queue screen | `db/`, `stats.py`, `attachments.py`, the Dashboard, Groups and Group sets screens |
 | `ui.md` | Hebrew, and why the UI is Qt; UI rules | `qtui/` |
 | `testing.md` | How the tests avoid a browser and a real clock | `tests/` |
 
@@ -24,7 +24,7 @@ Text that reaches a post also passes Invisible characters (below) and Hebrew (`u
 
 Each is spelled out in its rule file. These are the ones no change may break:
 
-- **Never post twice.** A post is never retried once a composer was opened; the one exception is `ConnectionFailed` (`worker.md`). A duplicate is worse than a missing post.
+- **Never post twice.** A post is never retried once a composer was opened; the only exceptions are `ConnectionFailed` and `PageLoadFailed`, both raised before any post box exists (`worker.md`). A duplicate is worse than a missing post.
 - **Never automate login, and never click through a checkpoint, CAPTCHA or warning.** Halt the batch and tell the user (`automation.md`).
 - **Never call `browser.close()`** on the user's Chrome (`chrome-and-login.md`).
 - **Never delete posting history to tidy up.** Removing a group archives it (`data.md`).
@@ -84,7 +84,7 @@ powershell -ExecutionPolicy Bypass -File packaging\build.ps1 -SkipInstaller  # .
 
 `status` exits 0 when logged in, 1 when not, 2 on error (Chrome not running, etc.).
 
-There is no linter or formatter configured, and no pytest config file. The suite is the whole check. Baseline: **1836 tests, about 35s with `-n auto`** on 8 cores, about 2 minutes on one. Leave `-n auto` off for one file or one test: starting the workers costs more than it saves. A full run of *two minutes or more* with `-n auto` means something is reaching the network (see the `SilentNamer` note in `.claude/rules/ui.md`), or a test window is not being thrown away (see `.claude/rules/testing.md`).
+There is no linter or formatter configured, and no pytest config file. The suite is the whole check. Baseline: **1952 tests, about 35s with `-n auto`** on 8 cores, about 2 minutes on one. Leave `-n auto` off for one file or one test: starting the workers costs more than it saves. A full run of *two minutes or more* with `-n auto` means something is reaching the network (see the `SilentNamer` note in `.claude/rules/ui.md`), or a test window is not being thrown away (see `.claude/rules/testing.md`).
 
 **Do not add `playwright install`.** It is unnecessary and was verified so against Chrome 150: the app attaches to the user's real Chrome over CDP and never launches Playwright's bundled Chromium, so the driver shipped inside the pip package is all that is required.
 
@@ -108,7 +108,7 @@ Three layers that must stay separate:
 
 UI and worker communicate through a thread-safe queue. The tables as built are `groups`, `templates`, `tasks`, `task_targets`, `schedules`, `schedule_targets`, `settings`, `post_totals`, and for group sets `group_sets`, `group_set_members` and `schedule_sets`; `tags`, `group_tags` and `run_log` were cut (README §9 and §10). Do not write code expecting them.
 
-Core: `config.py` (paths, port, Chrome flags), `chrome.py` (find/launch Chrome, probe the debug port), `session.py` (CDP attach, `c_user` cookie check), `connection.py` (the check behind the connection pill: `ConnectionState`, `check_connection`), `strings.py` (every Facebook URL and UI string, in all three languages), `clock.py` (Israel-time judgement), `power.py` (`SleepBlocker`, `on_battery`), `always_on.py` (the Settings screen's start-with-Windows and keep-awake switches, which run `setup_always_on.ps1`), `recurrence.py` (repeating-schedule timing, pure), `stats.py` (the Dashboard's numbers, pure too), `groups.py` (group-URL parsing), `text.py` (the invisible-character list, and `normalise`), `tips.py` (the Posting tips words in three languages, pure), `media.py` (picture or video, Facebook's 10 GB video limit, pure), `single.py` (the one-app mutex), `onboarding.py` (what setup step the user is on, pure), `login.py` (putting a visible Chrome in front of them), `keepalive.py` (when to restart a Chrome that has closed, pure), `tabs.py` (finding and closing a tab that has stopped answering, the last-resort restart, and closing Chrome when the app closes), `cdp.py` (a DevTools client on the standard library, for when Playwright is the thing hanging), `errors.py`, `worker.py` (`PostingWorker` and `LivePoster`).
+Core: `config.py` (paths, port, Chrome flags), `chrome.py` (find/launch Chrome, probe the debug port), `session.py` (CDP attach, `c_user` cookie check), `connection.py` (the check behind the connection pill: `ConnectionState`, `check_connection`), `strings.py` (every Facebook URL and UI string, in all three languages), `clock.py` (Israel-time judgement), `power.py` (`SleepBlocker`, `on_battery`), `always_on.py` (the Settings screen's start-with-Windows and keep-awake switches, which run `setup_always_on.ps1`), `recurrence.py` (repeating-schedule timing, pure), `stats.py` (the Dashboard's numbers, pure too), `groups.py` (group-URL parsing), `text.py` (the invisible-character list, and `normalise`), `tips.py` (the Posting tips words in three languages, pure), `media.py` (picture or video, Facebook's 10 GB video limit, pure), `attachments.py` (keeping a post's pictures and videos in the app's own `media/` folder, beside the database; `data.md`), `single.py` (the one-app mutex), `onboarding.py` (what setup step the user is on, pure), `login.py` (putting a visible Chrome in front of them), `keepalive.py` (when to restart a Chrome that has closed, pure), `tabs.py` (finding and closing a tab that has stopped answering, the last-resort restart, and closing Chrome when the app closes), `cdp.py` (a DevTools client on the standard library, for when Playwright is the thing hanging), `errors.py`, `worker.py` (`PostingWorker` and `LivePoster`).
 
 Scripts: `scripts/setup_always_on.ps1`: the laptop power plan and the logon task. See `.claude/rules/power.md`.
 

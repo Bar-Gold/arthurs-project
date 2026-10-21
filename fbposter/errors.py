@@ -27,6 +27,26 @@ class ConnectionFailed(FBPosterError):
     """The debugging port answered but a CDP session could not be established."""
 
 
+class PageLoadFailed(FBPosterError):
+    """The group page itself would not load: the internet dropped, or the
+    machine had just woken up and its network was not back yet.
+
+    Raised by the page load, before any post box exists, so nothing can have
+    been typed or posted. That makes it the second failure, after
+    ConnectionFailed, that is safe to wait out and try again.
+    """
+
+
+class GroupUnavailable(FBPosterError):
+    """Facebook says this group is not available, and it has no post box.
+
+    The account may have left it or been removed, or the group was deleted.
+    Raised before anything is typed. Unlike a checkpoint or a rate-limit
+    warning it says nothing about the account, so the batch skips this one
+    group and carries on with the rest.
+    """
+
+
 class InvalidGroupURL(FBPosterError):
     """The text given is not a Facebook group URL."""
 

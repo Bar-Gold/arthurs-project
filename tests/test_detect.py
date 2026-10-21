@@ -174,7 +174,7 @@ class TestEveryLanguageIsCovered:
             if name.isupper() and isinstance(getattr(strings, name), tuple)
         }
         # URL fragments carry no language at all.
-        tables -= {"CHECKPOINT_MARKERS", "LOGIN_MARKERS"}
+        tables -= {"CHECKPOINT_MARKERS", "LOGIN_MARKERS", "LIVE_POST_PATHS"}
         assert tables == set(self.LANGUAGE_DEPENDENT), (
             "strings.py gained or lost a language-dependent table; "
             f"unlisted: {sorted(tables - set(self.LANGUAGE_DEPENDENT))}, "

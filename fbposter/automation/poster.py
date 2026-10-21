@@ -18,7 +18,14 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from .. import media, strings
-from ..errors import AutomationHalted, ComposerNotFound, PostNotVerified, UploadStalled
+from ..errors import (
+    AutomationHalted,
+    ComposerNotFound,
+    GroupUnavailable,
+    PageLoadFailed,
+    PostNotVerified,
+    UploadStalled,
+)
 from ..text import strip_invisible
 from .detect import PageVerdict, classify, halt_message
 from .humanize import Humanizer
@@ -70,6 +77,31 @@ SENT_BEFORE_STOP = (
     "group before posting it again."
 )
 
+# A post found by its words, when the same words were in the group before it.
+WORDS_WERE_THERE_BEFORE = (
+    "Clicked Post, and these words are in the group, but the same words were "
+    "there before this post, and Facebook did not send this post's own id. So "
+    "the app cannot tell whether this one went out. Look at the group before "
+    "posting it again."
+)
+
+
+GROUP_UNAVAILABLE = (
+    "Facebook says this group isn't available, and there is nowhere to write a "
+    "post in it. The account may have left it or been removed, or the group was "
+    "deleted. Nothing was posted to it."
+)
+
+
+def _page_load_problem(exc: Exception) -> str:
+    """Why the group page would not open, in a line worth reading."""
+    text = str(exc).strip()
+    first_line = text.splitlines()[0][:200] if text else exc.__class__.__name__
+    return (
+        "The group page would not open, usually because the internet dropped or "
+        f"the computer had just woken up ({first_line}). Nothing was typed or posted."
+    )
+
 
 def _after_click(exc: Exception) -> str:
     """Why a post stopped after Post was clicked, without claiming it failed.
@@ -94,9 +126,9 @@ class PostRequest:
     group_url: str
     body: str
     media_paths: tuple[Path, ...] = ()
-    # These exact words have been sent to this group before. The same text may
-    # go once a day, so an older post with it can sit in the feed, and finding
-    # the words there is then no proof of this post.
+    # These exact words have been sent to this group before, so an older post
+    # with them can sit in the feed, and finding the words there is then no
+    # proof of this post.
     sent_before: bool = False
 
 
@@ -118,12 +150,48 @@ def _post_id_from_story_id(story_id: Any) -> str:
     return parts[-1]
 
 
+@dataclass(frozen=True)
+class CreatedPost:
+    """The new post, as Facebook's reply to the Post click describes it."""
+
+    url: str
+    # The link is Facebook's own, from the reply, rather than one the app built
+    # from the post's number. Only Facebook's own says whether the group
+    # published the post or is holding it (strings.HELD_POST_PATH).
+    from_facebook: bool = False
+
+    @property
+    def held(self) -> bool:
+        """The group is holding it for an admin (read live 2026-10-21)."""
+        return self.from_facebook and strings.HELD_POST_PATH in self.url
+
+    @property
+    def live(self) -> bool:
+        """The group published it."""
+        return (
+            self.from_facebook
+            and not self.held
+            and any(path in self.url for path in strings.LIVE_POST_PATHS)
+        )
+
+
 def created_post_url(reply_text: str, group_url: str = "") -> str:
     """The new post's own link, from Facebook's reply to the Post click.
 
-    "" when the reply does not describe a new post. The shape was read off the
-    live site on 2026-10-07: data.story_create.story carries `url`
-    (.../permalink/<id>/) and `legacy_story_hideable_id` (the <id>).
+    "" when the reply does not describe a new post. See `read_created_post`.
+    """
+    created = read_created_post(reply_text, group_url)
+    return created.url if created else ""
+
+
+def read_created_post(reply_text: str, group_url: str = "") -> CreatedPost | None:
+    """The new post, from Facebook's reply to the Post click.
+
+    None when the reply does not describe a new post. The shape was read off
+    the live site on 2026-10-07: data.story_create.story carries `url`
+    (.../permalink/<id>/) and `legacy_story_hideable_id` (the <id>). A post
+    the group holds for an admin replies the same way, with a link of its own
+    shape, .../pending_posts/<id>/ (read live 2026-10-21, text and pictures).
 
     **A video post replies differently** (read live 2026-10-15): `story` is
     null and `publishing_flow` is "FALLBACK", because Facebook publishes the
@@ -148,14 +216,14 @@ def created_post_url(reply_text: str, group_url: str = "") -> str:
         if isinstance(story, dict):
             url = story.get("url")
             if isinstance(url, str) and url.startswith("http"):
-                return url
+                return CreatedPost(url, from_facebook=True)
             post_id = str(story.get("legacy_story_hideable_id") or "")
             if post_id.isdigit() and group_url:
-                return group_url.rstrip("/") + f"/permalink/{post_id}/"
+                return CreatedPost(group_url.rstrip("/") + f"/permalink/{post_id}/")
         post_id = _post_id_from_story_id(created.get("story_id"))
         if post_id and group_url:
-            return group_url.rstrip("/") + f"/permalink/{post_id}/"
-    return ""
+            return CreatedPost(group_url.rstrip("/") + f"/permalink/{post_id}/")
+    return None
 
 
 def _call_name(request: Any) -> str:
@@ -184,6 +252,9 @@ class PostOutcome:
     # Submitted, but the group holds posts for an admin to approve, so it is
     # not in the feed yet. Neither a success to celebrate nor a failure.
     pending: bool = False
+    # Found by its words alone, and the same words were in the group before
+    # this post, so what was found may be the older one. Might have posted.
+    unconfirmed: bool = False
 
 
 @dataclass
@@ -250,6 +321,12 @@ class GroupPoster:
         # reported as "not posted", because it may have gone out.
         self.clicked_post = False
         self._creation_listener = None
+        # Set once the group's "Write something" box has been found: the group
+        # is there, whatever words its page carries (see guard).
+        self._group_open = False
+        # Whether the post's words were already on the group page before it
+        # was posted (see _note_words_already_here).
+        self.words_seen_before = False
 
     # -- guards ------------------------------------------------------------
     def _page_text(self) -> str:
@@ -260,9 +337,21 @@ class GroupPoster:
             # "no anomaly markers seen", and the next guard will catch it.
             return ""
 
-    def guard(self) -> None:
-        """Halt unless the page is what we expect. Called between every step."""
+    def guard(self, *, arriving: bool = False) -> None:
+        """Halt unless the page is what we expect. Called between every step.
+
+        "Unavailable" is the one verdict that waits for more evidence. The
+        page text is the whole page, other people's posts included, and a
+        shared post whose original was deleted reads "This content isn't
+        available right now" in the middle of a perfectly good group. That
+        halted a client's batch at a group that posted fine an hour later. So
+        on arrival it is not acted on until open_composer knows whether the
+        post box is there, and once it is, it is not acted on at all. A
+        checkpoint, a login page or a rate-limit warning still halts at once.
+        """
         verdict = classify(self.page.url, self._page_text())
+        if verdict is PageVerdict.UNAVAILABLE and (arriving or self._group_open):
+            return
         if not verdict.is_ok:
             raise AutomationHalted(verdict, halt_message(verdict))
 
@@ -340,21 +429,64 @@ class GroupPoster:
         )
 
     # -- steps -------------------------------------------------------------
-    def open_group(self, url: str) -> None:
-        self.page.goto(url, timeout=NAV_TIMEOUT_MS, wait_until="domcontentloaded")
-        self.guard()
+    def open_group(self, url: str, *, look_for: str = "") -> None:
+        """Arrive at the group and look around, as a person would.
+
+        `look_for` is the post's snippet: whether it is already on the page
+        is noted on the way (`words_seen_before`).
+        """
+        self._group_open = False
+        self.words_seen_before = False
+        try:
+            self.page.goto(url, timeout=NAV_TIMEOUT_MS, wait_until="domcontentloaded")
+        except Exception as exc:
+            # Before any post box exists, so it is safe to try again later,
+            # which the worker does. A client's laptop woke from sleep and
+            # Chrome answered net::ERR_NETWORK_IO_SUSPENDED: the batch halted
+            # on a page load that would have worked a minute later.
+            raise PageLoadFailed(_page_load_problem(exc)) from exc
+        self.guard(arriving=True)
+        self._note_words_already_here(look_for)
         self.human.browse(self.page)
         self.human.read_pause()
+        self._note_words_already_here(look_for)
+
+    def _note_words_already_here(self, snippet: str) -> None:
+        """Remember whether the post's words are in the group before posting.
+
+        Only used when Facebook's reply to the Post click carries no id and
+        the post has to be found by its words. Words already in the group, a
+        colleague's identical listing or a post made by hand, would then be
+        taken as proof that this post went out, and the app's own history
+        (`sent_before`) knows about neither. Read off the text the page
+        already shows during the look around on arrival, so it costs no wait
+        and no extra scrolling (the user's choice, 2026-10-20). A very old
+        post far down the feed can be missed.
+        """
+        if not snippet or self.words_seen_before:
+            return
+        wanted = " ".join(snippet.casefold().split())
+        shown = " ".join(strip_invisible(self._page_text()).casefold().split())
+        self.words_seen_before = wanted in shown
 
     def open_composer(self) -> Any:
         trigger = self._find_composer_trigger()
         if trigger is None:
+            # Now the page's words can be believed: no post box and "this
+            # group isn't available" is a group that really is gone. That is
+            # one group, not the account, so it is skipped, not a halt.
+            verdict = classify(self.page.url, self._page_text())
+            if verdict is PageVerdict.UNAVAILABLE:
+                raise GroupUnavailable(GROUP_UNAVAILABLE)
+            if not verdict.is_ok:
+                raise AutomationHalted(verdict, halt_message(verdict))
             raise ComposerNotFound(
                 "Could not find where to write a post in this group. Facebook may "
                 "have changed its page, or the account's language is not English, "
                 "Hebrew or Russian."
             )
 
+        self._group_open = True
         self.human.hover_then_click(trigger)
         dialog = self._dialog()
         dialog.wait_for(state="visible", timeout=ACTION_TIMEOUT_MS)
@@ -665,6 +797,40 @@ class GroupPoster:
         # Not pending any more. Live, or gone.
         return "approved" if self.verify(body, group_url) else "declined"
 
+    def live_link(self, held_url: str) -> str | None:
+        """Where a held post lives, once an admin has approved it.
+
+        Opens the post's own link from Facebook's reply (.../pending_posts/<id>/).
+        Approved, that link goes on to the live post at .../posts/<id>/; held,
+        or declined, it stays on the group's pending posts. Read live on
+        2026-10-21. It needs no words, so it works for a post of pictures
+        alone and in any language.
+
+        Returns the live link; "" when it was not approved (still held, or
+        declined: this cannot tell which); None when the page would not load
+        or went somewhere else. A checkpoint, a login page or a rate-limit
+        warning raises, as everywhere.
+        """
+        post_id = held_url.rstrip("/").rsplit("/", 1)[-1]
+        try:
+            self.page.goto(held_url, timeout=NAV_TIMEOUT_MS, wait_until="domcontentloaded")
+            self.page.wait_for_timeout(FEED_SETTLE_MS)
+        except Exception:
+            return None
+        landed = self.page.url
+        # Unavailable is let through: a live post opens in the group's feed,
+        # where someone's shared post can read "content isn't available".
+        verdict = classify(landed, self._page_text())
+        if not verdict.is_ok and verdict is not PageVerdict.UNAVAILABLE:
+            raise AutomationHalted(verdict, halt_message(verdict))
+        if strings.HELD_POST_PATH in landed:
+            return ""
+        if post_id.isdigit() and post_id in landed and any(
+            path in landed for path in strings.LIVE_POST_PATHS
+        ):
+            return landed.split("?")[0]
+        return None
+
     def discard(self) -> None:
         """Close the composer and throw away the draft.
 
@@ -710,7 +876,7 @@ class GroupPoster:
             raise PostNotVerified(_after_click(exc)) from exc
 
     def _post(self, request: PostRequest) -> PostOutcome:
-        self.open_group(request.group_url)
+        self.open_group(request.group_url, look_for=distinctive_snippet(request.body))
         dialog = self.open_composer()
 
         try:
@@ -734,7 +900,7 @@ class GroupPoster:
                 closed = self.publish(dialog)
                 # Read before anything navigates: once the page moves on,
                 # Facebook's reply can no longer be read (seen live).
-                created = self._created_post_url(replies, request.group_url)
+                created = self._created_post(replies, request.group_url)
             finally:
                 self._stop_listening()
         except AutomationHalted:
@@ -754,15 +920,6 @@ class GroupPoster:
 
         # Verification is the source of truth, not whether the dialog closed.
         if self.verify(request.body, request.group_url):
-            if request.sent_before:
-                # The same words were sent to this group before, so what was
-                # found may be the older post. Saying "posted" on that is the
-                # false confirmation this guards against.
-                raise PostNotVerified(
-                    "Clicked Post, and these words are in the group, but the same "
-                    "text was posted there before, so the app cannot tell whether "
-                    "this one went out. Check the group before posting it again."
-                )
             # Seeing it is not the same as it being published. Facebook shows
             # the author their own queued post in the feed, so in a moderated
             # group verify() succeeds on a post nobody else can see -- observed
@@ -774,6 +931,19 @@ class GroupPoster:
             # question "is it this post?" goes to the one page that answers it.
             if self.awaiting_approval() and self._is_queued(request):
                 return self._pending_outcome()
+            if request.sent_before or self.words_seen_before:
+                # The same words were in the group before this post: sent there
+                # by the app, or seen on arrival. What was found may be the
+                # older post, and saying "posted" on that is the false
+                # confirmation this guards against. Not a halt: the batch
+                # carries on (the user's choice, 2026-10-20), because going on
+                # to the next group cannot post twice to this one.
+                return PostOutcome(
+                    posted=True,
+                    verified=False,
+                    unconfirmed=True,
+                    detail=WORDS_WERE_THERE_BEFORE,
+                )
             return PostOutcome(
                 posted=True,
                 verified=True,
@@ -839,32 +1009,37 @@ class GroupPoster:
             pass
         self._creation_listener = None
 
-    def _created_post_url(self, replies: list, group_url: str) -> str:
-        """The new post's link from Facebook's reply, or "" if there is none."""
+    def _created_post(self, replies: list, group_url: str) -> CreatedPost | None:
+        """The new post from Facebook's reply, or None if there is none."""
         if self._creation_listener is None:
-            return ""
+            return None
         waited = 0
         while not replies and waited < CREATION_WAIT_MS:
             self.page.wait_for_timeout(RENDER_POLL_MS)
             waited += RENDER_POLL_MS
         for reply in list(replies):
             try:
-                url = created_post_url(reply.text(), group_url)
+                created = read_created_post(reply.text(), group_url)
             except Exception:
                 continue
-            if url:
-                return url
-        return ""
+            if created:
+                return created
+        return None
 
-    def _created_outcome(self, request: PostRequest, url: str) -> PostOutcome:
+    def _created_outcome(self, request: PostRequest, created: CreatedPost) -> PostOutcome:
         """Facebook made the post. All that is left is whether a group holds it.
 
         The reply names this post and no other, which searching the feed for
         its words cannot do once the same words may go to a group every day --
-        and it works for a post of pictures alone. One look at the group
-        follows, as a person would take, for the "pending admin approval"
-        banner; a checkpoint or a block shown there still halts the batch.
+        and it works for a post of pictures alone. Its own link also says
+        whether the group holds it (read live 2026-10-21), so no banner or
+        words are needed. One look at the group follows all the same, as a
+        person would take: a checkpoint or a block shown there still halts the
+        batch. Only a link the app built from the post's number (a video,
+        whose reply has no story yet) leaves it to the "pending admin
+        approval" banner, as before.
         """
+        url = created.url
         detail = "Posted. Facebook confirmed it and gave the post its own link."
         if any(media.is_video(path) for path in request.media_paths):
             # Facebook publishes a video post once it has processed the video,
@@ -874,8 +1049,9 @@ class GroupPoster:
                 "Facebook processes it."
             )
         confirmed = PostOutcome(posted=True, verified=True, post_url=url, detail=detail)
+        said = self._pending_outcome(url) if created.held else confirmed
         if not request.group_url:
-            return confirmed
+            return said
         try:
             self.page.goto(
                 request.group_url, timeout=NAV_TIMEOUT_MS, wait_until="domcontentloaded"
@@ -884,8 +1060,12 @@ class GroupPoster:
         except Exception:
             # The post is made; not being able to look again only means the
             # banner cannot be read.
-            return confirmed
+            return said
         self.guard()
+        if created.held or created.live:
+            # Facebook's own link said which. The banner shows while any post
+            # of ours is held, so it would only confuse a live one.
+            return said
         if self.awaiting_approval():
             # The banner shows while any post of ours is held. A text post is
             # looked up in the group's pending list; pictures cannot be, and a
@@ -950,8 +1130,10 @@ class GroupPoster:
 
         self.page.goto(group_url, timeout=NAV_TIMEOUT_MS, wait_until="domcontentloaded")
         verdict = classify(self.page.url, self._page_text())
-        report.page_ok = verdict.is_ok
-        if not verdict.is_ok:
+        # Unavailable waits for the post box, exactly as posting does (guard).
+        unavailable = verdict is PageVerdict.UNAVAILABLE
+        report.page_ok = verdict.is_ok or unavailable
+        if not report.page_ok:
             report.notes.append(halt_message(verdict))
             return report
 
@@ -960,8 +1142,17 @@ class GroupPoster:
         trigger = self._find_composer_trigger()
         report.composer_trigger = trigger is not None
         if trigger is None:
-            report.notes.append("No composer trigger matched any known wording.")
+            if unavailable:
+                report.page_ok = False
+                report.notes.append(GROUP_UNAVAILABLE)
+            else:
+                report.notes.append("No composer trigger matched any known wording.")
             return report
+        if unavailable:
+            report.notes.append(
+                "The page has words that read as 'unavailable', but the post box "
+                "is there, so posting goes ahead: they are in someone's post."
+            )
 
         self.human.hover_then_click(trigger)
         dialog = self._dialog()

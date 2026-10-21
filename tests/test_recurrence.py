@@ -283,3 +283,62 @@ class TestRecurrenceDefaults:
 
     def test_per_day_counts_the_times(self):
         assert Recurrence(times=("09:00", "18:00")).per_day == 2
+
+
+def post(**changes):
+    values = dict(
+        bodies=["Flat for rent in Ashdod"],
+        media=[("flat.png", 1200)],
+        times=["09:00", "21:00"],
+        days=[0, 2, 5],
+        groups=[1, 2, 3],
+    )
+    values.update(changes)
+    return recurrence.shape(**values)
+
+
+class TestAnExactCopy:
+    """A client set up the same repeating post twice, 31 seconds apart. Only
+    an exact copy is refused (the user's choice, 2026-10-20): posting the same
+    thing again in any other way is legitimate."""
+
+    def test_an_exact_copy_is_found(self):
+        original = post()
+        assert recurrence.find_copy(post(), [("original", original)]) == "original"
+
+    def test_order_does_not_make_it_different(self):
+        same = post(
+            bodies=["Flat for rent in Ashdod"],
+            times=["21:00", "09:00"],
+            days=[5, 0, 2],
+            groups=[3, 1, 2],
+        )
+        assert same == post()
+
+    def test_invisible_marks_and_spacing_do_not_make_it_different(self):
+        assert post(bodies=["Flat for rent in Ashdod‏ "]) == post()
+
+    def test_every_day_is_every_day_however_it_is_written(self):
+        assert post(days=[]) == post(days=list(range(7)))
+
+    @pytest.mark.parametrize(
+        "changes",
+        [
+            {"bodies": ["Flat for rent in Ashdod, 4 rooms"]},
+            {"bodies": ["Flat for rent in Ashdod", "Another way of saying it"]},
+            {"media": [("flat.png", 1300)]},
+            {"media": [("other.png", 1200)]},
+            {"media": []},
+            {"times": ["09:00"]},
+            {"days": [1, 3, 6]},
+            {"groups": [1, 2]},
+            {"groups": [1, 2, 3, 4]},
+        ],
+        ids=["words", "more words", "picture size", "picture name", "no picture",
+             "times", "days", "fewer groups", "more groups"],
+    )
+    def test_anything_different_is_not_a_copy(self, changes):
+        assert recurrence.find_copy(post(**changes), [("original", post())]) is None
+
+    def test_nothing_to_compare_with_is_no_copy(self):
+        assert recurrence.find_copy(post(), []) is None

@@ -1,9 +1,9 @@
 ---
 paths:
   - "fbposter/db/**"
-  - "fbposter/stats.py"
+  - "fbposter/{stats,attachments}.py"
   - "fbposter/qtui/views/{dashboard,groups,group_sets}.py"
-  - "tests/test_{db,history_prune,group_sets,stats,account_switch}.py"
+  - "tests/test_{db,history_prune,group_sets,stats,account_switch,attachments}.py"
   - "tests/test_qtui_{dashboard,groups,group_sets,group_names}.py"
 ---
 
@@ -40,6 +40,16 @@ A consequence worth knowing before "fixing" it: **with few posts to a group, not
 `sqlite3` reports `rowcount` as **-1** for a `DELETE` that begins with a CTE, so the prune selects the doomed ids first and deletes by id; a count that silently means "unknown" is worse than no count. `reclaim_space()` runs `VACUUM` **and then `PRAGMA wal_checkpoint(TRUNCATE)`**. Under WAL the rewritten pages sit in the `-wal` file and the main database does not shrink on disk without it.
 
 The worker calls this at most once a day (`PRUNE_EVERY`), tracked in the `last_prune_at` setting rather than in memory so that restarting the app does not re-run it and an app left open for weeks still gets round to it. A failure there is reported and swallowed: housekeeping must never be able to stall the queue.
+
+## Attachments live in `media/`, beside the database
+
+A client attached pictures from Downloads and the Desktop, and a repeating post keeps its paths for weeks, so tidying either folder would have stopped every later run. Since 2026-10-20 (the user's choice) the worker keeps each attachment in `media/<8 hex>/<its own name>` beside the database (`fbposter/attachments.py`, `AttachmentRepo`), and the row points there:
+
+- **A hard link when it can, a real copy when it cannot.** A link is instant, costs no space and survives the original being deleted; editing the original in place does change it, which the user accepted. The copy is written as `.partial` and renamed, so a copy cut short is never taken for the file.
+- **What is stored:** unfinished batches, every repeating post, every template (`AttachmentRepo.holders`). A finished batch is left as it was.
+- **The rewrite is conditional** (`repoint`): it only lands if the column still reads what was read, so a save from the window in between wins, and the worker comes round again.
+- **Clean-up deletes files, never rows**, once a day (`_maybe_prune_media`, `last_media_prune_at`): a folder nothing in `holders` refers to, nor a batch finished in the last 7 days (so a Cancel can still be undone with its files), and older than a day.
+- **The folder follows the database** (`attachments.media_dir(db.path)`), so a test's temporary database keeps its files in its own temporary folder. An account switch keeps the templates' files; the rest go at the next clean-up.
 
 ## Removing a group archives it; it has never been safe to delete one
 

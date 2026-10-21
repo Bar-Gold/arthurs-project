@@ -11,7 +11,7 @@ Moved out of the root `CLAUDE.md`, which still applies. This file loads by itsel
 
 Nothing in the suite opens Chrome, hits Facebook, or waits out a real delay. Keep it that way. Every seam already exists:
 
-- **`tests/fake_page.py`** stands in for a Playwright `Page`, recording every call into `page.calls`. It implements only the surface `GroupPoster` actually uses, so a poster that starts calling something new fails loudly instead of quietly passing. Its knobs (`missing`, `redirect_to`, `body_text`, `wait_fails_for`, `never_detaches`) are how the halt paths, the slow-publish path and the dry-run boundary get exercised.
+- **`tests/fake_page.py`** stands in for a Playwright `Page`, recording every call into `page.calls`. It implements only the surface `GroupPoster` actually uses, so a poster that starts calling something new fails loudly instead of quietly passing. Its knobs (`missing`, `redirect_to`, `body_text`, `after_post_text`, `wait_fails_for`, `never_detaches`, `goto_error`) are how the halt paths, the slow-publish path and the dry-run boundary get exercised.
 - **`Humanizer(rng=, sleep=)`**: pass a seeded `Random` and a no-op sleep and the human pacing is deterministic and instant.
 - **`PostingWorker(poster=, now=, sleep=, blocker=, tick_seconds=)`**: the whole loop, including the inter-group gap and crash recovery, runs without a thread, a browser or the wall clock.
 - **`App(check_fn=, db=, group_namer=)`**: a temporary database and `SilentNamer`. Constructing an `App` deliberately does not start the worker. `App.group_finder` is `None` (switched off) unless a test passes a stub; `run()` switches the live one on.

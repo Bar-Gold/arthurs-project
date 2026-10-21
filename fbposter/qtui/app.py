@@ -996,6 +996,13 @@ class App(QMainWindow):
             # will. An "info" toast reads as "that went fine".
             "pending": "warning",
             "declined": "warning",
+            # One group is gone; the batch carried on without it.
+            "unavailable": "warning",
+            # Found by its words only, which were in the group before; the
+            # batch carried on. The user should look at that group.
+            "unconfirmed": "warning",
+            # Facebook's reply gave a post no id, so checks fell back to words.
+            "no_post_id": "warning",
             # Nothing has gone wrong yet, but it is about to unless the user
             # does something -- which is exactly what a warning is for.
             "power": "warning",
@@ -1005,8 +1012,9 @@ class App(QMainWindow):
         if dashboard is not None and hasattr(dashboard, "refresh"):
             dashboard.refresh()
         # A schedule that just fired has a new "next run"; the card would go on
-        # showing the slot it already used otherwise.
-        if event.kind in ("scheduled", "schedule_error", "missed"):
+        # showing the slot it already used otherwise. A group that turned out
+        # to be unavailable may have left a repeating post's groups.
+        if event.kind in ("scheduled", "schedule_error", "missed", "unavailable"):
             publish_view = self.views.get("publish")
             if publish_view is not None:
                 publish_view.refresh_schedules()

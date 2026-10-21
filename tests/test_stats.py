@@ -150,27 +150,6 @@ class TestSuccessRate:
         assert summary(records).success_rate == 1.0
 
 
-class TestWordings:
-    def test_counts_different_texts_in_the_last_week(self):
-        records = [
-            sent("2026-10-14 09:00", body="Bike for sale"),
-            sent("2026-10-13 09:00", body="Bike for sale"),
-            sent("2026-10-12 09:00", body="A road bike, barely used"),
-            sent("2026-09-01 09:00", body="Something from last month"),
-        ]
-        assert summary(records).wordings == 2
-
-    def test_an_invisible_mark_does_not_make_a_new_wording(self):
-        records = [
-            sent("2026-10-14 09:00", body="Bike for sale"),
-            sent("2026-10-13 09:00", body="Bike‏ for sale"),
-        ]
-        assert summary(records).wordings == 1
-
-    def test_pictures_without_text_are_not_a_wording(self):
-        assert summary([sent("2026-10-14 09:00", body="")]).wordings == 0
-
-
 class TestPerDay:
     def test_one_entry_per_day_oldest_first_ending_today(self):
         days = stats.per_day([], NOW)

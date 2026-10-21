@@ -183,6 +183,54 @@ def pick_body(
     return usable[offset % len(usable)]
 
 
+@dataclass(frozen=True)
+class PostShape:
+    """Everything that makes two repeating posts the same post: what goes
+    out, where, and when. The name is left out on purpose, and so is the
+    order of the wordings and groups, which only changes who gets which
+    wording first."""
+
+    wordings: frozenset[str]
+    media: tuple[tuple[str, int | None], ...]
+    times: tuple[str, ...]
+    days: tuple[int, ...]
+    groups: frozenset[int]
+
+
+def shape(
+    bodies: Sequence[str],
+    media: Sequence[tuple[str, int | None]],
+    times: Sequence[str],
+    days: Sequence[int],
+    groups: Sequence[int],
+) -> PostShape:
+    """`media` is each attachment's `attachments.identity`. Raises
+    InvalidRecurrence for times or days that cannot be scheduled."""
+    rule = build(times, days)
+    return PostShape(
+        wordings=frozenset(normalise(body) for body in bodies if body.strip()),
+        media=tuple(sorted(media, key=lambda item: (item[0], item[1] or -1))),
+        times=rule.times,
+        days=rule.days,
+        groups=frozenset(groups),
+    )
+
+
+def find_copy(candidate: PostShape, existing: Sequence[tuple[object, PostShape]]):
+    """The first existing post that is an exact copy of `candidate`, or None.
+
+    Only an exact copy (the user's choice, 2026-10-20): two of those send
+    every group the same post twice at every slot. A client set up the same
+    repeating post twice, 31 seconds apart. The same post at another time, on
+    other days, to other groups, or with other words or pictures is
+    legitimate and goes through.
+    """
+    for item, other in existing:
+        if other == candidate:
+            return item
+    return None
+
+
 def describe(rule: Recurrence) -> str:
     """One line for the UI: "Every day at 09:00 and 18:00"."""
     times = list(rule.times)

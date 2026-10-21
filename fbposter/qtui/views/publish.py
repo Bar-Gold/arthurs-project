@@ -42,7 +42,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from fbposter import clock, recurrence
+from fbposter import attachments, clock, recurrence
 from fbposter.text import strip_invisible
 from fbposter.db.models import SCHEDULE_ACTIVE, SCHEDULE_PAUSED, utcnow
 
@@ -187,6 +187,45 @@ def following(set_names) -> str | None:
     return (
         f"Follows {', '.join(set_names)}: a group added to {them} later gets "
         "this post from its next run."
+    )
+
+
+def copy_of(schedule_repo, *, bodies, media_paths, times, days, groups, exclude_id=None):
+    """The repeating post this one would be an exact copy of, or None.
+
+    Said where a repeating post is set up and where it is edited. `groups` is
+    every group it goes to, its sets' groups included. Only an exact copy is
+    refused (`recurrence.find_copy`).
+    """
+    try:
+        candidate = recurrence.shape(
+            bodies, [attachments.identity(p) for p in media_paths], times, days, groups
+        )
+    except recurrence.InvalidRecurrence:
+        return None
+    existing = []
+    for schedule in schedule_repo.list():
+        if schedule.id == exclude_id:
+            continue
+        try:
+            existing.append((schedule, recurrence.shape(
+                schedule.bodies,
+                [attachments.identity(p) for p in schedule.media_paths],
+                schedule.times,
+                schedule.days,
+                schedule.recipient_ids,
+            )))
+        except recurrence.InvalidRecurrence:
+            continue
+    return recurrence.find_copy(candidate, existing)
+
+
+def copy_message(schedule) -> str:
+    name = schedule.display_name
+    return (
+        f"This is the same as the repeating post {name}: the same words, "
+        "pictures, times, days and groups. Change one of them, or edit "
+        f"{name} instead."
     )
 
 
@@ -1134,6 +1173,18 @@ class PublishView(QWidget):
             rule = recurrence.build(self.times(), self.days())
         except recurrence.InvalidRecurrence as exc:
             self.notify(str(exc), "error")
+            return False
+
+        same = copy_of(
+            self.app.schedule_repo,
+            bodies=wordings,
+            media_paths=self.compose.attachments,
+            times=rule.times,
+            days=rule.days,
+            groups=groups,
+        )
+        if same is not None:
+            self.notify(copy_message(same), "error")
             return False
 
         if any(self.compose.has_rewrite(group_id) for group_id in groups):

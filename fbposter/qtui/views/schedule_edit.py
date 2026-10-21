@@ -57,6 +57,8 @@ from .publish import (
     RIGHT_COLUMN_SCROLLBAR,
     RIGHT_COLUMN_WIDTH,
     TimePicker,
+    copy_message,
+    copy_of,
     day_boxes,
     following,
     next_time,
@@ -628,6 +630,19 @@ class ScheduleEditView(QWidget):
             rule = recurrence.build(self.times(), self.days())
         except recurrence.InvalidRecurrence as exc:
             self.notify(str(exc), "error")
+            return False
+
+        same = copy_of(
+            self.app.schedule_repo,
+            bodies=wordings,
+            media_paths=self._pictures,
+            times=rule.times,
+            days=rule.days,
+            groups=ticked,
+            exclude_id=schedule.id,
+        )
+        if same is not None:
+            self.notify(copy_message(same), "error")
             return False
 
         # A new time is a new slot, found the way Resume finds one. Unchanged

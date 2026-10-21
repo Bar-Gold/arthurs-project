@@ -32,7 +32,6 @@ from .db.models import (
     PostRecord,
 )
 from .db.repo import SENT_STATES
-from .text import normalise
 
 WEEK_DAYS = 7
 MONTH_DAYS = 30
@@ -74,7 +73,6 @@ class Summary:
     # 0..1 of what was tried in the last month; None when nothing was tried.
     success_rate: float | None
     tried: int
-    wordings: int
 
 
 def summary(
@@ -107,7 +105,6 @@ def summary(
         since=min(starts) if starts else None,
         success_rate=(went / len(tried)) if tried else None,
         tried=len(tried),
-        wordings=len({normalise(r.body) for r in week if normalise(r.body)}),
     )
 
 

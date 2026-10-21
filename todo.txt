@@ -1,8 +1,3 @@
-Check what is DOM and CDP
-LF/CRLF
-see problems in logs
 Add repeating posts to the queue shit
 fix the deleted groups uncomfortable situation
 logic of the vary words if off, you need to go forward then backward..
-shitty home screen
-delete shit panels from the dashboard

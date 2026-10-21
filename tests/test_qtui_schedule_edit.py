@@ -150,6 +150,29 @@ class TestItOpensFilledIn:
         assert editor.pictures() == ["C:\\pictures\\bike.jpg"]
 
 
+class TestAnEditCannotMakeAnExactCopy:
+    """Only an exact copy of another repeating post is refused (the user's
+    choice, 2026-10-20). The post being edited is never its own copy."""
+
+    def test_saving_unchanged_is_not_a_copy_of_itself(self, editing):
+        editor, _schedule = editing
+        assert editor.save() is True
+
+    def test_turning_it_into_another_post_is_refused(self, qt_app, groups, editing):
+        editor, schedule = editing
+        make_schedule(qt_app, [groups[0].id, groups[1].id], name="Evening", times=("21:00",))
+        set_time(editor, 0, "21:00")
+        assert editor.save() is False
+        assert "Evening" in qt_app.toast_label.text()
+        assert stored(qt_app, schedule).times == ["09:00"]
+
+    def test_the_same_words_at_another_time_save(self, qt_app, groups, editing):
+        editor, schedule = editing
+        make_schedule(qt_app, [groups[0].id, groups[1].id], name="Evening", times=("21:00",))
+        set_time(editor, 0, "18:00")
+        assert editor.save() is True
+
+
 class TestSavingChangesIt:
     def test_the_wordings(self, qt_app, editing):
         editor, schedule = editing

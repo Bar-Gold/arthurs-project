@@ -61,6 +61,15 @@ MY_CONTENT_PATH = "my_pending_content"
 GRAPHQL_PATH = "/api/graphql"
 POST_CREATED_CALL = "ComposerStoryCreateMutation"
 
+# That link also says whether the group published the post or is holding it for
+# an admin. Read live on 2026-10-21 in a group with post approval, a text post
+# and a picture-only one alike: held, the reply's link is .../pending_posts/<id>/
+# (beside `if_viewer_can_learn_more_about_pending_post`); live, .../permalink/<id>/.
+# Once an admin approves, the held link opens the live post at .../posts/<id>/;
+# held or declined, it stays put. A link, so the same in every language.
+HELD_POST_PATH = "/pending_posts/"
+LIVE_POST_PATHS = ("/permalink/", "/posts/")
+
 
 def my_content_url(group_url_or_identifier: str) -> str:
     """The "Your content" page for a group, whose default tab is Pending."""
