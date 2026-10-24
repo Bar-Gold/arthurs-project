@@ -82,6 +82,11 @@ STEPPER_ROOM = STEPPER_INSET + 2 * STEPPER_WIDTH + 2 + 6
 DROPDOWN_ROOM = STEPPER_INSET + STEPPER_WIDTH + 6
 # The chevron drawn in each; at 12px it was a 6px tick, too slight to aim at.
 ARROW_SIZE = 16
+# A button that opens a list: the padding at its right. Qt keeps the
+# chevron's own room out of the words by itself.
+MENU_ROOM = 24
+# The round button on an attached picture's corner, which takes it off.
+THUMB_REMOVE = 22
 
 RADIUS = 8
 RADIUS_S = 6
@@ -141,6 +146,24 @@ LIGHT = {
     "HOVER_BG": "#F2EEE7",
     "PRESSED_BG": "#E8E1D5",
     "BORDER_STRONG": "#C5BBAB",
+    # The darker lower edge that lifts a box off what it sits on, the way
+    # Windows 11 draws its own controls (2026-10-21). A typing box has the
+    # firmest: its lower line is where the words go. Then a button, then a
+    # panel, which only needs to read as one sheet laid on the page.
+    "FIELD_BORDER": "#DCD4C7",
+    "FIELD_STROKE": "#9E9483",
+    "CONTROL_STROKE": "#CDC3B3",
+    "CARD_STROKE": "#D9D0C1",
+    # A typing box or a button under the pointer: warmer than white, quieter
+    # than the hover of a list row.
+    "FIELD_HOVER": "#FBF9F5",
+    # A ticked group's row (2026-10-24): a faint champagne, so the picked ones
+    # stand out down a list of 40-80. Under the pointer it deepens to
+    # NAV_ACTIVE_BG, the chosen tab's tint.
+    "ROW_PICKED": "#F8F2E4",
+    # The hint in an empty typing box. Qt's own was 3.3:1 on white, too faint
+    # to read; this is lighter than TEXT_MUTED, so it never looks typed.
+    "PLACEHOLDER": "#6E7380",
     "SUCCESS": "#1D7A42",
     "WARNING": "#A0520C",
     "DANGER": "#B4283B",
@@ -158,6 +181,17 @@ LIGHT = {
     # A joined toggle: the track, and the raised segment that is chosen.
     "SEGMENT_TRACK": "#EDE8DF",
     "SEGMENT_ON": "#FFFFFF",
+    # Facebook's own colours, for the preview only (2026-10-22): it is a
+    # window onto Facebook, so it is drawn as Facebook draws, not in navy and
+    # gold. The feed's grey ground, a post, its text and its grey words, the
+    # line over Like/Comment/Share, a post's edge, and a group's picture tile.
+    "FB_FEED": "#F0F2F5",
+    "FB_CARD": "#FFFFFF",
+    "FB_TEXT": "#050505",
+    "FB_MUTED": "#65676B",
+    "FB_DIVIDER": "#CED0D4",
+    "FB_BORDER": "#DADDE1",
+    "FB_GROUP_BG": "#E4E6EB",
 }
 
 # A status badge's text colour, by the colour token a status is given, and the
@@ -243,6 +277,7 @@ def stylesheet() -> str:
     QFrame#Card, QFrame#List {{
         background: {c["SURFACE"]};
         border: 1px solid {c["BORDER"]};
+        border-bottom-color: {c["CARD_STROKE"]};
         border-radius: {RADIUS_L}px;
     }}
     QFrame#Divider {{ background: {c["BORDER"]}; border: none; }}
@@ -307,12 +342,32 @@ def stylesheet() -> str:
     QLabel#StepNumber {{ color: {c["TEXT_MUTED"]}; font-weight: 600; }}
     QLabel#StepWords[state="current"] {{ color: {c["ACCENT_TEXT"]}; font-weight: 600; }}
     QLabel#StepWords[state="todo"] {{ color: {c["TEXT_MUTED"]}; }}
-    /* The post as Preview shows it sits on the page colour, the way a feed
-       sets its posts on a grey ground. It fills the whole box. */
+    /* Preview is a window onto Facebook, so everything in it is drawn in
+       Facebook's own colours: the feed's grey ground filling the whole box,
+       and the post on it, as a computer and as a phone show it. */
     QWidget#PreviewCanvas {{
-        background: {c["WINDOW_BG"]};
+        background: {c["FB_FEED"]};
         border-radius: {RADIUS_L - 1}px;
     }}
+    QLabel#PreviewNote, QLabel#PreviewCaption, QLabel#FbMeta, QLabel#FbMuted {{
+        color: {c["FB_MUTED"]};
+    }}
+    QLabel#PreviewNote, QLabel#PreviewCaption, QLabel#FbMeta {{
+        font-size: {SIZE_SMALL}px;
+    }}
+    QLabel#PreviewCaption {{ font-weight: 600; }}
+    QFrame#FbPost {{
+        background: {c["FB_CARD"]};
+        border: 1px solid {c["FB_BORDER"]};
+        border-radius: {RADIUS}px;
+    }}
+    QFrame#FbPost[phone="true"] {{ border-radius: 0px; }}
+    QLabel#FbText, QLabel#FbName {{ color: {c["FB_TEXT"]}; }}
+    QLabel#FbName {{ font-weight: 600; }}
+    QLabel#FbMore {{ color: {c["FB_MUTED"]}; font-size: {SIZE_HEADING}px; }}
+    QLabel#FbAction {{ color: {c["FB_MUTED"]}; font-weight: 600; }}
+    QLabel#FbAction[phone="true"] {{ font-size: {SIZE_SMALL}px; }}
+    QFrame#FbDivider {{ background: {c["FB_DIVIDER"]}; border: none; }}
 
     /* A status: what happened to a post, or whether a repeating post is on.
        It used to be coloured words, the same size and weight as the grey
@@ -333,15 +388,22 @@ def stylesheet() -> str:
        pressed feels as if the click did not land. The :pressed rules sit at
        the end of the block so they win over :hover and :focus, which are
        both true at the moment of a click. */
+    /* A plain button is a white tile with a firmer lower edge, so it stands
+       a little off the page like a key, not a flat outline (2026-10-21). */
     QPushButton {{
         background: {c["SURFACE"]};
         border: 1px solid {c["BORDER"]};
-        border-radius: {RADIUS}px;
+        border-bottom-color: {c["CONTROL_STROKE"]};
+        border-radius: {RADIUS_S}px;
         padding: 7px 14px;
         min-height: {CONTROL_HEIGHT - 16}px;
         color: {c["TEXT"]};
     }}
-    QPushButton:hover {{ background: {c["HOVER_BG"]}; border-color: {c["BORDER_STRONG"]}; }}
+    QPushButton:hover {{
+        background: {c["FIELD_HOVER"]};
+        border-color: {c["BORDER_STRONG"]};
+        border-bottom-color: {c["FIELD_STROKE"]};
+    }}
     QPushButton:disabled {{
         background: transparent;
         border-color: {c["BORDER"]};
@@ -464,6 +526,7 @@ def stylesheet() -> str:
     QPushButton#Segment:checked {{
         background: {c["SEGMENT_ON"]};
         border-color: {c["BORDER"]};
+        border-bottom-color: {c["CONTROL_STROKE"]};
         color: {c["TEXT"]};
     }}
     QPushButton#Segment:focus {{ border: 2px solid {c["ACCENT"]}; padding: 4px 13px; }}
@@ -478,8 +541,14 @@ def stylesheet() -> str:
         color: {c["TEXT_MUTED"]};
         padding: 7px 10px;
     }}
+    /* "Remove" on a group's row is veiled until the pointer is on the row
+       (groups.GroupRow, 2026-10-24): fifty of them at once were the loudest
+       thing in the list. Tab still reaches it, and focus shows it. Before
+       :hover, so reaching for the button itself still turns it red. */
+    QPushButton#Link[veiled="true"] {{ color: transparent; }}
     QPushButton#Link:hover {{ background: {c["DANGER_SOFT"]}; color: {c["DANGER"]}; }}
     QPushButton#Link:focus {{ border: 2px solid {c["ACCENT"]}; padding: 5px 8px; }}
+    QPushButton#Link[veiled="true"]:focus {{ color: {c["TEXT_MUTED"]}; }}
     /* "Back" in the flow: words, no box, so the one filled button beside or
        above it stands alone (the user's choice, 2026-10-20). Grey like a
        caption until the pointer reaches it. */
@@ -491,6 +560,40 @@ def stylesheet() -> str:
     }}
     QPushButton#BackLink:hover {{ background: {c["HOVER_BG"]}; color: {c["TEXT"]}; }}
     QPushButton#BackLink:focus {{ border: 2px solid {c["ACCENT"]}; padding: 5px 8px; }}
+    /* A button that opens a short list: "Load template" on step 1
+       (2026-10-24). The chevron is the drop-down's, so it reads as one. */
+    QPushButton#MenuButton {{ padding: 7px {MENU_ROOM}px 7px 14px; }}
+    QPushButton#MenuButton:focus {{ padding: 6px {MENU_ROOM - 1}px 6px 13px; }}
+    QPushButton#MenuButton::menu-indicator {{
+        image: url({icon("chevron-down")});
+        subcontrol-origin: padding;
+        subcontrol-position: center right;
+        right: 10px;
+        width: {ARROW_SIZE}px;
+        height: {ARROW_SIZE}px;
+    }}
+    QMenu {{
+        background: {c["SURFACE"]};
+        color: {c["TEXT"]};
+        border: 1px solid {c["BORDER"]};
+        padding: 4px;
+    }}
+    QMenu::item {{ padding: 8px 24px 8px 12px; border-radius: {RADIUS_S}px; }}
+    QMenu::item:selected {{ background: {c["NAV_ACTIVE_BG"]}; color: {c["TEXT"]}; }}
+    QMenu::item:disabled {{ color: {c["TEXT_MUTED"]}; }}
+    /* An attached picture on step 1, and the round button that takes it off
+       (compose.Thumbnail, 2026-10-24). Dark on the picture, as a photo
+       app's own controls are, whatever the picture's colours. */
+    QPushButton#ThumbRemove {{
+        background: rgba(22, 29, 43, 190);
+        border: none;
+        border-radius: {THUMB_REMOVE // 2}px;
+        padding: 0px;
+        min-height: 0px;
+    }}
+    QPushButton#ThumbRemove:hover {{ background: rgba(22, 29, 43, 235); }}
+    QPushButton#ThumbRemove:focus {{ border: 2px solid {c["TEXT_ON_ACCENT"]}; padding: 0px; }}
+    QPushButton#ThumbRemove:pressed {{ background: {c["ACCENT_PRESSED"]}; }}
     /* "Post anyway": a deliberate step outside the rules. Outlined rather than
        filled -- the one filled button on a screen is the next step in the
        flow, and this is the opposite of that. Its own :focus rule, because the
@@ -595,24 +698,37 @@ def stylesheet() -> str:
     QPushButton#ToastClose:focus {{ border: 2px solid {c["ACCENT"]}; padding: 2px 8px; }}
     QPushButton#ToastClose:pressed {{ background: {c["PRESSED_BG"]}; color: {c["TEXT"]}; }}
 
+    /* A typing box or a list to pick from, drawn as Windows 11 draws its own
+       (2026-10-21): faint sides and a firm line along the bottom, where the
+       words sit. In focus that line turns navy and thickens, and the sides
+       stay put. They were a pale outline the same as every panel's, so a box
+       inside a panel was hard to find at all. */
     QTextEdit, QLineEdit, QDateTimeEdit, QComboBox, QSpinBox {{
         background: {c["SURFACE"]};
-        border: 1px solid {c["BORDER"]};
-        border-radius: {RADIUS}px;
-        padding: 8px;
+        border: 1px solid {c["FIELD_BORDER"]};
+        border-bottom-color: {c["FIELD_STROKE"]};
+        border-radius: {RADIUS_S}px;
+        padding: 8px 10px;
         min-height: {CONTROL_HEIGHT - 18}px;
         selection-background-color: {c["ACCENT"]};
         selection-color: {c["TEXT_ON_ACCENT"]};
+        placeholder-text-color: {c["PLACEHOLDER"]};
     }}
-    QLineEdit:hover, QDateTimeEdit:hover, QComboBox:hover, QSpinBox:hover {{
-        border-color: {c["BORDER_STRONG"]};
+    QTextEdit:hover, QLineEdit:hover, QDateTimeEdit:hover, QComboBox:hover, QSpinBox:hover {{
+        background: {c["FIELD_HOVER"]};
     }}
     QTextEdit:focus, QLineEdit:focus, QDateTimeEdit:focus,
     QComboBox:focus, QSpinBox:focus {{
-        border: 2px solid {c["ACCENT"]};
-        padding: 7px;
+        background: {c["SURFACE"]};
+        border-bottom: 2px solid {c["ACCENT"]};
+        padding-bottom: 7px;
     }}
-    QTextEdit#Editor {{ border: none; font-size: {SIZE_BODY + 1}px; }}
+    QTextEdit#Editor, QTextEdit#Editor:hover, QTextEdit#Editor:focus {{
+        background: {c["SURFACE"]};
+        border: none;
+        padding: 8px;
+        font-size: {SIZE_BODY + 1}px;
+    }}
 
     /* Step buttons. Left to the platform they were two small arrows, and the
        text box -- sized by the padding above, which knew nothing of them --
@@ -620,7 +736,6 @@ def stylesheet() -> str:
        The right padding now reserves their room, and they are drawn here:
        side by side, nearly full height, decrease then increase. */
     QAbstractSpinBox {{ padding-right: {STEPPER_ROOM}px; }}
-    QAbstractSpinBox:focus {{ padding-right: {STEPPER_ROOM - 1}px; }}
     QAbstractSpinBox::up-button, QAbstractSpinBox::down-button {{
         subcontrol-origin: border;
         subcontrol-position: center right;
@@ -651,7 +766,6 @@ def stylesheet() -> str:
 
     /* One drop-down look for the template list and the date picker. */
     QComboBox, QDateTimeEdit#DateEntry {{ padding-right: {DROPDOWN_ROOM}px; }}
-    QComboBox:focus, QDateTimeEdit#DateEntry:focus {{ padding-right: {DROPDOWN_ROOM - 1}px; }}
     QComboBox::drop-down, QDateTimeEdit::drop-down {{
         subcontrol-origin: border;
         subcontrol-position: center right;
@@ -686,6 +800,24 @@ def stylesheet() -> str:
         background: {c["NAV_ACTIVE_BG"]};
         color: {c["TEXT"]};
     }}
+    /* A time of day: the hour and minute lists in one box, drawn like any
+       typing box (publish.TimePicker). Each half is tinted under the pointer
+       and in keyboard focus, since it has no border of its own to show it. */
+    QFrame#TimeField {{
+        background: {c["SURFACE"]};
+        border: 1px solid {c["FIELD_BORDER"]};
+        border-bottom-color: {c["FIELD_STROKE"]};
+        border-radius: {RADIUS_S}px;
+    }}
+    QComboBox#TimePart {{
+        background: transparent;
+        border: none;
+        border-radius: {RADIUS_S - 1}px;
+        padding: 7px {DROPDOWN_ROOM}px 7px 10px;
+    }}
+    QComboBox#TimePart:hover {{ background: {c["FIELD_HOVER"]}; }}
+    QComboBox#TimePart:focus {{ background: {c["NAV_ACTIVE_BG"]}; border: none; padding-bottom: 7px; }}
+    QLabel#TimeColon {{ color: {c["TEXT_MUTED"]}; font-weight: 600; padding: 0 2px; }}
     /* A time already gone, in the one-off picker's hour and minute lists:
        greyed like a past day in the calendar, and not choosable. */
     QComboBox QAbstractItemView::item:disabled {{ color: {c["BORDER_STRONG"]}; }}
@@ -777,8 +909,11 @@ def stylesheet() -> str:
     /* The strip of wording tabs on Compose scrolls sideways once there are
        more groups than fit. Its bar is a thin line: at full size it read as
        a beige slab under the tabs. */
-    QScrollArea#TabStrip QScrollBar:horizontal {{ height: 4px; }}
-    QScrollArea#TabStrip QScrollBar::handle:horizontal {{ border-radius: 2px; }}
+    QScrollArea#TabStrip QScrollBar:horizontal, QScrollArea#ThumbStrip QScrollBar:horizontal {{
+        height: 4px;
+    }}
+    QScrollArea#TabStrip QScrollBar::handle:horizontal,
+    QScrollArea#ThumbStrip QScrollBar::handle:horizontal {{ border-radius: 2px; }}
     QCheckBox {{ spacing: 8px; }}
     /* Left to the platform, the two states did not look like one control:
        unchecked drew an empty rounded box, checked drew a bare grey tick with

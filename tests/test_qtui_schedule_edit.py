@@ -459,7 +459,7 @@ class TestPreview:
     def test_each_wording_can_be_picked(self, editing):
         editor, _schedule = editing
         editor.set_mode("preview")
-        assert self.picker(editor) == ["Wording 1", "Wording 2", "Wording 3"]
+        assert self.picker(editor) == ["Version 1", "Version 2", "Version 3"]
         assert not editor.wording_picker.isHidden()
 
         editor._picker_group.buttons()[2].click()
@@ -474,6 +474,8 @@ class TestPreview:
         editor.set_mode("preview")
         assert editor.wording_picker.isHidden()
         assert editor.preview.text_shown() == "Only one"
+        # Nothing to say above the post: no versions, and never the groups.
+        assert editor.preview.findChildren(QLabel, "PreviewNote") == []
 
     def test_it_shows_what_is_on_the_screen_not_what_is_saved(self, qt_app, editing):
         editor, schedule = editing
@@ -488,7 +490,9 @@ class TestPreview:
         editor.name_entry.setText("Road bikes")
         shown = [label.text() for label in editor.preview.findChildren(QLabel)]
         assert "Road bikes" in shown
-        assert "Just now · 2 groups · wording 1 of 3" in shown
+        # Which version, and not how many groups (the user's request, 2026-10-24).
+        assert "Version 1 of 3" in shown
+        assert not any("Going to" in text for text in shown)
 
     def test_write_brings_the_column_back(self, editing):
         editor, _schedule = editing

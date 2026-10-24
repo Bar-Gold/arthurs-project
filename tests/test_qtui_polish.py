@@ -75,6 +75,29 @@ class TestClearingALayoutReallyRemovesTheWidgets:
 
         clear(QHBoxLayout())
 
+    @pytest.mark.parametrize("how", ["clear", "replace_at"])
+    def test_a_widget_removed_at_once_never_opens_as_a_window(self, qt_application, how):
+        """Qt queues a show for a widget added to a layout on screen. Removed
+        before that show ran, the widget had no parent left, and the show
+        opened it as a small window of its own (2026-10-22, Preview to Write).
+        """
+        from PySide6.QtWidgets import QLabel
+
+        from fbposter.qtui.widgets import clear, replace_at
+
+        holder, layout = self.layout_with_buttons(qt_application, count=1)
+        holder.show()
+        qt_application.processEvents()
+        added = QLabel("added and removed at once")
+        layout.addWidget(added)
+        if how == "clear":
+            clear(layout)
+        else:
+            replace_at(layout, 1, QLabel("in its place"))
+        qt_application.processEvents()
+        assert not added.isVisible(), "it opened as a window of its own"
+        holder.hide()
+
     def test_every_view_clears_through_the_helper(self):
         """The fix was learned once, for the preview collage, and then not
         applied to the five other places doing the same thing. A grep is what
@@ -190,37 +213,51 @@ class TestPreviewGetsTheWholeWindow:
     the attachment list underneath repeating pictures the post already showed.
     """
 
+    @staticmethod
+    def writing_tools(view):
+        """The templates, the box's footer (attach, count) and Next: since
+        2026-10-24 there is no right column, and these are what Preview
+        stands down."""
+        return (view.template_tools, view.editor_footer, view.next_row)
+
     def test_write_mode_shows_the_writing_tools(self, qt_app):
         view = qt_app.views["compose"]
         view.set_mode("write")
-        assert view.sidebar_holder.isVisibleTo(view)
-        assert view.attach_holder.isVisibleTo(view)
+        assert all(tool.isVisibleTo(view) for tool in self.writing_tools(view))
 
     def test_preview_mode_stands_them_down(self, qt_app):
         view = qt_app.views["compose"]
         view.set_mode("preview")
-        assert not view.sidebar_holder.isVisibleTo(view)
-        assert not view.attach_holder.isVisibleTo(view)
+        assert not any(tool.isVisibleTo(view) for tool in self.writing_tools(view))
 
     def test_going_back_restores_them(self, qt_app):
         view = qt_app.views["compose"]
         view.set_mode("preview")
         view.set_mode("write")
-        assert view.sidebar_holder.isVisibleTo(view)
-        assert view.attach_holder.isVisibleTo(view)
+        assert all(tool.isVisibleTo(view) for tool in self.writing_tools(view))
 
-    def test_the_post_is_centred_not_pinned_left(self):
+    def test_the_post_is_centred_not_pinned_left(self, qt_application, qt_app):
         """A feed centres its column. Against the left edge of a wide pane the
-        post reads as a stray panel rather than as a post."""
-        import inspect
+        posts read as a stray panel rather than as posts."""
+        from PySide6.QtCore import QPoint
 
-        from fbposter.qtui.views import compose
+        from fbposter.qtui import theme
 
-        source = inspect.getsource(compose.PostPreview._redraw)
-        block = source.split("row = QHBoxLayout()")[1]
-        before, _, after = block.partition("addWidget")
-        assert "addStretch" in before, "no stretch before the post"
-        assert "addStretch" in after, "no stretch after the post"
+        # Wide, so the posts are at their widest with room either side.
+        qt_app.resize(1600, 900)
+        qt_app.show()
+        qt_app.show_view("compose")
+        view = qt_app.views["compose"]
+        view.editor.setPlainText("Selling a road bike, barely used.")
+        view.set_mode("preview")
+        qt_application.processEvents()
+        viewport = view.preview.area.viewport()
+        computer, phone = view.preview.posts["computer"], view.preview.posts["phone"]
+        left = computer.mapTo(viewport, QPoint(0, 0)).x()
+        right = viewport.width() - phone.mapTo(viewport, QPoint(phone.width(), 0)).x()
+        qt_app.hide()
+        assert left > theme.PAD_L, "pinned to the left edge"
+        assert abs(left - right) <= theme.PAD_S, f"{left}px on the left, {right}px on the right"
 
     def test_the_post_still_keeps_a_feed_shaped_width(self):
         """Full width for the canvas, not for the post: stretched across the

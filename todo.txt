@@ -1,4 +1,4 @@
 fix the deleted groups uncomfortable situation
-logic of the vary words if off, you need to go forward then backward..
-empty post allowed to go to pick groups
-check about wording
+logic of create a post screen
+run "get my groups from facebook" in cron
+what happending if 2 posts need to go in the same time?

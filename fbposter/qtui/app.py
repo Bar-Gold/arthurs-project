@@ -422,6 +422,7 @@ class App(QMainWindow):
         self.views["schedule_edit"] = ScheduleEditView(self)
         self.stack.addWidget(self.views["schedule_edit"])
         column.addWidget(self.stack, 1)
+        QApplication.instance().focusChanged.connect(self._keep_the_ring_off)
 
         # Status lives here, never in a dialog.
         self.banner = StatusBanner()
@@ -525,6 +526,21 @@ class App(QMainWindow):
         working the sidebar keeps their place there.
         """
         self.stack.setFocus(Qt.OtherFocusReason)
+
+    def _keep_the_ring_off(self, old, new) -> None:
+        """Park focus that a hidden widget handed to the sidebar.
+
+        A widget hidden while it has focus passes it to the next in the Tab
+        order, and from the page that is the logo, which then wore its ring
+        (the user's report again, 2026-10-22): switching Compose to Preview
+        hid the writing box, and "See more" cleared the text it was clicked
+        in. Qt passes it on as if Tab had been pressed, so the reason cannot
+        tell the two apart; that the widget it left is hidden can. A real Tab
+        leaves a widget still on screen, and keeps its ring.
+        """
+        if (new is not None and old is not None and not old.isVisible()
+                and self.sidebar.isAncestorOf(new) and not self.sidebar.isAncestorOf(old)):
+            self._park_focus()
 
     def _light(self, key: str) -> None:
         lit = NAV_PARENT.get(key, key)

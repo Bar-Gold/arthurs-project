@@ -232,6 +232,25 @@ class TestPickBody:
         assert run_one != run_two
 
 
+class TestPickIndex:
+    """The same choice as pick_body, by place, so step 3 can name a group's
+    version even when two versions read the same."""
+
+    def test_it_counts_the_empty_ones_in_its_answer(self):
+        assert recurrence.pick_index(["a", "", "c"], 1) == 2
+        assert recurrence.pick_index(["a", "", "c"], 2) == 0
+
+    def test_none_when_every_one_is_empty(self):
+        assert recurrence.pick_index(["", "  "], 0) is None
+
+    def test_it_agrees_with_pick_body(self):
+        variants = ["first", "", "second", "third"]
+        for offset in range(6):
+            for sent in ([], ["first"], ["second", "third"]):
+                index = recurrence.pick_index(variants, offset, sent)
+                assert variants[index] == recurrence.pick_body(variants, offset, sent)
+
+
 class TestDescribe:
     def test_daily_at_one_time(self):
         assert recurrence.describe(recurrence.build(["09:00"])) == "Every day at 09:00"

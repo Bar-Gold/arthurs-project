@@ -392,12 +392,13 @@ class TestTheFlowBetweenScreens:
         qt_app.show_view("publish")
         assert len(publish.selected_group_ids()) == 3
 
-    def test_a_wording_tab_appears_per_chosen_group(self, qt_app, groups_view):
+    def test_the_version_tabs_do_not_follow_the_groups(self, qt_app, groups_view):
+        """There was a tab per chosen group, which could only be filled in
+        after picking the groups and going back (2026-10-23)."""
         compose = qt_app.views["compose"]
         groups_view.set_all(True)
         qt_app.show_view("compose")
-        # "All groups" plus one per group.
-        assert compose.tab_bar.count() == 4
+        assert compose.tab_bar.count() == 1
 
 
 class TestTheOnceDatePicker:
@@ -537,15 +538,6 @@ class TestAnAmpersandIsShown:
         qt_app.show_view("groups")
         box = qt_app.views["groups"]._set_boxes[made.id]
         assert box.text() == "Buy && sell (1)"
-
-    def test_on_a_compose_wording_tab(self, qt_app):
-        # Short, because a tab cuts a long name before its "&".
-        short = qt_app.group_repo.add_from_url(URL.format(8), name="buy & sell")
-        qt_app.selected_groups.add(short.id)
-        qt_app.show_view("compose")
-        compose = qt_app.views["compose"]
-        tabs = [compose.tab_bar.itemAt(i).widget() for i in range(compose.tab_bar.count())]
-        assert any(self.shows_the_ampersand(tab) for tab in tabs if tab is not None)
 
     def test_in_the_group_set_editor(self, qt_app, named):
         view = qt_app.views["group_sets"]

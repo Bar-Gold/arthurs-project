@@ -69,6 +69,17 @@ class TestContrast:
             # Labels on a hovered or pressed button.
             ("TEXT", "HOVER_BG"),
             ("TEXT", "PRESSED_BG"),
+            # A typing box or button under the pointer, and the hint in an
+            # empty box, at rest and hovered.
+            ("TEXT", "FIELD_HOVER"),
+            # A group's row on step 2: ticked, and under the pointer, with its
+            # name, its grey member count and "in <set>" (2026-10-24).
+            ("TEXT", "ROW_PICKED"),
+            ("TEXT_MUTED", "ROW_PICKED"),
+            ("TEXT_MUTED", "FIELD_HOVER"),
+            ("TEXT_MUTED", "NAV_ACTIVE_BG"),
+            ("PLACEHOLDER", "SURFACE"),
+            ("PLACEHOLDER", "FIELD_HOVER"),
             # "Remove" / "Delete" / "Cancel" on the tint they gain as you
             # reach for them. The first tint chosen failed at 4.32:1.
             ("DANGER", "DANGER_SOFT"),
@@ -102,6 +113,11 @@ class TestContrast:
             # Pressed, it turns SIDEBAR_TEXT.
             ("SIDEBAR_WARNING", "SIDEBAR_BG"),
             ("SIDEBAR_WARNING", "SIDEBAR_HOVER"),
+            # Preview, in Facebook's own colours (2026-10-22): a post's words
+            # and its grey ones, and the note and captions on the feed's grey.
+            ("FB_TEXT", "FB_CARD"),
+            ("FB_MUTED", "FB_CARD"),
+            ("FB_MUTED", "FB_FEED"),
         ],
     )
     def test_text_is_readable(self, palette_name, fg, bg):

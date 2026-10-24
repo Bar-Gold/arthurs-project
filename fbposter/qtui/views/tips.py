@@ -31,6 +31,11 @@ from ..widgets import card, clear, segmented
 
 # Wide enough for "10" in the title serif, so every title starts in line.
 TIP_NUMBER_WIDTH = 36
+# Room either side of a tip's words for the end of a line. Qt lays a wrapped
+# line out a few pixels narrower than it paints it, and a label clips what
+# falls outside it: tip 2 in Hebrew lost half the "8" of "80" at the end of a
+# line (the user's report, 2026-10-22).
+SPILL = 6
 
 
 class TipsView(QWidget):
@@ -113,7 +118,7 @@ class TipsView(QWidget):
 
         clear(self.tip_box)
         for number, tip in enumerate(page.tips, 1):
-            self.tip_box.addWidget(self._card(number, tip))
+            self.tip_box.addWidget(self._card(number, tip, code in tips.RIGHT_TO_LEFT))
         sources = QLabel(page.sources)
         sources.setObjectName("Muted")
         sources.setWordWrap(True)
@@ -121,14 +126,21 @@ class TipsView(QWidget):
         self.tip_box.addStretch(1)
 
     @staticmethod
-    def _card(number: int, tip) -> QWidget:
+    def _card(number: int, tip, right_to_left: bool = False) -> QWidget:
         """A tip: its number in gold at the leading edge (the right, in
         Hebrew), its title and its words beside it. The number had been typed
         into the title, where it read as one more word."""
         box = card()
         line = QHBoxLayout(box)
-        line.setContentsMargins(theme.PAD_M, theme.PAD_S, theme.PAD_L, theme.PAD_M)
-        line.setSpacing(theme.PAD_M)
+        # The side the words end on gives up the room they keep at their own
+        # edges, and so does the gap after the number, so everything sits
+        # where it did. A layout's margins are not mirrored right to left:
+        # in Hebrew the words end on the left.
+        if right_to_left:
+            line.setContentsMargins(theme.PAD_M - SPILL, theme.PAD_S, theme.PAD_L, theme.PAD_M)
+        else:
+            line.setContentsMargins(theme.PAD_M, theme.PAD_S, theme.PAD_L - SPILL, theme.PAD_M)
+        line.setSpacing(theme.PAD_M - SPILL)
         figure = QLabel(str(number))
         figure.setObjectName("TipNumber")
         figure.setFixedWidth(TIP_NUMBER_WIDTH)
@@ -140,9 +152,11 @@ class TipsView(QWidget):
         title = QLabel(tip.title)
         title.setObjectName("SectionHeading")
         title.setWordWrap(True)
+        title.setContentsMargins(SPILL, 0, SPILL, 0)
         words.addWidget(title)
         body = QLabel(tip.body)
         body.setWordWrap(True)
+        body.setContentsMargins(SPILL, 0, SPILL, 0)
         words.addWidget(body)
         line.addLayout(words, 1)
         return box

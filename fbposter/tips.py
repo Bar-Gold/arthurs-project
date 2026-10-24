@@ -61,8 +61,8 @@ PAGES = {
                 "Meta's spam policy says an account can be restricted even when it "
                 "posts rarely, if its posts repeat. Write every listing at least 3 "
                 "different ways: a different opening line, a different order, a "
-                "different closing sentence. Add them as wordings in Create a post, "
-                "step 3, under Repeat, and the app shares them out across the groups.",
+                "different closing sentence. Add them in Create a post, step 1, with "
+                "Add version, and the app shares them out across the groups.",
             ),
             Tip(
                 "An active account can post more",
@@ -148,8 +148,8 @@ PAGES = {
                 "לפי מדיניות הספאם של Meta, פייסבוק עלולה להגביל חשבון גם כשהוא "
                 "מפרסם מעט, אם הפוסטים שלו חוזרים על עצמם. כדאי לכתוב כל מודעה "
                 "ב-3 נוסחים שונים לפחות: פתיחה אחרת, סדר אחר, משפט סיום אחר. את "
-                "הנוסחים מוסיפים ב-Create a post, בשלב 3 תחת Repeat, והתוכנה מחלקת "
-                "אותם בין הקבוצות.",
+                "הנוסחים מוסיפים ב-Create a post, בשלב 1, בלחיצה על Add version, "
+                "והתוכנה מחלקת אותם בין הקבוצות.",
             ),
             Tip(
                 "חשבון פעיל יכול לפרסם יותר",
@@ -233,8 +233,8 @@ PAGES = {
                 "редких публикациях, если посты повторяются. Напишите каждое "
                 "объявление как минимум в 3 разных вариантах: другое начало, другой "
                 "порядок, другая заключительная фраза. Добавьте их как варианты "
-                "текста в «Create a post», на шаге 3 в режиме «Repeat», и программа "
-                "распределит их между группами.",
+                "текста в «Create a post», на шаге 1, кнопкой «Add version», и "
+                "программа распределит их между группами.",
             ),
             Tip(
                 "Активный аккаунт может публиковать больше",

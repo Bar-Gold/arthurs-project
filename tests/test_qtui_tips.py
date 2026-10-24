@@ -105,17 +105,49 @@ class TestWhatItShows:
                    if label.objectName() == "TipNumber"]
         assert figures == [str(n) for n in range(1, len(tips.PAGES["en"].tips) + 1)]
 
+    @pytest.mark.parametrize("code", ["he", "en", "ru"])
+    def test_the_end_of_a_line_has_room_to_land(self, screen, code):
+        """Qt lays a wrapped line out a few pixels narrower than it paints it,
+        and a label clips what falls outside it: tip 2 in Hebrew lost half the
+        "8" of "80" (the user's report, 2026-10-22). Every tip's words keep
+        room inside their own edges for it."""
+        from fbposter.qtui.views.tips import SPILL
+
+        screen.choose(code)
+        page = tips.PAGES[code]
+        words = {tip.title for tip in page.tips} | {tip.body for tip in page.tips}
+        found = [label for label in screen.findChildren(QLabel) if label.text() in words]
+        assert len(found) == len(words)
+        for label in found:
+            margins = label.contentsMargins()
+            assert (margins.left(), margins.right()) == (SPILL, SPILL), label.text()[:30]
+
+    def test_the_room_does_not_move_the_words(self, screen):
+        """The card gives it up on the side the words end on, so they start
+        and end where they did, right to left as well."""
+        from fbposter.qtui import theme
+        from fbposter.qtui.views.tips import SPILL
+
+        for code, end_side in (("he", "left"), ("en", "right")):
+            screen.choose(code)
+            card = next(label for label in screen.findChildren(QLabel)
+                        if label.objectName() == "TipNumber").parentWidget()
+            margins = card.layout().contentsMargins()
+            given = margins.left() if end_side == "left" else margins.right()
+            kept = margins.right() if end_side == "left" else margins.left()
+            assert given + SPILL == (theme.PAD_M if end_side == "left" else theme.PAD_L)
+            assert kept == (theme.PAD_L if end_side == "left" else theme.PAD_M)
+            assert card.layout().spacing() + SPILL == theme.PAD_M
+
     def test_the_screens_it_names_are_real(self, qt_app):
         """It tells the client to press Pause posting on Settings and to add
-        wordings in Create a post, step 3, under Repeat, so those had better
-        be what the window says."""
-        from fbposter.qtui.views.publish import REPEAT
-
+        versions in Create a post, step 1, with Add version, so those had
+        better be what the window says."""
         assert qt_app.nav_buttons["settings"].text() == "Settings"
         assert qt_app.nav_buttons["create"].text() == "Create a post"
-        assert qt_app.views["publish"].mode_buttons[REPEAT].text() == "Repeat"
+        assert qt_app.views["compose"].add_version_button.text() == "Add version"
         assert qt_app.views["settings"].pause_button.text() == "Pause posting"
         for page in tips.PAGES.values():
             text = " ".join(tip.body for tip in page.tips)
-            for name in ("Pause posting", "Settings", "Create a post", "Repeat"):
+            for name in ("Pause posting", "Settings", "Create a post", "Add version"):
                 assert name in text

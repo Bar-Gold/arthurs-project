@@ -279,6 +279,55 @@ class TestPickingASetOnGroups:
         finally:
             qt_app.hide()
 
+    def test_a_click_anywhere_in_its_place_picks_a_set(
+        self, qt_application, qt_app, groups_view, groups
+    ):
+        """The user's request (2026-10-24): a set is picked wherever its place
+        is clicked, as a group's row is, not only on the little box. Clicked
+        beside the name, at real geometry."""
+        made = make_set(qt_app, "Tel Aviv", groups[1:3])
+        groups_view.refresh()
+        qt_app.resize(1000, 700)
+        qt_app.show()
+        qt_application.processEvents()
+        try:
+            box = groups_view._set_boxes[made.id]
+            row = box.parentWidget()
+            point = QPoint(box.geometry().right() - 5, box.geometry().center().y())
+            target = row.childAt(point) or row
+            QTest.mouseClick(target, Qt.LeftButton, Qt.NoModifier, target.mapFrom(row, point))
+            qt_application.processEvents()
+            assert made.id in qt_app.selected_sets
+            assert box.isChecked()
+            QTest.mouseClick(target, Qt.LeftButton, Qt.NoModifier, target.mapFrom(row, point))
+            qt_application.processEvents()
+            assert made.id not in qt_app.selected_sets
+        finally:
+            qt_app.hide()
+
+    def test_a_click_on_a_sets_box_picks_it_once(
+        self, qt_application, qt_app, groups_view, groups
+    ):
+        """Not twice: the box's own click must not also reach its place."""
+        made = make_set(qt_app, "Tel Aviv", groups[1:3])
+        groups_view.refresh()
+        qt_app.resize(1000, 700)
+        qt_app.show()
+        qt_application.processEvents()
+        try:
+            box = groups_view._set_boxes[made.id]
+            QTest.mouseClick(box, Qt.LeftButton, Qt.NoModifier, QPoint(10, box.height() // 2))
+            qt_application.processEvents()
+            assert made.id in qt_app.selected_sets
+        finally:
+            qt_app.hide()
+
+    def test_a_sets_place_shows_it_can_be_clicked(self, qt_app, groups_view, groups):
+        made = make_set(qt_app, "Tel Aviv", groups[1:3])
+        groups_view.refresh()
+        row = groups_view._set_boxes[made.id].parentWidget()
+        assert row.cursor().shape() == Qt.PointingHandCursor
+
     def test_a_removed_group_leaves_the_set_and_the_toast_says_so(
         self, qt_app, groups_view, groups
     ):
@@ -306,6 +355,14 @@ def ready(qt_app, groups):
     return made, qt_app.views["publish"]
 
 
+def add_version(qt_app, words):
+    """Another version of the post, written in step 1."""
+    compose = qt_app.views["compose"]
+    compose.add_version()
+    compose._show(words)
+    compose.capture()
+
+
 class TestPublishingWithASet:
     def test_post_now_goes_to_the_sets_groups_as_they_are(self, qt_app, ready, groups):
         _made, publish = ready
@@ -317,8 +374,8 @@ class TestPublishingWithASet:
 
     def test_a_repeating_post_stores_the_set_not_its_groups(self, qt_app, ready, groups):
         made, publish = ready
+        add_version(qt_app, "Second wording")
         publish.set_mode(REPEAT)
-        publish.add_wording("Second wording")
         assert publish.publish() is True
         (stored,) = qt_app.schedule_repo.list()
         assert stored.group_ids == [groups[0].id]
@@ -343,8 +400,8 @@ class TestPublishingWithASet:
 
     def test_the_card_counts_the_set(self, qt_app, ready):
         _made, publish = ready
+        add_version(qt_app, "Second wording")
         publish.set_mode(REPEAT)
-        publish.add_wording("Second wording")
         publish.publish()
         qt_app.show_view("repeating")
         assert any(
@@ -379,6 +436,36 @@ class TestTheEditScreen:
         stored = qt_app.schedule_repo.get(schedule.id)
         assert stored.set_ids == []
         assert stored.group_ids == [groups[0].id]
+
+    def test_a_click_anywhere_in_its_place_picks_a_set(
+        self, qt_application, qt_app, editing, groups
+    ):
+        """As on Groups (the user's request, 2026-10-24): beside the name
+        counts, not only the little box. It opens picked, so the first click
+        unpicks it."""
+        editor, _schedule, made = editing
+        qt_app.resize(1000, 700)
+        qt_app.show()
+        qt_application.processEvents()
+        try:
+            box = editor._set_boxes[made.id]
+            row = box.parentWidget()
+            point = QPoint(box.geometry().right() - 5, box.geometry().center().y())
+            target = row.childAt(point) or row
+            QTest.mouseClick(target, Qt.LeftButton, Qt.NoModifier, target.mapFrom(row, point))
+            qt_application.processEvents()
+            assert not box.isChecked()
+            assert editor._group_boxes[groups[1].id].isEnabled()
+            QTest.mouseClick(target, Qt.LeftButton, Qt.NoModifier, target.mapFrom(row, point))
+            qt_application.processEvents()
+            assert box.isChecked()
+        finally:
+            qt_app.hide()
+
+    def test_a_sets_place_shows_it_can_be_clicked(self, editing):
+        editor, _schedule, made = editing
+        row = editor._set_boxes[made.id].parentWidget()
+        assert row.cursor().shape() == Qt.PointingHandCursor
 
     def test_ticking_a_set_saves_the_link(self, qt_app, groups):
         other = make_set(qt_app, "Haifa", groups[3:])

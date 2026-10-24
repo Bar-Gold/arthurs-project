@@ -51,6 +51,11 @@ MARK_COLOURS = {DONE: "SUCCESS", CURRENT: "ACCENT_TEXT", TODO: "BORDER_STRONG"}
 MARK_SIZE = 18
 # The short rule between two steps.
 JOIN_WIDTH = 28
+# The widest the road is drawn (2026-10-24). On a big monitor it stretched
+# edge to edge, a group's name a long way from its drop-down; past this it
+# stays this wide, centred. A laptop window is narrower, so nothing changes
+# there.
+MAX_ROAD_WIDTH = 1200
 
 
 class CreatePostView(QWidget):
@@ -68,6 +73,9 @@ class CreatePostView(QWidget):
         heading = QLabel(self.title)
         heading.setObjectName("Title")
         outer.addWidget(heading)
+        # A little more room round the step bar (2026-10-24): title, bar and
+        # the step's instruction were packed together.
+        outer.addSpacing(theme.PAD_XS)
 
         bar = row()
         line = QHBoxLayout(bar)
@@ -89,7 +97,7 @@ class CreatePostView(QWidget):
             self.step_buttons[key] = button
         line.addStretch(1)
         outer.addWidget(bar)
-        outer.addSpacing(theme.PAD_XS)
+        outer.addSpacing(theme.PAD_S)
 
         # Compose first: PublishView reads it while it builds.
         self.pages = QStackedWidget()
@@ -106,6 +114,11 @@ class CreatePostView(QWidget):
         outer.addWidget(self.pages, 1)
 
         self._restate()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt's name
+        super().resizeEvent(event)
+        side = max(0, (self.width() - MAX_ROAD_WIDTH) // 2)
+        self.layout().setContentsMargins(side, 0, side, 0)
 
     @property
     def current_key(self) -> str:

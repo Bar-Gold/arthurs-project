@@ -94,7 +94,40 @@ SHAPES = {
     "todo": '<circle cx="12" cy="12" r="9"/>',
     # The connection light.
     "dot": '<circle cx="12" cy="12" r="6" fill="{colour}" stroke="none"/>',
+    # Inside a box or on a button (2026-10-21): what the box or button is for.
+    "search": '<circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5"/>',
+    "plus": '<path d="M12 5v14M5 12h14"/>',
+    # A cross: taking an attached picture off the post (2026-10-24).
+    "close": '<path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/>',
+    # A picture: attaching pictures or videos.
+    "picture": (
+        '<rect x="3" y="4.5" width="18" height="15" rx="3"/>'
+        '<circle cx="8.5" cy="9.5" r="1.5"/>'
+        '<path d="m21 15.5-4.5-4.5L7 19.5"/>'
+    ),
+    # An arrow into a tray: getting the groups from Facebook.
+    "download": '<path d="M12 4v11"/><path d="m7.5 10.5 4.5 4.5 4.5-4.5"/><path d="M5 20h14"/>',
+    # The preview's Like, Comment and Share (2026-10-22), drawn the way
+    # Facebook draws its own: a thumb, a round speech bubble, a curved arrow.
+    "like": (
+        '<path d="M7.5 10.5v9"/>'
+        '<path d="M7.5 10.5 11 4.2c1.6-.5 3 .7 2.6 2.4L13 9.5h5.3c1.4 0 2.4 1.3 '
+        '2 2.6l-1.9 6.2c-.3.9-1.1 1.5-2 1.5H4.5c-.8 0-1.5-.7-1.5-1.5v-6.3c0-.8.7-1.5 '
+        '1.5-1.5z"/>'
+    ),
+    "comment": (
+        '<path d="M12 3.5c4.7 0 8.5 3.4 8.5 7.6s-3.8 7.6-8.5 7.6c-1.1 0-2.2-.2-3.2-.5'
+        'L4 19.8l1.3-3.9C4.2 14.6 3.5 13 3.5 11.1c0-4.2 3.8-7.6 8.5-7.6z"/>'
+    ),
+    "share": '<path d="M13.5 4.5 20.5 11l-7 6.5v-3.8C9 13.7 5.6 15.2 3.5 19c.6-5.5 3.9-9.4 10-10.2z"/>',
 }
+
+# On a plain button, beside its words. Drawn wider than tall, with the
+# drawing at its left, for the same reason as NAV_ICON_GAP: Qt's fixed 4px
+# between an icon and its words crowded the two.
+BUTTON_ICON_SIZE = 16
+BUTTON_ICON_GAP = 4
+BUTTON_ICON_BOX = QSize(BUTTON_ICON_SIZE + BUTTON_ICON_GAP, BUTTON_ICON_SIZE)
 
 # The app's own icon: a navy paper plane on a gold tile (2026-10-20; it was
 # white on blue, and the installer and taskbar icon still are).
@@ -162,6 +195,38 @@ def brand(size: int = 24, width: int | None = None) -> QPixmap:
         ).encode()
 
     return _render(document, size, width)
+
+
+def group_picture(size: int = 40) -> QPixmap:
+    """A group's picture in the preview: Facebook's grey tile with two people,
+    which is what a group with no cover photo shows. The real one is not
+    known to the app, and a made-up one would say something untrue."""
+    body = (
+        f'<rect x="0" y="0" width="24" height="24" rx="5" '
+        f'fill="{theme.C["FB_GROUP_BG"]}" stroke="none"/>'
+        f'<g transform="translate(5.5 5.5) scale(0.54)" stroke-width="2.2">'
+        f'{SHAPES["groups"]}</g>'
+    )
+
+    def document(px: int, wide: int) -> bytes:
+        return (
+            f'<svg xmlns="http://www.w3.org/2000/svg" width="{wide}" height="{px}" '
+            f'viewBox="0 0 24 24" fill="none" stroke="{theme.C["FB_MUTED"]}" '
+            f'stroke-linecap="round" stroke-linejoin="round">{body}</svg>'
+        ).encode()
+
+    return _render(document, size)
+
+
+def set_button_icon(button, name: str) -> None:
+    """Put an icon before a plain button's words: in the button's own text
+    colour, and muted while the button is greyed out."""
+    icon = QIcon()
+    for colour, mode in (("TEXT", QIcon.Normal), ("TEXT_MUTED", QIcon.Disabled)):
+        drawn = pixmap(name, theme.C[colour], BUTTON_ICON_SIZE, BUTTON_ICON_BOX.width())
+        icon.addPixmap(drawn, mode)
+    button.setIcon(icon)
+    button.setIconSize(BUTTON_ICON_BOX)
 
 
 def nav_icon(name: str) -> QIcon:

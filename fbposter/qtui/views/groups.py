@@ -22,6 +22,7 @@ user's choice (2026-10-15) was that a set is picked whole or not at all.
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QCheckBox,
     QFrame,
@@ -39,7 +40,7 @@ from fbposter import chrome
 from fbposter.connection import ConnectionState
 from fbposter.text import strip_invisible
 
-from .. import theme
+from .. import icons, theme
 from ..widgets import RowList, back_link, card, clear, literal, row
 
 # What a row says while its group's name is being fetched. It used to show the
@@ -100,7 +101,8 @@ def matches(group, query: str) -> bool:
 
 class GroupRow(QFrame):
     """A group's row in a list, which ticks and unticks it wherever it is
-    clicked.
+    clicked. A group set's place is one too, on Groups and the repeating-post
+    editor.
 
     The user's request (2026-10-14): the little box alone was too small a
     target. A click on the box itself is the box's own, and one on "Remove" is
@@ -114,6 +116,52 @@ class GroupRow(QFrame):
         self.setObjectName("ListRow")
         self.box = box
         self.setCursor(Qt.PointingHandCursor)
+        # The list paints a tint behind it (widgets.row_tint): a faint
+        # champagne while its box is ticked, and a shade deeper under the
+        # pointer (2026-10-24), so the picked groups stand out in a long list.
+        # A tick made with the box's signals blocked repaints the list itself.
+        self.setProperty("hovered", False)
+        box.toggled.connect(lambda _on: self._repaint_list())
+        # Shown only while the pointer is on the row; see `veil`.
+        self._veiled: list[QWidget] = []
+
+    def is_picked(self) -> bool:
+        return self.box.isChecked()
+
+    def veil(self, widget: QWidget) -> None:
+        """Keep `widget` invisible until the pointer is on the row: "Remove"
+        on every row at once was the loudest thing in the list (2026-10-24).
+        It keeps its room, so nothing shifts when it appears, and Tab still
+        reaches it: focus shows it (theme.py, `[veiled="true"]`)."""
+        self._veiled.append(widget)
+        self._set_veiled(widget, not self.underMouse())
+
+    @staticmethod
+    def _set_veiled(widget: QWidget, veiled: bool) -> None:
+        if widget.property("veiled") == veiled:
+            return
+        widget.setProperty("veiled", veiled)
+        widget.style().unpolish(widget)
+        widget.style().polish(widget)
+
+    def _repaint_list(self) -> None:
+        parent = self.parentWidget()
+        if parent is not None:
+            parent.update(self.geometry())
+
+    def enterEvent(self, event) -> None:  # noqa: N802 - Qt's name
+        super().enterEvent(event)
+        self.setProperty("hovered", True)
+        for widget in self._veiled:
+            self._set_veiled(widget, False)
+        self._repaint_list()
+
+    def leaveEvent(self, event) -> None:  # noqa: N802 - Qt's name
+        super().leaveEvent(event)
+        self.setProperty("hovered", False)
+        for widget in self._veiled:
+            self._set_veiled(widget, True)
+        self._repaint_list()
 
     def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt's name
         # Accepted, so the release comes here too.
@@ -197,12 +245,17 @@ class GroupsView(QWidget):
         self.search.setPlaceholderText(SEARCH_PLACEHOLDER)
         self.search.setAccessibleName(SEARCH_PLACEHOLDER)
         self.search.setClearButtonEnabled(True)
+        self.search.addAction(
+            QIcon(icons.pixmap("search", theme.C["TEXT_MUTED"], icons.BUTTON_ICON_SIZE)),
+            QLineEdit.LeadingPosition,
+        )
         self.search.textChanged.connect(lambda _text: self.apply_search())
         top.addWidget(self.search, 1)
         # Every group the account is in, read off Facebook. It also runs by
         # itself once, after the first login (App._on_check_result). Not
         # #Primary: the accent here belongs to "Next: when to send".
         self.import_button = QPushButton(IMPORT_LABEL)
+        icons.set_button_icon(self.import_button, "download")
         self.import_button.clicked.connect(lambda: self.import_from_facebook())
         top.addWidget(self.import_button)
         outer.addLayout(top)
@@ -312,6 +365,9 @@ class GroupsView(QWidget):
             box.blockSignals(True)
             box.setChecked(selected)
             box.blockSignals(False)
+        if self.group_list is not None:
+            # The rows' tints, which the blocked signals did not repaint.
+            self.group_list.update()
         self.refresh_count()
 
     def toggle_set(self, set_id: int, selected: bool) -> None:
@@ -325,11 +381,6 @@ class GroupsView(QWidget):
         total = len(self._checkboxes)
         self.count_label.setText(f"{chosen} of {total} selected")
         self.next_button.setEnabled(chosen > 0)
-        # Compose shows one wording tab per chosen group, so it has to hear
-        # about this even though it is not the screen being looked at.
-        compose = self.app.views.get("compose")
-        if compose is not None:
-            compose.refresh_tabs()
 
     # -- actions -----------------------------------------------------------
     def remove_group(self, group_id: int) -> None:
@@ -658,7 +709,14 @@ class GroupsView(QWidget):
                 box = QCheckBox(literal(set_label(group_set)))
                 box.setToolTip(tips[group_set.id])
                 box.toggled.connect(lambda on, sid=group_set.id: self.toggle_set(sid, on))
-                self.set_grid.addWidget(box, index // SET_COLUMNS, index % SET_COLUMNS)
+                # A click anywhere in its place picks it, as a group's row
+                # ticks it (the user's request, 2026-10-24).
+                place = GroupRow(box)
+                place.setToolTip(tips[group_set.id])
+                line = QHBoxLayout(place)
+                line.setContentsMargins(0, 0, 0, 0)
+                line.addWidget(box, 1)
+                self.set_grid.addWidget(place, index // SET_COLUMNS, index % SET_COLUMNS)
                 self._set_boxes[group_set.id] = box
             self.sets_section.setVisible(bool(sets))
         for set_id, box in self._set_boxes.items():
@@ -798,8 +856,10 @@ class GroupsView(QWidget):
 
         remove = QPushButton("Remove")
         remove.setObjectName("Link")
+        remove.setAccessibleName(f"Remove {label}")
         remove.clicked.connect(lambda _c, gid=group.id: self.remove_group(gid))
         layout.addWidget(remove)
+        holder.veil(remove)
         return holder
 
     def _removed_row(self, group) -> QWidget:

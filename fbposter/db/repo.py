@@ -593,6 +593,32 @@ class GroupRepo:
         )
         return [row["body"] for row in rows]
 
+    def sent_on_day_many(
+        self, group_ids: Sequence[int], moment: datetime
+    ) -> dict[int, list[str]]:
+        """`sent_on_day` for many groups, in one query.
+
+        Compose shares a post's versions out by it, for every group picked,
+        on the thread drawing the window: one query per group would be 80
+        round trips for one listing.
+        """
+        if not group_ids:
+            return {}
+        start = clock.start_of_local_day(moment)
+        end = clock.start_of_local_day(start + timedelta(hours=26))
+        marks = ",".join("?" * len(group_ids))
+        rows = self.db.query(
+            "SELECT group_id, body FROM task_targets "
+            f"WHERE group_id IN ({marks}) AND state IN (?, ?, ?) "
+            "  AND COALESCE(posted_at, attempted_at) >= ? "
+            "  AND COALESCE(posted_at, attempted_at) < ?",
+            (*group_ids, *SENT_STATES, to_iso(start), to_iso(end)),
+        )
+        sent: dict[int, list[str]] = {group_id: [] for group_id in group_ids}
+        for row in rows:
+            sent[row["group_id"]].append(row["body"])
+        return sent
+
 
 class TemplateRepo:
     def __init__(self, db: Database) -> None:
@@ -608,17 +634,36 @@ class TemplateRepo:
         row = self.db.query_one("SELECT * FROM templates WHERE name = ?", (name,))
         return Template.from_row(row) if row else None
 
-    def save(self, name: str, body: str, media_paths: Sequence[str] = ()) -> Template:
-        """Create or overwrite a template by name."""
+    def save(
+        self,
+        name: str,
+        body: str,
+        media_paths: Sequence[str] = (),
+        versions: Sequence[str] = (),
+    ) -> Template:
+        """Create or overwrite a template by name.
+
+        `versions` is every version of the post, `body` the first of them.
+        Left out, the template has one version, `body`.
+        """
         now = to_iso(utcnow())
         self.db.write(
-            "INSERT INTO templates (name, body, media_paths, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?) "
+            "INSERT INTO templates "
+            "(name, body, media_paths, created_at, updated_at, versions) "
+            "VALUES (?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(name) DO UPDATE SET "
             "  body = excluded.body, "
             "  media_paths = excluded.media_paths, "
-            "  updated_at = excluded.updated_at",
-            (name, body, json.dumps([str(p) for p in media_paths]), now, now),
+            "  updated_at = excluded.updated_at, "
+            "  versions = excluded.versions",
+            (
+                name,
+                body,
+                json.dumps([str(p) for p in media_paths]),
+                now,
+                now,
+                json.dumps(list(versions or [body])),
+            ),
         )
         stored = self.get_by_name(name)
         assert stored is not None

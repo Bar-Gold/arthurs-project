@@ -371,6 +371,27 @@ class TestTemplates:
         templates.delete(template.id)
         assert templates.list() == []
 
+    def test_every_version_is_kept(self, db):
+        """A post is written as several versions (2026-10-23)."""
+        templates = TemplateRepo(db)
+        templates.save("Ad", "one", versions=["one", "two", "three"])
+        stored = templates.get_by_name("Ad")
+        assert stored.versions == ["one", "two", "three"]
+        assert stored.body == "one"
+
+    def test_overwriting_replaces_the_versions(self, db):
+        templates = TemplateRepo(db)
+        templates.save("Ad", "one", versions=["one", "two"])
+        templates.save("Ad", "only")
+        assert templates.get_by_name("Ad").versions == ["only"]
+
+    def test_one_saved_before_versions_has_its_body(self, db):
+        """Migration 015 left old templates with an empty list."""
+        templates = TemplateRepo(db)
+        templates.save("Old", "the body")
+        db.write("UPDATE templates SET versions = '[]' WHERE name = 'Old'")
+        assert templates.get_by_name("Old").versions == ["the body"]
+
 
 class TestTasks:
     def test_create_with_targets(self, db, groups):

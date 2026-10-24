@@ -29,7 +29,6 @@ from fbposter.qtui.views.publish import (
     NOW,
     ONCE,
     RECIPIENTS_MAX_HEIGHT,
-    RECIPIENTS_MAX_HEIGHT_REPEAT,
     REPEAT,
 )
 
@@ -59,6 +58,13 @@ def views(qt_app):
     return compose, publish
 
 
+def add_version(compose, text):
+    """Another version of the post, written in step 1."""
+    compose.add_version()
+    compose._show(text)
+    compose.capture()
+
+
 class TestComposeNoLongerDecidesWhen:
     def test_it_has_no_timing_controls_left(self, views):
         compose, _publish = views
@@ -82,11 +88,16 @@ class TestComposeNoLongerDecidesWhen:
         assert qt_app.current_view == "groups"
         assert compose.base_body() == "edited after the last capture"
 
-    def test_it_summarises_the_groups_chosen_elsewhere(self, qt_app, views):
+    def test_it_says_nothing_about_the_groups(self, qt_app, views):
+        """The "Sending to" card went (the user's request, 2026-10-24): the
+        groups are step 2's, and step 3 lists them under "Going out"."""
+        from PySide6.QtWidgets import QLabel
+
         compose, _publish = views
         qt_app.show_view("compose")
-        assert "3 groups" in compose.recipient_summary.text()
-        assert "Demo 0" in compose.recipient_summary.text()
+        words = [label.text() for label in compose.findChildren(QLabel)]
+        assert "Sending to" not in words
+        assert not any("Demo 0" in text for text in words)
 
 
 class TestTheThreeModes:
@@ -106,18 +117,16 @@ class TestTheThreeModes:
     def test_the_repeat_controls_only_show_in_repeat_mode(self, views):
         _compose, publish = views
         publish.set_mode(NOW)
-        assert not publish.add_wording_button.isVisibleTo(publish)
+        assert not publish.add_time_button.isVisibleTo(publish)
         publish.set_mode(REPEAT)
-        assert publish.add_wording_button.isVisibleTo(publish)
+        assert publish.add_time_button.isVisibleTo(publish)
 
-    def test_the_wordings_box_shows_only_once_there_is_one(self, views):
-        """Empty, it held a blank gap open above the repeating posts."""
+    def test_there_are_no_alternate_wordings_here(self, views):
+        """They are versions in step 1 now (2026-10-23): one way to vary
+        the words, not two."""
         _compose, publish = views
-        publish.set_mode(REPEAT)
-        assert not publish.wording_area.isVisibleTo(publish)
-        publish.add_wording("Another way to say it")
-        publish.refresh_summary()
-        assert publish.wording_area.isVisibleTo(publish)
+        for gone in ("add_wording", "alternates", "wording_hint", "wording_area"):
+            assert not hasattr(publish, gone), gone
 
     def test_only_the_once_mode_produces_a_scheduled_time(self, views):
         _compose, publish = views
@@ -147,17 +156,15 @@ class TestPostNow:
         task = qt_app.task_repo.list_recent()[0]
         assert all(t.body == BODY for t in qt_app.task_repo.targets_for(task.id))
 
-    def test_it_carries_per_group_rewrites(self, qt_app, views):
+    def test_it_shares_out_the_versions(self, qt_app, views):
         compose, publish = views
-        group_id = compose.selected_group_ids()[0]
-        compose.select_tab(group_id)
-        compose._show("A different wording for this one")
-        compose.capture()
+        add_version(compose, "A different wording")
 
         publish.publish()
         task = qt_app.task_repo.list_recent()[0]
-        bodies = {t.group_id: t.body for t in qt_app.task_repo.targets_for(task.id)}
-        assert bodies[group_id] == "A different wording for this one"
+        bodies = [t.body for t in qt_app.task_repo.targets_for(task.id)]
+        assert bodies == [BODY, "A different wording", BODY]
+        assert task.body == BODY
 
     def test_no_groups_is_refused(self, qt_app, views):
         _compose, publish = views
@@ -189,21 +196,28 @@ class TestScheduleOnce:
 
 
 class TestRepeat:
-    def test_the_compose_text_is_the_first_wording(self, views):
+    def test_the_first_version_is_the_first_wording(self, views):
         _compose, publish = views
         publish.set_mode(REPEAT)
         assert publish.wordings() == [BODY]
 
-    def test_alternates_are_added_after_it(self, views):
-        _compose, publish = views
+    def test_the_other_versions_follow_it(self, views):
+        compose, publish = views
+        add_version(compose, "Another way of saying it")
         publish.set_mode(REPEAT)
-        publish.add_wording("Another way of saying it")
+        assert publish.wordings() == [BODY, "Another way of saying it"]
+
+    def test_an_empty_version_is_left_out(self, views):
+        compose, publish = views
+        compose.add_version()
+        add_version(compose, "Another way of saying it")
+        publish.set_mode(REPEAT)
         assert publish.wordings() == [BODY, "Another way of saying it"]
 
     def test_it_writes_a_schedule(self, qt_app, views):
-        _compose, publish = views
+        compose, publish = views
+        add_version(compose, "Second wording")
         publish.set_mode(REPEAT)
-        publish.add_wording("Second wording")
         publish.name_entry.setText("Bikes")
         assert publish.publish() is True
 
@@ -312,10 +326,14 @@ class TestSummaryAndWarnings:
         assert "3 groups" in publish.summary.text()
 
     def test_once_mode_names_the_time(self, views):
+        """As people say it, "Sat 24 Oct 2026 at 12:30" (2026-10-24)."""
+        from fbposter.qtui.views.publish import DATE_FORMAT, ENGLISH
+
         _compose, publish = views
         publish.set_mode(ONCE)
-        typed = publish.schedule_entry.dateTime().toString("yyyy-MM-dd HH:mm")
-        assert typed in publish.summary.text()
+        picked = publish.schedule_entry.dateTime()
+        said = ENGLISH.toString(picked, f"{DATE_FORMAT} 'at' HH:mm")
+        assert f"once on {said}." in publish.summary.text()
 
     def test_repeat_mode_names_the_first_run(self, views):
         _compose, publish = views
@@ -337,25 +355,19 @@ class TestSummaryAndWarnings:
         assert theme.C["WARNING"] not in text
         assert "Repetitive content" not in text and "posting hours" not in text
 
-    def test_the_empty_wordings_hint_shows_when_there_are_no_alternates(self, views):
-        """It says what a wording is for: with none, every run sends the
-        Compose text."""
+    def test_one_version_says_where_to_add_more(self, views):
+        """With one version, every run sends it to every group, and more are
+        added in step 1."""
         _compose, publish = views
         publish.set_mode(REPEAT)
-        assert publish.wording_hint.isVisibleTo(publish)
-        assert "every run sends the Compose text" in publish.wording_hint.text()
+        assert publish.rotation_note.isVisibleTo(publish)
+        assert "Add more in step\u00a01" in publish.rotation_note.text()
 
-    def test_the_hint_goes_away_once_an_alternate_exists(self, views):
-        _compose, publish = views
+    def test_the_rotation_note_counts_the_versions(self, views):
+        compose, publish = views
+        add_version(compose, "Second wording")
         publish.set_mode(REPEAT)
-        publish.add_wording("Second wording")
-        assert not publish.wording_hint.isVisibleTo(publish)
-
-    def test_the_rotation_note_counts_the_compose_text_too(self, views):
-        _compose, publish = views
-        publish.set_mode(REPEAT)
-        publish.add_wording("Second wording")
-        assert publish.rotation_note.text().startswith("2 wordings")
+        assert publish.rotation_note.text().startswith("2 versions take turns")
 
 
 class TestWhatIsGoingOut:
@@ -429,11 +441,10 @@ class TestALongListScrolls:
         assert area.sizeHint().height() == RECIPIENTS_MAX_HEIGHT
         assert area.minimumSizeHint().height() < RECIPIENTS_MAX_HEIGHT
 
-    def test_repeat_gives_it_less_room(self, many):
-        """Repeat has its wordings under the list."""
+    def test_repeat_gives_it_the_same_room(self, many):
+        """Repeat had its alternate wordings under the list, and gave it less
+        room, until they became versions in step 1 (2026-10-23)."""
         many.set_mode(REPEAT)
-        assert many.recipient_area.sizeHint().height() == RECIPIENTS_MAX_HEIGHT_REPEAT
-        many.set_mode(NOW)
         assert many.recipient_area.sizeHint().height() == RECIPIENTS_MAX_HEIGHT
 
     def test_a_short_list_is_as_tall_as_its_rows(self, views):
@@ -622,21 +633,27 @@ class TestThereAreNoRules:
 
 
 class TestTheRotationNote:
-    def test_it_is_not_shown_without_a_rotation(self, views):
-        """With no alternates the hint says it all; "1 wording in rotation
-        (the Compose text plus these)" described a list that was not there."""
+    def test_it_is_not_shown_for_one_version_going_out_now(self, views):
         _compose, publish = views
-        publish.set_mode(REPEAT)
+        publish.set_mode(NOW)
         assert publish.rotation_note.isHidden()
 
-    def test_it_counts_what_is_really_there(self, views):
-        _compose, publish = views
-        publish.set_mode(REPEAT)
-        publish.add_wording("Road bike, 54cm, barely ridden.")
+    def test_now_says_the_versions_are_shared_out(self, views):
+        compose, publish = views
+        add_version(compose, "Road bike, 54cm, barely ridden.")
+        publish.set_mode(NOW)
         assert not publish.rotation_note.isHidden()
         assert publish.rotation_note.text().startswith(
-            "2 wordings in rotation: the Compose text and 1 alternate."
+            "2 versions, shared out across the groups."
         )
+
+    def test_pictures_alone_have_nothing_to_say(self, views):
+        compose, publish = views
+        compose._show("")
+        compose.capture()
+        compose.attachments = [Path("C:/pictures/bike.jpg")]
+        publish.set_mode(REPEAT)
+        assert publish.rotation_note.isHidden()
 
 
 class TestTheSnippet:
@@ -707,6 +724,42 @@ class TestPicturesOnly:
         _compose, publish, _said = pictures
         publish.refresh_recipients()
         assert publish.preview_note.text() == "Pictures only (1 picture, no text)."
+
+
+class TestPicturesWithWords:
+    """Step 3 showed the words alone, and nothing said a picture was going
+    too (2026-10-21)."""
+
+    def test_the_post_says_what_goes_with_it(self, views):
+        compose, publish = views
+        compose.attachments = [Path("C:/pictures/bike.jpg"), Path("C:/pictures/flat.jpg")]
+        publish.refresh_recipients()
+        assert publish.preview_note.text() == BODY
+        assert publish.media_note.text() == "With 2 pictures."
+        assert publish.media_note.isVisibleTo(publish)
+
+    def test_words_alone_say_nothing_more(self, views):
+        _compose, publish = views
+        publish.refresh_recipients()
+        assert not publish.media_note.isVisibleTo(publish)
+
+    def test_pictures_alone_are_said_once(self, views):
+        """"Pictures only (1 picture, no text)" says it already."""
+        compose, publish = views
+        compose._show("")
+        compose.capture()
+        compose.attachments = [Path("C:/pictures/bike.jpg")]
+        publish.refresh_recipients()
+        assert not publish.media_note.isVisibleTo(publish)
+
+
+class TestATimeIsOneBox:
+    def test_the_hour_and_minutes_share_a_box(self, views):
+        """Two boxes side by side looked like two settings (2026-10-21)."""
+        _compose, publish = views
+        picker = publish._time_rows[0]
+        assert picker.objectName() == "TimeField"
+        assert picker.hour.objectName() == picker.minute.objectName() == "TimePart"
 
 
 class TestOneWordingIsEnough:

@@ -142,7 +142,7 @@ class TestTheGroupListIsNotRebuiltForNothing:
             box.text()  # a deleted C++ object raises here
 
 
-class TestTheWordingTabsAreNotRebuiltForNothing:
+class TestTheVersionTabsAreNotRebuiltForNothing:
     def test_unchanged_tabs_are_kept(self, stocked):
         app, _ = stocked
         view = app.views["compose"]
@@ -153,35 +153,34 @@ class TestTheWordingTabsAreNotRebuiltForNothing:
         view.refresh_tabs()
         assert widgets_in(view.tab_bar) == before
 
-    def test_a_new_selection_rebuilds(self, stocked):
+    def test_ticking_a_group_leaves_them_alone(self, stocked):
+        """A tab per group was rebuilt on every tick on the Groups screen.
+        The versions do not depend on the groups at all (2026-10-23)."""
         app, made = stocked
         view = app.views["compose"]
         view.refresh_tabs()
         before = widgets_in(view.tab_bar)
 
         app.set_group_selected(made[2].id, True)
+        app.views["groups"].refresh_count()
+        assert widgets_in(view.tab_bar) == before
+
+    def test_a_new_version_rebuilds(self, stocked):
+        app, _ = stocked
+        view = app.views["compose"]
         view.refresh_tabs()
+        before = widgets_in(view.tab_bar)
+
+        view.add_version()
         after = widgets_in(view.tab_bar)
         assert after != before
         assert len(after) == len(before) + 1
 
-    def test_a_renamed_group_relabels_its_tab(self, stocked):
-        app, made = stocked
-        view = app.views["compose"]
-        view.refresh_tabs()
-        before = [button.text() for button in widgets_in(view.tab_bar)]
 
-        app.group_repo.set_name(made[0].id, "Totally New Name")
-        view.refresh_tabs()
-        after = [button.text() for button in widgets_in(view.tab_bar)]
-        assert after != before, "the strip went stale after a rename"
-
-
-class TestTheActiveWordingTabStaysMarked:
-    """The filled tab is the only thing on screen saying whose words are in the
-    editor -- and typing into the base text clears every per-group rewrite, so
-    a strip pointing at the wrong tab is how someone loses wording they had
-    already written.
+class TestTheActiveVersionTabStaysMarked:
+    """The filled tab is the only thing on screen saying which version is in
+    the editor, so a strip pointing at the wrong tab is how someone types
+    into the version they did not mean to.
 
     None of these three change a single tab *label*, which is what the rebuild
     guard is keyed on, so none of them can be fixed by that key: the fill has
@@ -194,44 +193,47 @@ class TestTheActiveWordingTabStaysMarked:
     def expected(self, view) -> list[bool]:
         return [target == view._editing for target, _label in view._tab_plan()]
 
-    def test_switching_tabs_moves_the_highlight(self, stocked):
-        """Switching tabs changes `_editing` and nothing else, so the guard
-        skipped the rebuild and the highlight stayed on the tab just left --
-        the editor holding one group's words under another group's name."""
-        app, made = stocked
-        view = app.views["compose"]
-        view.refresh_tabs()
-        assert self.marks(view) == self.expected(view)
-
-        view.select_tab(made[0].id)
-        assert view._editing == made[0].id
-        assert self.marks(view) == self.expected(view), "the highlight went stale"
-
-        view.select_tab(None)
-        assert self.marks(view) == self.expected(view)
-
-    def test_clicking_a_second_tab_does_not_leave_two_lit(self, stocked):
-        """These buttons are checkable and in no exclusive group, so Qt checks
-        the clicked one before select_tab is ever reached. With the rebuild
-        skipped, the tab left behind stayed lit as well."""
+    @pytest.fixture
+    def three(self, stocked):
         app, _ = stocked
         view = app.views["compose"]
-        view.refresh_tabs()
-        widgets_in(view.tab_bar)[1].click()  # the first group's tab
+        view.add_version()
+        view.add_version()
+        view.select_version(0)
+        return view
+
+    def test_switching_tabs_moves_the_highlight(self, three):
+        """Switching tabs changes `_editing` and nothing else, so the guard
+        skipped the rebuild and the highlight stayed on the tab just left:
+        the editor holding one version under another's name."""
+        view = three
+        assert self.marks(view) == self.expected(view)
+
+        view.select_version(2)
+        assert view._editing == 2
+        assert self.marks(view) == self.expected(view), "the highlight went stale"
+
+        view.select_version(0)
+        assert self.marks(view) == self.expected(view)
+
+    def test_clicking_a_second_tab_does_not_leave_two_lit(self, three):
+        """These buttons are checkable and in no exclusive group, so Qt checks
+        the clicked one before select_version is ever reached. With the
+        rebuild skipped, the tab left behind stayed lit as well."""
+        view = three
+        widgets_in(view.tab_bar)[1].click()
         assert self.marks(view) == self.expected(view)
         assert self.marks(view).count(True) == 1, "two tabs were lit at once"
 
-    def test_clicking_the_tab_already_open_keeps_it_lit(self, stocked):
+    def test_clicking_the_tab_already_open_keeps_it_lit(self, three):
         """Clicking the tab you are already on is a normal thing to do, and Qt
         toggles a checked button *off*. Nothing about the strip's contents
         changed, so nothing put it back: no tab was lit at all."""
-        app, made = stocked
-        view = app.views["compose"]
-        view.refresh_tabs()
-        view.select_tab(made[0].id)
+        view = three
+        view.select_version(1)
 
         widgets_in(view.tab_bar)[1].click()  # the same tab again
-        assert view._editing == made[0].id
+        assert view._editing == 1
         assert self.marks(view).count(True) == 1, "the strip lost its highlight"
         assert self.marks(view) == self.expected(view)
 
@@ -272,6 +274,27 @@ class TestPublishRecipientsAreNotRebuiltForNothing:
         compose.capture()
         view.refresh_recipients()
         assert view.preview_note.text() != first, "the snippet went stale"
+
+    def test_picking_a_version_does_not_rebuild_the_rows(self, stocked):
+        """The drop-down picked from must not be destroyed under its own
+        signal, so which version a row shows is outside the guard."""
+        app, made = stocked
+        view = app.views["publish"]
+        compose = app.views["compose"]
+        compose.editor.setPlainText("first version")
+        compose.capture()
+        compose.add_version()
+        compose.editor.setPlainText("second version")
+        compose.capture()
+        view.refresh_recipients()
+        before = widgets_in(view.recipient_box)
+        picker = view._version_lists[made[0].id]
+
+        picker.setCurrentIndex(1)
+        picker.activated.emit(1)
+        view.refresh_recipients()
+        assert widgets_in(view.recipient_box) == before
+        assert picker.currentData() == 1
 
 
 class TestNothingSlowRunsOnTheDrawingThread:

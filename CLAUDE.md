@@ -82,7 +82,7 @@ powershell -ExecutionPolicy Bypass -File packaging\build.ps1 -SkipInstaller  # .
 
 `status` exits 0 when logged in, 1 when not, 2 on error (Chrome not running, etc.).
 
-There is no linter or formatter configured, and no pytest config file. The suite is the whole check. Baseline: **1952 tests, about 35s with `-n auto`** on 8 cores, about 2 minutes on one. Leave `-n auto` off for one file or one test: starting the workers costs more than it saves. A full run of *two minutes or more* with `-n auto` means something is reaching the network (see the `SilentNamer` note in `.claude/rules/ui.md`), or a test window is not being thrown away (see `.claude/rules/testing.md`).
+There is no linter or formatter configured, and no pytest config file. The suite is the whole check. Baseline: **about 2000 tests, about 35s with `-n auto`** on 8 cores, about 2 minutes on one. Leave `-n auto` off for one file or one test: starting the workers costs more than it saves. A full run of *two minutes or more* with `-n auto` means something is reaching the network (see the `SilentNamer` note in `.claude/rules/ui.md`), or a test window is not being thrown away (see `.claude/rules/testing.md`).
 
 **Do not add `playwright install`.** It is unnecessary and was verified so against Chrome 150: the app attaches to the user's real Chrome over CDP and never launches Playwright's bundled Chromium, so the driver shipped inside the pip package is all that is required.
 
@@ -127,7 +127,7 @@ Storage: `db/`: `connection.py` (per-thread connections), `schema.py` (migration
 
 Both comparisons are now the fallback. A post is proved by the id in Facebook's reply to the Post click; the words are checked only when that reply carries no id, and then `sent_before` stops an older post with the same words being taken as proof that the new one went out (`automation.md`).
 
-Both Qt entry points clean on the way in as well: `ComposeView.get_text()` and `PublishView.alternates()`. **Qt needing no direction marks of its own is not the same as no marks arriving**; that gap is how this shipped.
+Both Qt entry points clean on the way in as well: `ComposeView.get_text()` and `ScheduleEditView.wordings()`. **Qt needing no direction marks of its own is not the same as no marks arriving**; that gap is how this shipped.
 
 ### Time: stored in UTC, judged in Israel time
 
@@ -182,4 +182,4 @@ Automating posts violates Facebook's Terms of Service. The measures above reduce
 All your answers need to be short and clear.
 Never assume anything, if you are not sure about something you ask me.
 Explain technical stuff as simple as you can. 
-When you finish making changes in the code that change the behaviour or something that visible in the app restart the ap so i can see or try the new stuff. 
+When you finish making changes in the code that change the behaviour or something that visible in the app restart the app so i can see or try the new stuff. Only one copy can run at once (`single.py`), so close the running app first, then run `main.py start`.

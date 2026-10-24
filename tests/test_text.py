@@ -141,11 +141,15 @@ class TestTheComposerCleansOnTheWayIn:
         compose.capture()
         assert not text.has_invisible(compose.base_body())
 
-    def test_alternate_wordings_are_cleaned_too(self, qt_app):
-        """They become post bodies via a schedule, same as anything else."""
-        publish = qt_app.views["publish"]
-        publish.add_wording(f"‫{HEBREW}‬")
-        assert all(not text.has_invisible(w) for w in publish.alternates())
+    def test_every_version_is_cleaned_too(self, qt_app):
+        """They become post bodies, same as the first."""
+        compose = qt_app.views["compose"]
+        compose._show(HEBREW)
+        compose.add_version()
+        compose._show(f"‫{HEBREW}‬")
+        compose.capture()
+        assert len(compose.versions()) == 2
+        assert all(not text.has_invisible(w) for w in compose.versions())
 
     def test_the_character_count_reflects_what_will_be_sent(self, qt_app):
         compose = qt_app.views["compose"]

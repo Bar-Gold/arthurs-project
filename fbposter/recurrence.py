@@ -162,24 +162,38 @@ def pick_body(
 ) -> str:
     """Choose this run's wording for one group, or "" when there is none.
 
+    "" is a post of pictures or a video alone. The choosing is `pick_index`.
+    """
+    index = pick_index(variants, offset, recent_bodies)
+    return "" if index is None else variants[index]
+
+
+def pick_index(
+    variants: Sequence[str],
+    offset: int,
+    recent_bodies: Sequence[str] = (),
+) -> int | None:
+    """Which of `variants` one group gets, by its place in the list, or None
+    when every one is empty.
+
     Starting at `offset` and wrapping is what keeps a run from sending one
     wording to every group at once: group 0 takes variant 0, group 1 takes
     variant 1, and the whole cycle shifts by one on the next run. A wording
     this group has not had today (`recent_bodies`) is preferred, and when it
     has had them all the rotation carries on regardless: nothing holds a
-    repeat back (the user's choice, 2026-10-18).
-
-    "" is a post of pictures or a video alone.
+    repeat back (the user's choice, 2026-10-18). An empty variant is passed
+    over. Compose shares out a post's versions by the same rule, so step 3
+    can say which version each group gets.
     """
-    usable = [v for v in variants if v.strip()]
+    usable = [index for index, variant in enumerate(variants) if variant.strip()]
     if not usable:
-        return ""
+        return None
 
     seen = {normalise(body) for body in recent_bodies}
     for step in range(len(usable)):
-        candidate = usable[(offset + step) % len(usable)]
-        if normalise(candidate) not in seen:
-            return candidate
+        index = usable[(offset + step) % len(usable)]
+        if normalise(variants[index]) not in seen:
+            return index
     return usable[offset % len(usable)]
 
 

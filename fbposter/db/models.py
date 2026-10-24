@@ -139,9 +139,13 @@ class Template:
     media_paths: list[str] = field(default_factory=list)
     created_at: datetime | None = None
     updated_at: datetime | None = None
+    # Every version of the post (migration 015). `body` is the first, and is
+    # all a template saved before versions has.
+    versions: list[str] = field(default_factory=list)
 
     @classmethod
     def from_row(cls, row: Mapping[str, Any]) -> "Template":
+        versions = _paths_from_json(row["versions"]) if "versions" in row.keys() else []
         return cls(
             id=row["id"],
             name=row["name"],
@@ -149,6 +153,7 @@ class Template:
             media_paths=_paths_from_json(row["media_paths"]),
             created_at=from_iso(row["created_at"]),
             updated_at=from_iso(row["updated_at"]),
+            versions=versions or [row["body"]],
         )
 
 

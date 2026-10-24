@@ -27,8 +27,8 @@ Saving judges nothing: there are no posting rules (the user's choice,
 Write and Preview, as in Create a post (the user's choice, 2026-10-21):
 Preview puts the post, as a group will see it, where the wordings, groups and
 pictures were, and leaves the right-hand card (name, times, Save) as it is. A
-post with several wordings shows one at a time, picked by "Wording 1",
-"Wording 2" and so on above it. It shows what is on the screen, saved or not.
+post with several versions shows one at a time, picked by "Version 1",
+"Version 2" and so on above it. It shows what is on the screen, saved or not.
 """
 
 from __future__ import annotations
@@ -56,7 +56,7 @@ from fbposter.db.models import utcnow
 from fbposter.db.repo import KEEP
 from fbposter.text import strip_invisible
 
-from .. import theme
+from .. import icons, theme
 from ..widgets import (
     RowList,
     back_link,
@@ -73,6 +73,7 @@ from .compose import (
     NO_ATTACHMENTS,
     PostPreview,
     check_attachments,
+    version_label,
 )
 from .groups import SET_COLUMNS, GroupRow, in_sets, set_label
 from .publish import (
@@ -180,11 +181,12 @@ class ScheduleEditView(QWidget):
         self._build_preview(left_column)
 
         header = QHBoxLayout()
-        label = QLabel("Wordings")
+        label = QLabel("Versions")
         label.setObjectName("SectionHeading")
         header.addWidget(label)
         header.addStretch(1)
-        self.add_wording_button = QPushButton("Add wording")
+        self.add_wording_button = QPushButton("Add version")
+        icons.set_button_icon(self.add_wording_button, "plus")
         self.add_wording_button.clicked.connect(lambda: self.add_wording())
         header.addWidget(self.add_wording_button)
         column.addLayout(header)
@@ -231,6 +233,7 @@ class ScheduleEditView(QWidget):
         pictures_header.addWidget(pictures_label)
         pictures_header.addStretch(1)
         self.attach_button = QPushButton(ATTACH_LABEL)
+        icons.set_button_icon(self.attach_button, "picture")
         self.attach_button.clicked.connect(self._pick_files)
         pictures_header.addWidget(self.attach_button)
         column.addLayout(pictures_header)
@@ -300,6 +303,7 @@ class ScheduleEditView(QWidget):
         header.addWidget(times_label)
         header.addStretch(1)
         self.add_time_button = QPushButton("Add a time")
+        icons.set_button_icon(self.add_time_button, "plus")
         self.add_time_button.clicked.connect(lambda: self.add_time())
         header.addWidget(self.add_time_button)
         layout.addLayout(header)
@@ -361,7 +365,12 @@ class ScheduleEditView(QWidget):
                 box = QCheckBox(literal(set_label(group_set)))
                 box.setChecked(group_set.id in schedule.set_ids)
                 box.toggled.connect(lambda _on: self.refresh_covered())
-                self.set_grid.addWidget(box, index // SET_COLUMNS, index % SET_COLUMNS)
+                # A click anywhere in its place picks it, as on the Groups screen.
+                place = GroupRow(box)
+                line = QHBoxLayout(place)
+                line.setContentsMargins(0, 0, 0, 0)
+                line.addWidget(box, 1)
+                self.set_grid.addWidget(place, index // SET_COLUMNS, index % SET_COLUMNS)
                 self._set_boxes[group_set.id] = box
             self.sets_section.setVisible(bool(sets))
 
@@ -420,8 +429,14 @@ class ScheduleEditView(QWidget):
         preview = mode == PREVIEW
         self.write_button.setChecked(not preview)
         self.preview_button.setChecked(preview)
-        self.write_page.setVisible(not preview)
-        self.preview_page.setVisible(preview)
+        # The page leaving goes first, so the preview is never redrawn for
+        # room it is about to give up.
+        leaving, coming = (
+            (self.write_page, self.preview_page) if preview
+            else (self.preview_page, self.write_page)
+        )
+        leaving.setVisible(False)
+        coming.setVisible(True)
         if preview:
             # Built on the way in, never on a pick: the button clicked would be
             # destroyed under its own click. The wordings cannot change while
@@ -436,7 +451,7 @@ class ScheduleEditView(QWidget):
             self._picker_group.removeButton(button)
         clear(self.picker_box)
         for index in range(count):
-            button = QPushButton(f"Wording {index + 1}")
+            button = QPushButton(version_label(index))
             button.setObjectName("Tab")
             button.setCheckable(True)
             button.setChecked(index == self._preview_index)
@@ -460,11 +475,12 @@ class ScheduleEditView(QWidget):
         name = self.name_entry.text().strip()
         if not name and self._loaded is not None:
             name = self._loaded.display_name
-        groups = len(self.ticked_group_ids())
-        subheading = f"Just now · {groups} group{'s' if groups != 1 else ''}"
-        if len(texts) > 1:
-            subheading += f" · wording {self._preview_index + 1} of {len(texts)}"
-        self.preview.render(name, subheading, text, [Path(p) for p in self._pictures])
+        # Which version, as on step 1, and never how many groups (the user's
+        # request, 2026-10-24).
+        note = (
+            f"{version_label(self._preview_index)} of {len(texts)}" if len(texts) > 1 else ""
+        )
+        self.preview.render(name, note, text, [Path(p) for p in self._pictures])
 
     # -- wordings ----------------------------------------------------------
     def add_wording(self, text: str = "") -> QTextEdit:
@@ -549,6 +565,8 @@ class ScheduleEditView(QWidget):
             if note is not None:
                 note.setText(in_sets(names) if names else "")
                 note.setVisible(bool(names))
+        # The rows' tints, which the blocked signals did not repaint.
+        self.group_list.update()
         self.refresh_summary()
 
     def plain_group_ids(self) -> list[int]:
@@ -694,13 +712,13 @@ class ScheduleEditView(QWidget):
         count = len(wordings)
         if count > 1:
             note = (
-                f"{count} wordings in rotation. Each run shares them out across "
+                f"{count} versions take turns: each run shares them out across "
                 "the groups, a different one to each in turn."
             )
         elif count == 1:
-            note = "One wording: every run sends it to every group."
+            note = "One version: every run sends it to every group."
         else:
-            note = "No wording: every run posts the pictures or video on their own."
+            note = "No words: every run posts the pictures or video on their own."
         self.rotation_note.setText(note)
 
         rule = self.rule()

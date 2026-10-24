@@ -7,10 +7,12 @@ It owns nothing but the moment, in three modes:
 * **Schedule**: once, at a chosen moment.
 * **Repeat**: daily, or on chosen days, at as many times of day as wanted.
 
-Repeat rotates wordings: the Compose text is the first, this screen collects
-alternates, and each run hands them out across the groups, so one run never
-sends the same text to all of them. Nothing refuses a repeat (the user's
-choice, 2026-10-18): varying the wording is advice, on the Posting tips screen.
+The post's versions are written in step 1 and shared out across the groups.
+In Now and Once each row of "Going out" shows the version its group gets, and
+it can be changed there. Repeat rotates them: each run hands them out across
+the groups, so one run never sends the same text to all of them. Nothing
+refuses a repeat (the user's choice, 2026-10-18): varying the wording is
+advice, on the Posting tips screen.
 
 Nothing here talks to a browser. Post now and Schedule hand the work to
 `ComposeView.add_to_queue`, and Repeat writes a definition the worker
@@ -20,7 +22,7 @@ queue and the gap between posts apply unchanged.
 
 from __future__ import annotations
 
-from PySide6.QtCore import QDate, QDateTime, QSize, QTime, Qt, Signal
+from PySide6.QtCore import QDate, QDateTime, QLocale, QSize, QTime, Qt, Signal
 from PySide6.QtGui import QColor, QTextCharFormat
 from PySide6.QtWidgets import (
     QButtonGroup,
@@ -29,6 +31,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDateEdit,
     QDateTimeEdit,
+    QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -37,16 +40,15 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QStyledItemDelegate,
-    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
 
 from fbposter import attachments, clock, recurrence
-from fbposter.text import strip_invisible
+from fbposter.media import describe
 from fbposter.db.models import utcnow
 
-from .. import theme
+from .. import icons, theme
 from ..widgets import (
     RowList,
     back_link,
@@ -57,22 +59,19 @@ from ..widgets import (
     segmented,
     set_note_lines,
 )
-from .compose import media_only
+from .compose import media_only, version_label
 
 RIGHT_COLUMN_WIDTH = 340
 # Room for the column's scroll bar, so the column keeps its width when it shows.
 RIGHT_COLUMN_SCROLLBAR = 12
-WORDING_MIN_HEIGHT = 80
 DEFAULT_TIMES = ("09:00", "18:00", "21:00")
 SNIPPET_CHARS = 90
 
 # The "Going out" list: one row per group with a hairline between them, in a
 # list that scrolls past its height. A client sends one post to 40-80 groups,
-# and laid out bare the names were squeezed on top of each other. Repeat has
-# its wordings under the list, so it gets less room.
+# and laid out bare the names were squeezed on top of each other.
 RECIPIENT_ROW_PAD = 7
 RECIPIENTS_MAX_HEIGHT = 440
-RECIPIENTS_MAX_HEIGHT_REPEAT = 200
 RECIPIENTS_MIN_ROWS = 3
 
 NOW = "now"
@@ -89,6 +88,10 @@ BUTTON_LABELS = {
 # the range in which a mis-scroll is recoverable. Without a ceiling the year
 # section took a mouse wheel notch straight to 2028, which is what happened.
 SCHEDULE_HORIZON_DAYS = 365
+# A day as people say it: "Sat 24 Oct 2026" (2026-10-24). Day and month
+# names come from a locale, so it is fixed to English, like the app.
+ENGLISH = QLocale(QLocale.English, QLocale.UnitedKingdom)
+DATE_FORMAT = "ddd d MMM yyyy"
 
 # The minutes a time can be set to (the user's choice, 2026-10-14). A time
 # saved earlier on another minute keeps it; see TimeList.set_value.
@@ -248,6 +251,16 @@ def next_time(taken) -> str:
     return DEFAULT_TIMES[0]
 
 
+def friendly_time(moment) -> str:
+    """A stored instant as step 3 says it, in Israel time: "Sun 25 Oct 2026,
+    09:00", matching the date box."""
+    local = clock.to_local(moment)
+    # English names whatever the machine's language, as ENGLISH gives the box.
+    day = ENGLISH.dayName(local.isoweekday(), QLocale.ShortFormat)
+    month = ENGLISH.monthName(local.month, QLocale.ShortFormat)
+    return f"{day} {local.day} {month} {local.year}, {local:%H:%M}"
+
+
 class TimeList(QComboBox):
     """A short list of numbers to pick from: the hours, or the minutes.
 
@@ -257,6 +270,8 @@ class TimeList(QComboBox):
 
     def __init__(self, values, name: str) -> None:
         super().__init__()
+        # One half of a TimePicker's box: no border of its own.
+        self.setObjectName("TimePart")
         # The default delegate ignores the stylesheet's ::item rules.
         self.setItemDelegate(QStyledItemDelegate(self))
         self.setMaxVisibleItems(8)
@@ -290,27 +305,53 @@ class TimeList(QComboBox):
         event.ignore()
 
 
-class TimePicker(QWidget):
+class VersionList(QComboBox):
+    """Which version one group gets, on its row in "Going out".
+
+    The wheel does nothing, as on every list that decides what goes out:
+    scrolling a list of 80 groups must not change one of them.
+    """
+
+    def __init__(self, versions, group_name: str) -> None:
+        super().__init__()
+        # The default delegate ignores the stylesheet's ::item rules.
+        self.setItemDelegate(QStyledItemDelegate(self))
+        self.setAccessibleName(f"Version for {group_name}")
+        for index in versions:
+            self.addItem(version_label(index), index)
+
+    def wheelEvent(self, event) -> None:  # noqa: N802 - Qt's name
+        event.ignore()
+
+
+class TimePicker(QFrame):
     """A time of day as two lists, the hour and the minutes.
 
     It replaced a typed field with arrows, which the user found awkward to use
     and to change (2026-10-14). There is nothing to type, so nothing is ever
     half-typed, and no arrow can be dead.
+
+    The two lists are drawn as one box (`#TimeField`, 2026-10-21), the way a
+    time reads: as two boxes side by side they looked like two settings.
     """
 
     timeChanged = Signal(QTime)  # noqa: N815 - named like QTimeEdit's
 
     def __init__(self, hour: int = 9, minute: int = 0) -> None:
         super().__init__()
-        # Transparent, like row(): it sits inside a card.
-        self.setObjectName("Row")
+        self.setObjectName("TimeField")
+        self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(theme.PAD_XS)
+        # The lists sit inside the box's border, so a list under the pointer
+        # is tinted within it.
+        layout.setContentsMargins(1, 1, 1, 1)
+        layout.setSpacing(0)
         self.hour = TimeList(HOURS, "Hour")
         self.minute = TimeList(MINUTES, "Minutes")
+        colon = QLabel(":")
+        colon.setObjectName("TimeColon")
         layout.addWidget(self.hour)
-        layout.addWidget(QLabel(":"))
+        layout.addWidget(colon)
         layout.addWidget(self.minute)
         self.hour.set_value(hour)
         self.minute.set_value(minute)
@@ -346,7 +387,11 @@ class DateEntry(QDateEdit):
         # Styled as a drop-down rather than a stepper; see theme.py.
         self.setObjectName("DateEntry")
         self.setCalendarPopup(True)
-        self.setDisplayFormat("yyyy-MM-dd")
+        # A day as people say it, "Sat 24 Oct 2026", not "2026-10-24"
+        # (2026-10-24). In English whatever the machine's language: the names
+        # come from the locale, and the rest of the app is in English.
+        self.setLocale(ENGLISH)
+        self.setDisplayFormat(DATE_FORMAT)
         self.setAccessibleName("Date")
         self.setCurrentSection(QDateTimeEdit.DaySection)
         self._quiet_calendar()
@@ -528,9 +573,12 @@ class PublishView(QWidget):
         self.app = app
         # The recipient rows as drawn; None means nothing has been drawn yet.
         self._recipients_shown = None
+        # Each row's version drop-down, by group id, when the rows have them.
+        self._version_lists: dict[int, VersionList] = {}
         self.mode = NOW
-        self._wordings: list[QTextEdit] = []
         self._time_rows: list[TimePicker] = []
+        # Each time's Remove, hidden while it is the only time.
+        self._time_removes: dict[TimePicker, QPushButton] = {}
         self._day_boxes: list[QCheckBox] = []
 
         outer = QVBoxLayout(self)
@@ -552,6 +600,15 @@ class PublishView(QWidget):
         outer.addLayout(body, 1)
         self._build_left(body)
         self._build_right(body)
+
+        # Back at the bottom left, where step 2 has it (2026-10-24). It sat
+        # under the Post button, so the way back moved from step to step.
+        footer = QHBoxLayout()
+        back = back_link("← Back: choose the groups")
+        back.clicked.connect(lambda: self.app.show_view("groups"))
+        footer.addWidget(back)
+        footer.addStretch(1)
+        outer.addLayout(footer)
 
         self.add_time(DEFAULT_TIMES[0])
         self.set_mode(NOW)
@@ -597,10 +654,15 @@ class PublishView(QWidget):
         column.addWidget(post_heading)
         post_card = card()
         post_layout = QVBoxLayout(post_card)
-        post_layout.setContentsMargins(theme.PAD_M, theme.PAD_S, theme.PAD_M, theme.PAD_S)
+        post_layout.setContentsMargins(theme.PAD_M, theme.PAD_M, theme.PAD_M, theme.PAD_M)
         self.preview_note = QLabel("")
         self.preview_note.setWordWrap(True)
         post_layout.addWidget(self.preview_note)
+        # The pictures or video going with written words. Without it step 3
+        # showed the words alone, and nothing said a picture was going too.
+        self.media_note = QLabel("")
+        self.media_note.setObjectName("Muted")
+        post_layout.addWidget(self.media_note)
         column.addWidget(post_card)
         column.addSpacing(theme.PAD_S)
 
@@ -630,63 +692,23 @@ class PublishView(QWidget):
         recipients_layout.addWidget(self.recipient_area)
         column.addWidget(self.recipients)
 
-        # Everything below is Repeat-only, and lives in one container so that
-        # hiding it collapses cleanly. Hiding the widgets one by one left their
-        # spacing behind and spread the rest of the column down the screen.
-        self.repeat_extras = QWidget()
-        extras = QVBoxLayout(self.repeat_extras)
-        extras.setContentsMargins(0, 0, 0, 0)
-        extras.setSpacing(theme.PAD_XS)
-
-        header = QHBoxLayout()
-        label = QLabel("Alternate wordings")
-        label.setObjectName("SectionHeading")
-        header.addWidget(label)
-        header.addStretch(1)
-        self.add_wording_button = QPushButton("Add wording")
-        self.add_wording_button.clicked.connect(lambda: self.add_wording())
-        header.addWidget(self.add_wording_button)
-        extras.addLayout(header)
-
-        # The empty state says what a wording is for: with none added, every
-        # run sends every group the Compose text.
-        self.wording_hint = QLabel(
-            "No alternates yet, so every run sends the Compose text. Add other "
-            "wordings and each run shares them out across the groups."
-        )
-        self.wording_hint.setObjectName("Muted")
-        self.wording_hint.setWordWrap(True)
-        extras.addWidget(self.wording_hint)
-
-        self.wording_area = QScrollArea()
-        self.wording_area.setWidgetResizable(True)
-        holder = QWidget()
-        self.wording_box = QVBoxLayout(holder)
-        self.wording_box.setContentsMargins(0, 0, 0, 0)
-        self.wording_box.setSpacing(theme.PAD_S)
-        self.wording_box.addStretch(1)
-        self.wording_area.setWidget(holder)
-        extras.addWidget(self.wording_area, 1)
-
+        # How the versions are shared out, under the list. In Now and Once
+        # each row says which version its group gets; in Repeat they take
+        # turns, run after run, and this says so. The versions are written in
+        # step 1: this screen collected "alternate wordings" of its own until
+        # 2026-10-23, a second way of saying the same thing.
         self.rotation_note = QLabel("")
         self.rotation_note.setObjectName("Muted")
         self.rotation_note.setWordWrap(True)
-        extras.addWidget(self.rotation_note)
-        # The repeating posts already made are listed on their own screen,
-        # Repeating posts in the sidebar (2026-10-21); they were here, and
-        # their list took the slack. With no wordings yet the box above is
-        # hidden, and without this the hint dropped to the foot of the column.
-        extras.addStretch()
-        column.addWidget(self.repeat_extras, 1)
+        column.addWidget(self.rotation_note)
 
-        # Takes the slack in the two modes where the extras are hidden, so the
-        # recipients card stays at the top instead of drifting to the middle.
-        self.filler = QWidget()
-        column.addWidget(self.filler, 1)
+        # Takes the slack, so the recipients card stays at the top instead of
+        # drifting to the middle.
+        column.addStretch(1)
 
-    def _recipient_plan(self, selected) -> list[tuple[int, str, bool, tuple[str, ...]]]:
-        """The rows as (id, name, reworded, sets) -- what to draw, not the
-        drawing. `sets` names the picked group sets that bring the group.
+    def _recipient_plan(self, selected) -> list[tuple[int, str, tuple[str, ...]]]:
+        """The rows as (id, name, sets): what to draw, not the drawing. `sets`
+        names the picked group sets that bring the group.
 
         One query for every group rather than one per recipient. This runs on
         every refresh, ahead of the guard, so it is the read that never gets
@@ -695,16 +717,25 @@ class PublishView(QWidget):
         names = {group.id: group.display_name for group in self.app.group_repo.list()}
         covered = self.app.covered_by_sets()
         return [
-            (group_id, names[group_id], self.compose.has_rewrite(group_id),
-             tuple(covered.get(group_id, ())))
+            (group_id, names[group_id], tuple(covered.get(group_id, ())))
             for group_id in selected
             if group_id in names
         ]
 
-    @staticmethod
-    def _recipient_row(name: str, reworded: bool, sets: tuple[str, ...]) -> QWidget:
-        """One group: its name, then why it is there (a set) and whether it has
-        its own wording. The list draws the hairline between rows."""
+    def _choosable_versions(self) -> tuple[int, ...]:
+        """The versions a row offers, when it offers any: those with words
+        in, in Now and Once, when there are two or more. A repeating post's
+        versions take turns, run after run, so no group keeps one."""
+        if self.mode == REPEAT:
+            return ()
+        filled = self.compose.filled_versions()
+        return tuple(filled) if len(filled) > 1 else ()
+
+    def _recipient_row(
+        self, group_id: int, name: str, sets: tuple[str, ...], versions: tuple[int, ...]
+    ) -> QWidget:
+        """One group: its name, why it is there (a set), and the version it
+        gets when there is a choice. The list draws the hairline between rows."""
         holder = row()
         content = QHBoxLayout(holder)
         content.setContentsMargins(0, RECIPIENT_ROW_PAD, 0, RECIPIENT_ROW_PAD)
@@ -716,22 +747,34 @@ class PublishView(QWidget):
         # mixing the two zigzagged from side to side.
         label.setAlignment(Qt.AlignLeft | Qt.AlignAbsolute | Qt.AlignVCenter)
         content.addWidget(label, 1)
-        notes = [f"in {', '.join(sets)}"] if sets else []
-        if reworded:
-            notes.append("reworded")
-        if notes:
-            tag = QLabel(" · ".join(notes))
+        if sets:
+            tag = QLabel(f"in {', '.join(sets)}")
             tag.setObjectName("Muted")
             content.addWidget(tag)
+        if versions:
+            picker = VersionList(versions, name)
+            picker.activated.connect(
+                lambda _i, g=group_id, p=picker: self.compose.choose_version(g, p.currentData())
+            )
+            content.addWidget(picker)
+            self._version_lists[group_id] = picker
         return holder
 
-    def _fit_recipients(self) -> None:
-        """Repeat has its wordings and repeating posts under the list, so the
-        list gets less room there."""
-        self.recipient_area.room = (
-            RECIPIENTS_MAX_HEIGHT_REPEAT if self.mode == REPEAT else RECIPIENTS_MAX_HEIGHT
-        )
-        self.recipient_area.updateGeometry()
+    def _mark_versions(self) -> None:
+        """Show on each row the version its group gets. Always.
+
+        Outside the rebuild guard: the drop-down the user just changed must
+        not be rebuilt under its own signal, and the versions are shared out
+        afresh on every visit (a version emptied in step 1 hands its groups
+        another), which no row snapshot describes.
+        """
+        if not self._version_lists:
+            return
+        shared = self.compose.assignment()
+        for group_id, picker in self._version_lists.items():
+            index = picker.findData(shared.get(group_id))
+            if index >= 0 and index != picker.currentIndex():
+                picker.setCurrentIndex(index)
 
     def refresh_recipients(self) -> None:
         selected = self.selected_group_ids()
@@ -749,6 +792,9 @@ class PublishView(QWidget):
         else:
             note = "Nothing written yet. Start in step 1."
         self.preview_note.setText(note)
+        media = self.compose.attachments if snippet else []
+        self.media_note.setText(f"With {describe(media)}." if media else "")
+        self.media_note.setVisible(bool(media))
         # Grey when it is a note about the post rather than the post itself.
         muted = "" if snippet else "Muted"
         if self.preview_note.objectName() != muted:
@@ -757,15 +803,19 @@ class PublishView(QWidget):
             self.preview_note.style().polish(self.preview_note)
 
         # None never equals a tuple, so the first call always draws -- including
-        # the empty case, which has its own "no groups picked" note.
+        # the empty case, which has its own "no groups picked" note. Which
+        # version a row shows is not in it: see _mark_versions.
         sets = tuple(self.picked_set_names())
-        plan = (sets, self._recipient_plan(selected))
-        if plan == self._recipients_shown:
-            return
-        self._recipients_shown = plan
+        versions = self._choosable_versions()
+        plan = (sets, versions, self._recipient_plan(selected))
+        if plan != self._recipients_shown:
+            self._recipients_shown = plan
+            self._draw_recipients(selected, versions, plan[2])
+        self._mark_versions()
 
+    def _draw_recipients(self, selected, versions, rows) -> None:
         clear(self.recipient_box)
-        rows = plan[1]
+        self._version_lists = {}
         count = len(rows)
         self.recipient_count.setText(f"{count} group{'s' if count != 1 else ''}" if count else "")
         if not selected:
@@ -774,13 +824,18 @@ class PublishView(QWidget):
             note.setWordWrap(True)
             note.setContentsMargins(0, RECIPIENT_ROW_PAD, 0, RECIPIENT_ROW_PAD)
             self.recipient_box.addWidget(note)
-        for _group_id, name, reworded, brought_by in rows:
-            self.recipient_box.addWidget(self._recipient_row(name, reworded, brought_by))
+        for group_id, name, brought_by in rows:
+            self.recipient_box.addWidget(
+                self._recipient_row(group_id, name, brought_by, versions)
+            )
         self.recipient_area.updateGeometry()
 
     # -- right column: when ------------------------------------------------
     def _build_right(self, parent: QHBoxLayout) -> None:
         column = QVBoxLayout()
+        # No margins of its own, as on Compose: Qt's default inset the column,
+        # so the "When" card stopped short of the page's right edge.
+        column.setContentsMargins(0, 0, 0, 0)
         column.setSpacing(theme.PAD_S)
         holder = QWidget()
         holder.setLayout(column)
@@ -789,6 +844,8 @@ class PublishView(QWidget):
         # card until its name field, times and days were drawn on top of one
         # another.
         scroll = QScrollArea()
+        # No frame: its frame kept the column a pixel short of the page's edge.
+        scroll.setFrameShape(QFrame.NoFrame)
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         scroll.setFixedWidth(RIGHT_COLUMN_WIDTH + RIGHT_COLUMN_SCROLLBAR)
@@ -797,7 +854,7 @@ class PublishView(QWidget):
 
         picker = card()
         picker_layout = QVBoxLayout(picker)
-        picker_layout.setContentsMargins(theme.PAD_M, theme.PAD_M, theme.PAD_M, theme.PAD_M)
+        picker_layout.setContentsMargins(theme.PAD_L, theme.PAD_L, theme.PAD_L, theme.PAD_L)
         picker_layout.setSpacing(theme.PAD_S)
         picker_layout.addWidget(card_title("When"))
 
@@ -822,27 +879,32 @@ class PublishView(QWidget):
         }
         for panel in self.panels.values():
             picker_layout.addWidget(panel)
-        column.addWidget(picker)
 
-        # The summary and the button that acts on it sit directly under the
-        # card they describe. They used to be anchored to the bottom of the
-        # window with the stretch above them, which in Now and Once modes --
-        # where the panel is one line -- left a void most of the screen tall
-        # between the choice and the button that carries it out.
+        # What the choice comes to, inside the card it sums up, under a
+        # hairline (2026-10-24). It was loose grey lines between the card and
+        # the button.
+        picker_layout.addSpacing(theme.PAD_XS)
+        rule = QFrame()
+        rule.setObjectName("Divider")
+        rule.setFixedHeight(1)
+        picker_layout.addWidget(rule)
+        picker_layout.addSpacing(theme.PAD_XS)
         self.summary = QLabel("")
         self.summary.setObjectName("Muted")
         self.summary.setWordWrap(True)
-        column.addWidget(self.summary)
+        picker_layout.addWidget(self.summary)
+        column.addWidget(picker)
 
+        # The button sits directly under the card it acts on. It used to be
+        # anchored to the bottom of the window with the stretch above it,
+        # which in Now and Once modes -- where the panel is one line -- left a
+        # void most of the screen tall between the choice and the button that
+        # carries it out.
         self.go_button = QPushButton(BUTTON_LABELS[NOW])
         self.go_button.setObjectName("Primary")
         # A lambda, so clicked() cannot pass its `checked` flag into publish().
         self.go_button.clicked.connect(lambda: self.publish())
         column.addWidget(self.go_button)
-
-        back = back_link("← Back: choose the groups")
-        back.clicked.connect(lambda: self.app.show_view("groups"))
-        column.addWidget(back)
 
         # The slack goes below everything, so the column reads top-down and
         # grows downwards when Repeat opens.
@@ -897,6 +959,7 @@ class PublishView(QWidget):
         header.addWidget(times_label)
         header.addStretch(1)
         self.add_time_button = QPushButton("Add a time")
+        icons.set_button_icon(self.add_time_button, "plus")
         self.add_time_button.clicked.connect(lambda: self.add_time())
         header.addWidget(self.add_time_button)
         layout.addLayout(header)
@@ -927,56 +990,41 @@ class PublishView(QWidget):
             panel.setVisible(key == mode)
         self.go_button.setText(BUTTON_LABELS[mode])
 
-        repeating = mode == REPEAT
-        self.repeat_extras.setVisible(repeating)
-        self.filler.setVisible(not repeating)
-        self._fit_recipients()
+        # The rows offer a version in Now and Once only.
+        self.refresh_recipients()
         self.refresh_summary()
 
-    # -- wordings (Repeat only) --------------------------------------------
-    def add_wording(self, text: str = "") -> QTextEdit:
-        row = card()
-        layout = QHBoxLayout(row)
-        layout.setContentsMargins(theme.PAD_S, theme.PAD_S, theme.PAD_S, theme.PAD_S)
-
-        editor = QTextEdit()
-        editor.setAcceptRichText(False)
-        editor.setPlainText(text)
-        editor.setMinimumHeight(WORDING_MIN_HEIGHT)
-        editor.setPlaceholderText("Another way of saying the same thing…")
-        editor.textChanged.connect(self.refresh_summary)
-        layout.addWidget(editor, 1)
-
-        remove = QPushButton("Remove")
-        remove.setObjectName("Link")
-        remove.clicked.connect(lambda _c, w=row, e=editor: self._remove_wording(w, e))
-        layout.addWidget(remove, 0, Qt.AlignTop)
-
-        self.wording_box.insertWidget(self.wording_box.count() - 1, row)
-        self._wordings.append(editor)
-        self.refresh_summary()
-        return editor
-
-    def _remove_wording(self, row: QWidget, editor: QTextEdit) -> None:
-        self._wordings.remove(editor)
-        self.wording_box.removeWidget(row)
-        row.deleteLater()
-        self.refresh_summary()
-
-    def alternates(self) -> list[str]:
-        """Cleaned on read, like the Compose editor: these become post bodies."""
-        cleaned = (strip_invisible(e.toPlainText()).strip() for e in self._wordings)
-        return [text for text in cleaned if text]
-
+    # -- versions ----------------------------------------------------------
     def wordings(self) -> list[str]:
-        """Everything a repeating post would rotate through.
+        """Everything a repeating post would rotate through: the versions
+        written in step 1, in order."""
+        return self.compose.versions()
 
-        The Compose text is always the first: this screen collects alternates,
-        not the post itself, so there is never a question of which one is "the"
-        wording.
-        """
-        body = self.base_body()
-        return ([body] if body else []) + self.alternates()
+    def _refresh_rotation_note(self) -> None:
+        """Say how the versions go out, under the list. Nothing to say about
+        one version going out now, or about pictures alone."""
+        count = len(self.wordings())
+        if self.mode == REPEAT and count > 1:
+            note = (
+                f"{count} versions take turns: each run shares them out across "
+                "the groups, a different one to each in turn."
+            )
+        elif self.mode == REPEAT and count == 1:
+            # A no-break space in "step 1", or a narrow window left the 1
+            # alone at the start of the next line.
+            note = (
+                "One version: every run sends it to every group. Add more in "
+                "step 1 to vary the words."
+            )
+        elif count > 1:
+            note = (
+                f"{count} versions, shared out across the groups. Change a "
+                "group's version on its row."
+            )
+        else:
+            note = ""
+        self.rotation_note.setText(note)
+        self.rotation_note.setVisible(bool(note))
 
     # -- times and days (Repeat only) --------------------------------------
     def add_time(self, text: str = "") -> bool:
@@ -1000,16 +1048,28 @@ class PublishView(QWidget):
 
         self.time_box.addWidget(line)
         self._time_rows.append(entry)
+        self._time_removes[entry] = remove
+        self._restate_time_removes()
         self.refresh_summary()
         return True
+
+    def _restate_time_removes(self) -> None:
+        """Remove only where it can act: a repeating post needs one time, so
+        a lone time has none (2026-10-24). It used to be there, and only
+        warned when pressed."""
+        several = len(self._time_rows) > 1
+        for remove in self._time_removes.values():
+            remove.setVisible(several)
 
     def _remove_time(self, line: QWidget, entry: TimePicker) -> None:
         if len(self._time_rows) == 1:
             self.notify("A repeating post needs at least one time of day.", "warning")
             return
         self._time_rows.remove(entry)
+        self._time_removes.pop(entry, None)
         self.time_box.removeWidget(line)
         line.deleteLater()
+        self._restate_time_removes()
         self.refresh_summary()
 
     def times(self) -> list[str]:
@@ -1061,30 +1121,16 @@ class PublishView(QWidget):
         groups = self.selected_group_ids()
         count = f"{len(groups)} group{'s' if len(groups) != 1 else ''}"
 
+        self._refresh_rotation_note()
         if self.mode == NOW:
             set_note_lines(
                 self.summary, [f"{count}, starting as soon as nothing else is posting."]
             )
             return
         if self.mode == ONCE:
-            when = self.schedule_entry.dateTime().toString("yyyy-MM-dd HH:mm")
-            set_note_lines(self.summary, [f"{count}, once at {when}."])
+            when = ENGLISH.toString(self.schedule_entry.dateTime(), f"{DATE_FORMAT} 'at' HH:mm")
+            set_note_lines(self.summary, [f"{count}, once on {when}."])
             return
-
-        wordings = self.wordings()
-        self.wording_hint.setVisible(not self._wordings)
-        # Empty, the box only held a blank gap open above the repeating posts.
-        self.wording_area.setVisible(bool(self._wordings))
-        # Said only when there is a rotation to speak of: with no alternates
-        # the hint above says it, and "1 wording in rotation" is not one.
-        extra = len(self.alternates())
-        self.rotation_note.setVisible(extra > 0)
-        self.rotation_note.setText(
-            f"{len(wordings)} wordings in rotation: "
-            + ("the Compose text and " if self.base_body() else "")
-            + f"{extra} alternate{'s' if extra != 1 else ''}. Each run shares them "
-            "out across the groups, a different one to each in turn."
-        )
 
         rule = self.rule()
         if rule is None:
@@ -1093,7 +1139,7 @@ class PublishView(QWidget):
         report = recurrence.preview(rule, utcnow(), ahead=1)
         lines = [f"{report.summary} · {count}"]
         if report.next_runs:
-            lines.append(f"First run {clock.format_local(report.next_runs[0])}")
+            lines.append(f"First run {friendly_time(report.next_runs[0])}")
         follows = following(self.picked_set_names())
         if follows:
             lines.append(follows)
@@ -1122,14 +1168,13 @@ class PublishView(QWidget):
         return done
 
     def reset_form(self) -> None:
-        """Back to how the step opens: Now, one time of day, every day, no
-        alternates and no name. Part of starting a fresh post."""
-        for editor in list(self._wordings):
-            self._remove_wording(editor.parentWidget(), editor)
+        """Back to how the step opens: Now, one time of day, every day and no
+        name. Part of starting a fresh post."""
         self.name_entry.clear()
         for entry in list(self._time_rows):
             line = entry.parentWidget()
             self._time_rows.remove(entry)
+            self._time_removes.pop(entry, None)
             self.time_box.removeWidget(line)
             line.deleteLater()
         self.add_time(DEFAULT_TIMES[0])
@@ -1173,14 +1218,7 @@ class PublishView(QWidget):
             self.notify(copy_message(same), "error")
             return False
 
-        if any(self.compose.has_rewrite(group_id) for group_id in groups):
-            self.notify(
-                "Per-group rewrites are not carried into a repeating post. It "
-                "rotates the Compose text and the alternate wordings instead.",
-                "warning",
-            )
-
-        first = recurrence.next_occurrence(rule, utcnow())
+        first =recurrence.next_occurrence(rule, utcnow())
         # A picked set is stored as the set, not as its groups: the post
         # follows it from here on. The ticked groups no set brings are its own.
         schedule = self.app.schedule_repo.create(

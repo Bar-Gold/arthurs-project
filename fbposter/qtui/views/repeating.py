@@ -168,7 +168,7 @@ class RepeatingPostsView(QWidget):
             f"{describe(schedule)} · "
             + (f"{sets} group set{'s' if sets != 1 else ''} · " if sets else "")
             + f"{groups} group{'s' if groups != 1 else ''} · "
-            f"{len(schedule.bodies)} wording{'s' if len(schedule.bodies) != 1 else ''}"
+            f"{len(schedule.bodies)} version{'s' if len(schedule.bodies) != 1 else ''}"
         )
         detail.setObjectName("Muted")
         detail.setWordWrap(True)

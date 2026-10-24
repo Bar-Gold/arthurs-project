@@ -2653,6 +2653,23 @@ class TestTheDayIsAnIsraeliDay:
         assert groups.sent_on_day(one.id, clock.parse_local("2026-08-10 08:00")) == [BODY]
         assert groups.sent_on_day(one.id, clock.parse_local("2026-08-11 00:30")) == []
 
+    def test_many_groups_at_once_agree_with_one_at_a_time(self, db, repos):
+        """Compose asks for every picked group in one query (2026-10-23)."""
+        groups, tasks, _ = repos
+        one, two = add_groups(groups)
+        late = clock.parse_local("2026-08-10 23:30")
+        task = tasks.create(BODY, [(one.id, BODY)])
+        tasks.mark_target(
+            tasks.targets_for(task.id)[0].id, TARGET_DONE, posted=True, posted_at=late
+        )
+        for moment in ("2026-08-10 08:00", "2026-08-11 00:30"):
+            at = clock.parse_local(moment)
+            assert groups.sent_on_day_many([one.id, two.id], at) == {
+                one.id: groups.sent_on_day(one.id, at),
+                two.id: groups.sent_on_day(two.id, at),
+            }
+        assert groups.sent_on_day_many([], late) == {}
+
 
 def a_repeating_post(db, group_ids=(), set_ids=(), media_paths=()):
     return ScheduleRepo(db).create(

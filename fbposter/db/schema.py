@@ -428,6 +428,19 @@ def _migration_014(connection: sqlite3.Connection) -> None:
     _run_script(connection, _MIGRATION_014)
 
 
+def _migration_015(connection: sqlite3.Connection) -> None:
+    """Every version of a templated post (the user's choice, 2026-10-23).
+
+    Step 1 writes a post as several versions, shared out across the groups,
+    and a template keeps them all, as a JSON list. `body` stays, holding the
+    first: an empty list here means a template saved before this, whose one
+    version is its `body`.
+    """
+    connection.execute(
+        "ALTER TABLE templates ADD COLUMN versions TEXT NOT NULL DEFAULT '[]'"
+    )
+
+
 # Index i applies when user_version == i, and bumps it to i + 1.
 MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _migration_001,
@@ -444,6 +457,7 @@ MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _migration_012,
     _migration_013,
     _migration_014,
+    _migration_015,
 ]
 
 LATEST_VERSION = len(MIGRATIONS)

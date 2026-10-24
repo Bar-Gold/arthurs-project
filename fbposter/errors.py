@@ -55,18 +55,6 @@ class DuplicateGroup(FBPosterError):
     """That group is already stored, possibly under a different URL form."""
 
 
-class GuardViolation(FBPosterError):
-    """A safety rule refused the action -- daily cap, cooldown, repeated text.
-
-    Carries the rule that fired so the UI can say which one, rather than
-    showing a generic failure.
-    """
-
-    def __init__(self, rule: str, message: str) -> None:
-        super().__init__(message)
-        self.rule = rule
-
-
 class AutomationHalted(FBPosterError):
     """The page was not what we expected, so the batch stopped.
 

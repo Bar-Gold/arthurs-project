@@ -11,8 +11,10 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from PySide6.QtCore import QPoint
 from PySide6.QtWidgets import QPushButton
 
+from fbposter.qtui import theme
 from fbposter.qtui.app import FLOW_STEPS
 from fbposter.qtui.views.create import STEP_KEYS
 from fbposter.qtui.views.publish import NOW, ONCE, REPEAT
@@ -91,6 +93,41 @@ class TestTheStepBar:
         qt_app.views["compose"].next_button.click()
         assert qt_app.current_view == "groups"
 
+    def test_next_on_compose_needs_a_post(self, qt_app, flow):
+        """An empty post went on to step 2 (the user's report, 2026-10-21)."""
+        compose = qt_app.views["compose"]
+        assert not compose.next_button.isEnabled()
+        compose.next_button.click()
+        assert qt_app.current_view == "compose"
+
+    def test_typing_lets_you_on_and_clearing_greys_it_again(self, qt_app, flow):
+        compose = qt_app.views["compose"]
+        compose.editor.setPlainText(BODY)
+        assert compose.next_button.isEnabled()
+        compose.editor.setPlainText("  \n ")
+        assert not compose.next_button.isEnabled()
+
+    def test_a_picture_alone_is_a_post(self, qt_app, flow):
+        compose = qt_app.views["compose"]
+        compose.attachments = [Path("C:/pictures/bike.jpg")]
+        compose._render_attachments()
+        assert compose.next_button.isEnabled()
+        compose._remove_attachment(Path("C:/pictures/bike.jpg"))
+        assert not compose.next_button.isEnabled()
+
+    def test_words_in_another_version_are_a_post(self, qt_app, flow):
+        compose = qt_app.views["compose"]
+        compose.add_version()
+        compose.editor.setPlainText(BODY)
+        compose.select_version(0)
+        assert compose.next_button.isEnabled()
+
+    def test_a_fresh_post_greys_it_again(self, qt_app, flow):
+        compose = qt_app.views["compose"]
+        compose.editor.setPlainText(BODY)
+        flow.clear()
+        assert not compose.next_button.isEnabled()
+
     def test_next_on_groups_needs_a_group(self, qt_app, flow):
         qt_app.show_view("groups")
         assert not qt_app.views["groups"].next_button.isEnabled()
@@ -114,6 +151,47 @@ class TestTheStepBar:
             assert len(filled) == 1, key
 
 
+def laid_out(qt_app) -> None:
+    """Lay the window out at its usual size without showing it."""
+    qt_app.resize(*theme.WINDOW_DEFAULT)
+    qt_app.grab()
+
+
+def right_edge(widget, page) -> int:
+    return widget.mapTo(page, QPoint(widget.width(), 0)).x()
+
+
+class TestNothingMovesUnderThePointer:
+    """Polished on 2026-10-21, each the user's choice."""
+
+    def test_write_and_preview_stay_where_they_were_clicked(self, qt_app, flow):
+        """At the right, the toggle jumped across the window when Preview
+        hid the right column."""
+        compose = qt_app.views["compose"]
+        write(qt_app)
+        toggle = compose.write_button.parentWidget()
+        laid_out(qt_app)
+        before = toggle.mapTo(qt_app, QPoint(0, 0))
+        compose.preview_button.click()
+        laid_out(qt_app)
+        assert toggle.mapTo(qt_app, QPoint(0, 0)) == before
+
+    def test_each_step_reaches_the_same_right_edge(self, qt_app, flow):
+        """Qt's default margins inset the right column of steps 1 and 3, so
+        their cards stopped short of the edge step 2 reaches."""
+        compose = qt_app.views["compose"]
+        write(qt_app)
+        laid_out(qt_app)
+        assert right_edge(compose.next_button, compose) == compose.width()
+        to_step_3(qt_app)
+        publish = qt_app.views["publish"]
+        laid_out(qt_app)
+        assert right_edge(publish.go_button, publish) == publish.width()
+
+    def test_an_empty_box_says_what_to_do(self, qt_app, flow):
+        assert qt_app.views["compose"].editor.placeholderText() == "Write your post here"
+
+
 class TestAfterAPost:
     def assert_fresh(self, qt_app):
         compose = qt_app.views["compose"]
@@ -124,7 +202,7 @@ class TestAfterAPost:
         assert qt_app.selected_groups == set()
         assert qt_app.selected_sets == set()
         assert publish.mode == NOW
-        assert publish.alternates() == []
+        assert compose.version_count() == 1
         assert publish.times() == ["09:00"]
         assert len(publish.days()) == 7
         assert qt_app.views["create"].current_key == "compose"
@@ -144,10 +222,11 @@ class TestAfterAPost:
         self.assert_fresh(qt_app)
 
     def test_repeat(self, qt_app, flow):
-        to_step_3(qt_app)
+        write(qt_app)
+        qt_app.views["compose"].add_version()
+        to_step_3(qt_app, "Another way of saying it")
         publish = qt_app.views["publish"]
         publish.set_mode(REPEAT)
-        publish.add_wording("Another way of saying it")
         publish.add_time("18:00")
         publish.name_entry.setText("Bikes")
         assert publish.publish() is True

@@ -10,7 +10,7 @@ from html import escape
 from typing import Callable, Sequence
 
 from PySide6.QtCore import QRectF, QSize, Qt, QTimer
-from PySide6.QtGui import QColor, QFont, QPainter, QPen
+from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QAbstractButton,
     QCheckBox,
@@ -141,17 +141,33 @@ def clear(layout: QLayout) -> None:
 
     Every layout in this package is cleared through here so the fix cannot be
     learned once and forgotten in the next view.
+
+    The widget is hidden before it is unparented (`_discard`). Qt queues a
+    show for a widget added to a layout on screen, and a widget cleared before
+    that show runs has no parent left: the show opened it as a small window of
+    its own until `deleteLater()` caught up (2026-10-22, switching Preview
+    back to Write).
     """
     while layout.count():
         item = layout.takeAt(0)
         widget = item.widget()
         if widget is not None:
-            widget.setParent(None)
-            widget.deleteLater()
+            _discard(widget)
             continue
         child = item.layout()
         if child is not None:
             clear(child)
+
+
+def _discard(widget: QWidget) -> None:
+    """Out of its window for good: hidden, unparented, deleted.
+
+    Hidden on purpose first, so the show Qt may have queued for it finds it
+    explicitly hidden and leaves it alone.
+    """
+    widget.hide()
+    widget.setParent(None)
+    widget.deleteLater()
 
 
 def card(parent: QWidget | None = None) -> QFrame:
@@ -208,15 +224,50 @@ class RowList(QFrame):
     def paintEvent(self, event) -> None:  # noqa: N802 - Qt's name
         super().paintEvent(event)
         shown = self.shown_rows()
-        if len(shown) < 2:
+        tinted = [(r, row_tint(r)) for r in shown]
+        tinted = [(r, tint) for r, tint in tinted if tint]
+        if len(shown) < 2 and not tinted:
             return
         painter = QPainter(self)
+        if tinted:
+            # The tint is painted here, under the rows, not by each row: a row
+            # painting its own square background would poke out past the
+            # box's rounded corners and hide the hairline along its top.
+            painter.setRenderHint(QPainter.Antialiasing)
+            edge = QPainterPath()
+            if self.objectName() == "List":
+                edge.addRoundedRect(QRectF(self.rect()).adjusted(1, 1, -1, -1),
+                                    theme.RADIUS_L - 1, theme.RADIUS_L - 1)
+            else:
+                edge.addRect(QRectF(self.rect()))
+            painter.setClipPath(edge)
+            for tinted_row, tint in tinted:
+                painter.fillRect(tinted_row.geometry(), QColor(theme.C[tint]))
+            painter.setClipping(False)
+            painter.setRenderHint(QPainter.Antialiasing, False)
         painter.setPen(QPen(QColor(theme.C["BORDER"]), 1))
         for below in shown[1:]:
             top = below.geometry().top()
             painter.drawLine(below.geometry().left() + self.inset, top,
                              below.geometry().right() - self.inset, top)
         painter.end()
+
+
+def row_tint(widget: QWidget) -> str | None:
+    """The colour token a list paints behind one of its rows, or None.
+
+    Only a row that ticks something is tinted (groups.GroupRow): it answers
+    `is_picked()`, and holds a `hovered` property while the pointer is on it.
+    Every other row is left plain.
+    """
+    is_picked = getattr(widget, "is_picked", None)
+    if is_picked is None:
+        return None
+    picked = is_picked()
+    hovered = bool(widget.property("hovered"))
+    if picked:
+        return "NAV_ACTIVE_BG" if hovered else "ROW_PICKED"
+    return "FIELD_HOVER" if hovered else None
 
 
 def back_link(text: str) -> QPushButton:
@@ -474,6 +525,5 @@ def replace_at(layout: QLayout, index: int, widget: QWidget) -> None:
     if item is not None:
         old = item.widget()
         if old is not None:
-            old.setParent(None)
-            old.deleteLater()
+            _discard(old)
     layout.insertWidget(index, widget)

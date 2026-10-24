@@ -98,6 +98,36 @@ class TestNoRingNobodyTabbedTo:
         qt_app.nav_buttons["home"].click()
         assert not isinstance(application.focusWidget(), QAbstractButton)
 
+    def test_preview_hiding_the_writing_box_does_not_ring_the_logo(self, qt_app):
+        """The user's report again (2026-10-22): Write to Preview hid the
+        writing box with focus in it, and Qt handed focus to the logo."""
+        application = in_front(qt_app)
+        qt_app.show_view("compose")
+        compose = qt_app.views["compose"]
+        compose.editor.setPlainText("Selling a road bike.")
+        # As it was reported: the post's text clicked in Preview, back to
+        # Write and into the box, then Preview again.
+        compose.set_mode("preview")
+        application.processEvents()
+        compose.preview.messages["computer"].setFocus()
+        compose.set_mode("write")
+        compose.editor.setFocus()
+        application.processEvents()
+        compose.set_mode("preview")
+        application.processEvents()
+        assert application.focusWidget() is not qt_app.brand_button
+
+    def test_see_more_clearing_its_own_text_does_not_ring_the_logo(self, qt_app):
+        application = in_front(qt_app)
+        qt_app.show_view("compose")
+        compose = qt_app.views["compose"]
+        compose.editor.setPlainText("Selling a road bike, barely used, " * 10)
+        compose.set_mode("preview")
+        compose.preview.messages["phone"].setFocus()
+        compose.preview._see_more("phone")
+        application.processEvents()
+        assert application.focusWidget() is not qt_app.brand_button
+
     def test_tab_still_reaches_the_logo(self, qt_app):
         """The ring is the keyboard's, and the keyboard keeps it."""
         from PySide6.QtCore import Qt
