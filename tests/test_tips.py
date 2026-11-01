@@ -44,14 +44,14 @@ class TestTheyStayInStep:
     def test_every_language_has_the_same_number_of_tips(self):
         counts = {code: len(page.tips) for code, page in tips.PAGES.items()}
         assert len(set(counts.values())) == 1, counts
-        assert counts["en"] == 10
+        assert counts["en"] == 11
 
     def test_nothing_is_left_empty(self):
         for code, page in tips.PAGES.items():
             for text in every_text(page):
                 assert text.strip(), code
 
-    @pytest.mark.parametrize("index", range(10))
+    @pytest.mark.parametrize("index", range(11))
     def test_each_tip_has_the_same_numbers_in_every_language(self, index):
         """A number changed in one language and not the others is advice that
         depends on which language the client reads."""
