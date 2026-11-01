@@ -2,7 +2,8 @@
 
 The user's choices (2026-10-13): the groups are read by themselves once,
 after the first login, and by a button on Groups after that; they start
-ticked; the ones the account manages are included; and a group the user
+ticked; since 2026-10-26 they are also looked for once a day, and those come
+in unticked; the ones the account manages are included; and a group the user
 removed is never added back. Nothing here opens a browser: the page is a fake
 and the finder a stub.
 """
@@ -476,3 +477,125 @@ class TestAfterASwitch:
         window.group_repo.remove(gone.id)
         window.views["groups"].import_from_facebook()
         assert gone.id not in {g.id for g in window.group_repo.list()}
+
+
+# Inside the default posting hours (08:00-23:00 Israel time) and outside them.
+from datetime import datetime, timedelta, timezone  # noqa: E402
+
+from fbposter import clock  # noqa: E402
+from fbposter.qtui.views.groups import GROUPS_CHECKED_KEY  # noqa: E402
+
+MORNING = datetime(2026, 10, 26, 9, 0, tzinfo=timezone.utc)  # 11:00 in Israel
+NIGHT = datetime(2026, 10, 26, 1, 0, tzinfo=timezone.utc)  # 03:00 in Israel
+
+
+@pytest.fixture
+def daily(window, monkeypatch):
+    """Set up long ago, connected, and the clock held at MORNING."""
+    held = {"now": MORNING}
+    monkeypatch.setattr(clock, "utcnow", lambda: held["now"])
+    window.settings_repo.set(SETUP_COMPLETE_KEY, "1")
+    connect(window)
+    window.held = held
+    return window
+
+
+def look(app):
+    app.check_groups_daily(app.held["now"])
+
+
+class TestTheDailyLook:
+    """The user's choices, 2026-10-26: once a day, in posting hours, never
+    with a batch going out, and the new groups come in unticked."""
+
+    def test_new_groups_come_in_unticked(self, daily):
+        look(daily)
+        assert [g.name for g in daily.group_repo.list()] == ["TRY", "Bikes"]
+        assert daily.selected_groups == set()
+        assert "Found 2 new Facebook groups you joined" in daily.toast_label.text()
+
+    def test_once_a_day(self, daily):
+        look(daily)
+        daily.held["now"] = MORNING + timedelta(hours=5)
+        look(daily)
+        assert daily.group_finder.calls == 1
+        daily.held["now"] = MORNING + timedelta(days=1)
+        look(daily)
+        assert daily.group_finder.calls == 2
+
+    def test_a_new_day_starts_at_midnight_in_israel(self, daily):
+        """22:30 one evening and 09:00 the next are two days, though only
+        hours apart."""
+        daily.held["now"] = datetime(2026, 10, 26, 20, 30, tzinfo=timezone.utc)
+        look(daily)
+        daily.held["now"] = datetime(2026, 10, 27, 7, 0, tzinfo=timezone.utc)
+        look(daily)
+        assert daily.group_finder.calls == 2
+
+    def test_not_at_night(self, daily):
+        daily.held["now"] = NIGHT
+        look(daily)
+        assert daily.group_finder.calls == 0
+
+    def test_not_while_a_batch_is_going_out(self, daily):
+        daily.task_repo.create("Hello", [(daily.group_repo.add_from_url(f"{G}9/").id, "Hello")])
+        look(daily)
+        assert daily.group_finder.calls == 0
+
+    def test_not_just_before_a_batch_is_due(self, daily):
+        group = daily.group_repo.add_from_url(f"{G}9/")
+        daily.task_repo.create(
+            "Hello", [(group.id, "Hello")], scheduled_for=MORNING + timedelta(minutes=5)
+        )
+        look(daily)
+        assert daily.group_finder.calls == 0
+
+    def test_a_batch_later_in_the_day_does_not_hold_it(self, daily):
+        group = daily.group_repo.add_from_url(f"{G}9/")
+        daily.task_repo.create(
+            "Hello", [(group.id, "Hello")], scheduled_for=MORNING + timedelta(hours=3)
+        )
+        look(daily)
+        assert daily.group_finder.calls == 1
+
+    def test_nothing_new_says_nothing(self, daily):
+        look(daily)
+        daily.toast_label.setText("")
+        daily.held["now"] = MORNING + timedelta(days=1)
+        look(daily)
+        assert daily.toast_label.text() == ""
+
+    def test_a_failure_says_nothing_and_waits_a_day(self, daily):
+        daily.group_finder = StubFinder(FoundGroups(error="Facebook said no."))
+        look(daily)
+        look(daily)
+        assert daily.toast_label.text() != "Facebook said no."
+        assert daily.group_finder.calls == 1
+
+    def test_the_button_counts_as_todays_look(self, daily):
+        daily.views["groups"].import_from_facebook()
+        assert daily.settings_repo.get(GROUPS_CHECKED_KEY)
+        look(daily)
+        assert daily.group_finder.calls == 1
+
+    def test_not_while_disconnected(self, daily):
+        daily._set_connection(ConnectionState.LOGGED_OUT, "")
+        look(daily)
+        assert daily.group_finder.calls == 0
+
+    def test_not_before_the_first_login(self, window):
+        """That has its own read, which ticks what it finds."""
+        window._set_connection(ConnectionState.CONNECTED, "")
+        window.check_groups_daily(MORNING)
+        assert window.group_finder.calls == 0
+
+    def test_not_while_the_first_read_is_still_owed(self, daily):
+        daily.settings_repo.set(IMPORT_PENDING_KEY, "1")
+        look(daily)
+        assert daily.group_finder.calls == 0
+
+    def test_not_in_a_window_the_suite_builds(self, qt_app):
+        """No finder, and the timer is started only by the real app."""
+        assert not qt_app._groups_check.isActive()
+        qt_app.check_groups_daily(MORNING)
+        assert qt_app.group_repo.list() == []

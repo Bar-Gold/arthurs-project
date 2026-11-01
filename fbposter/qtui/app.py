@@ -10,6 +10,7 @@ from __future__ import annotations
 import queue
 import threading
 import time
+from datetime import datetime, timedelta
 
 import shiboken6
 from PySide6.QtCore import QSize, Qt, QTimer, Signal
@@ -28,11 +29,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .. import always_on, chrome, config, keepalive, login, onboarding, power, session, tabs
+from .. import always_on, chrome, clock, config, keepalive, login, onboarding, power, session, tabs
 from ..automation.groupfinder import LiveGroupFinder
 from ..automation.groupinfo import LiveGroupNamer
 from ..db import Database
-from ..db.models import SCHEDULE_ACTIVE
+from ..db.models import SCHEDULE_ACTIVE, from_iso
 from ..db.repo import (
     GroupRepo,
     GroupSetRepo,
@@ -47,7 +48,7 @@ from . import icons, theme
 from .views.create import CreatePostView
 from .views.dashboard import DashboardView
 from .views.group_sets import GroupSetsView
-from .views.groups import IMPORT_PENDING_KEY
+from .views.groups import GROUPS_CHECKED_KEY, IMPORT_PENDING_KEY, REPLACE_PENDING_KEY
 from .views.home import HomeView
 from .views.repeating import RepeatingPostsView
 from .views.schedule_edit import ScheduleEditView
@@ -74,12 +75,19 @@ WORKER_POLL_MS = 700
 # The logon task starts the app 45 seconds after sign-in, which is while
 # Windows is still bringing the network up -- and the check ends in a real
 # page load, so it can fail for a reason that fixes itself. A single
-# delayed retry covers that without becoming a poll: nothing here should
-# ever open Facebook on a timer.
+# delayed retry covers that without becoming a poll: the connection check
+# never opens Facebook on a timer.
 STARTUP_RECHECK_MS = 15_000
 # How often the window looks for the background Chrome; see keepalive.py.
 CHROME_WATCH_MS = keepalive.WATCH_EVERY_S * 1000
 CHECK_DEADLINE_MS = keepalive.CHECK_DEADLINE_S * 1000
+# The daily look for groups the client joined (the user's choice,
+# 2026-10-26). The look happens at most once a local day; this only sets how
+# soon after it is allowed it starts. See `daily_groups_check_due`.
+GROUPS_CHECK_EVERY_MS = 10 * 60 * 1000
+# A batch due this soon holds the look back, so the two never share Chrome.
+# The read takes up to three minutes (groupfinder.TIME_LIMIT_S).
+GROUPS_CHECK_CLEARANCE = timedelta(minutes=10)
 
 # Home and the road to a post, then what you keep, then what you look at, each
 # section under a divider (the user's choice, 2026-10-21). Create a post holds
@@ -263,6 +271,9 @@ class App(QMainWindow):
         self._check_deadline = QTimer(self)
         self._check_deadline.setSingleShot(True)
         self._check_deadline.timeout.connect(self._on_check_stalled)
+
+        self._groups_check = QTimer(self)
+        self._groups_check.timeout.connect(self.check_groups_daily)
 
         self.show_view(self._opening_view())
 
@@ -730,6 +741,41 @@ class App(QMainWindow):
             if result.state is not ConnectionState.CONNECTED:
                 QTimer.singleShot(STARTUP_RECHECK_MS, self.check_connection)
 
+    # -- the daily look for new groups ---------------------------------------
+    def daily_groups_check_due(self, now: datetime | None = None) -> bool:
+        """Whether to look for groups the client joined on Facebook, now.
+
+        The user's choices, 2026-10-26: once a local day, inside the posting
+        hours (a page opened at 4am looks like a bot, as for the follow-up
+        sweep), never with a batch going out or about to, and the groups it
+        finds come in unticked. A day with the app closed is simply looked at
+        the next time it is open in those hours.
+        """
+        now = now or clock.utcnow()
+        settings = self.settings_repo
+        if self.group_finder is None or self.connection_state is not ConnectionState.CONNECTED:
+            return False
+        if settings.get(SETUP_COMPLETE_KEY) != "1":
+            return False
+        # The first login and an account switch have their own read.
+        if settings.get(IMPORT_PENDING_KEY) == "1" or settings.get(REPLACE_PENDING_KEY) == "1":
+            return False
+        last = from_iso(settings.get(GROUPS_CHECKED_KEY))
+        if last is not None and last >= clock.start_of_local_day(now):
+            return False
+        start = clock.sane_hour(settings.get_int("posting_window_start_hour", 8), 8)
+        end = clock.sane_hour(settings.get_int("posting_window_end_hour", 23), 23)
+        if not clock.inside_window(clock.local_hour(now), start, end):
+            return False
+        soon = now + GROUPS_CHECK_CLEARANCE
+        if self.task_repo.claimable(soon) or self.schedule_repo.due(soon):
+            return False
+        return True
+
+    def check_groups_daily(self, now: datetime | None = None) -> None:
+        if self.daily_groups_check_due(now):
+            self.views["groups"].import_from_facebook(daily=True)
+
     def _on_check_error(self, exc: Exception) -> None:
         self.check_button.setEnabled(True)
         self.connection_result = ConnectionResult(ConnectionState.ERROR, str(exc))
@@ -855,6 +901,9 @@ class App(QMainWindow):
         self.run_in_background(work, started)
         # From here on, Chrome closing is noticed and put right.
         self._chrome_watch.start(CHROME_WATCH_MS)
+        # And new groups are looked for once a day. Started here, not in
+        # __init__, so a window a test builds never reads Facebook.
+        self._groups_check.start(GROUPS_CHECK_EVERY_MS)
 
     # -- keeping Chrome running --------------------------------------------
     def watch_chrome(self) -> None:

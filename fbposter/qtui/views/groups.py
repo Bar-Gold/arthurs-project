@@ -36,8 +36,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from fbposter import chrome
+from fbposter import chrome, clock
 from fbposter.connection import ConnectionState
+from fbposter.db.models import to_iso
 from fbposter.text import strip_invisible
 
 from .. import icons, theme
@@ -55,6 +56,11 @@ IMPORT_PENDING_KEY = "groups_import_pending"
 # been replaced with the new account's groups (`GroupRepo.replace_with`). While
 # it is set, a read replaces the list instead of adding to it.
 REPLACE_PENDING_KEY = "groups_replace_pending"
+# When Facebook's list of groups was last read, by the button or the daily
+# look (`App.daily_groups_check_due`), in UTC. A read that reached Facebook
+# counts even when it failed, so a page that keeps failing is tried once a day
+# rather than every ten minutes.
+GROUPS_CHECKED_KEY = "groups_checked_at"
 IMPORT_LABEL = "Get my groups from Facebook"
 IMPORTING_LABEL = "Getting your groups…"
 SEARCH_PLACEHOLDER = "Search your groups"
@@ -456,7 +462,7 @@ class GroupsView(QWidget):
             "" if connected else "Available once the app is connected to Facebook."
         )
 
-    def import_from_facebook(self, automatic: bool = False) -> None:
+    def import_from_facebook(self, automatic: bool = False, daily: bool = False) -> None:
         """Read every group the account is in, and add the ones not in the list.
 
         New groups start ticked (the user's choice). A group the user removed
@@ -468,7 +474,12 @@ class GroupsView(QWidget):
         list instead (`_replace_with_found`), and a failure is said even on the
         automatic run: the user switched, and is looking at the old account's
         groups with no other way to know why.
+
+        The daily look (`daily`) is automatic too, and its new groups come in
+        unticked (the user's choice, 2026-10-26): nobody is on step 2 waiting
+        for them, and a post must not reach a group nobody picked.
         """
+        automatic = automatic or daily
         finder = self.app.group_finder
         if self._importing or finder is None:
             return
@@ -484,6 +495,8 @@ class GroupsView(QWidget):
 
         def done(result):
             self._importing = False
+            if result is not None:
+                self._stamp_checked()
             replacing = self.app.settings_repo.get(REPLACE_PENDING_KEY) == "1"
             if result is None:
                 if not automatic or replacing:
@@ -497,27 +510,37 @@ class GroupsView(QWidget):
             elif replacing:
                 self._replace_with_found(result)
             else:
-                self._add_found(result, automatic)
+                self._add_found(result, automatic, tick=not daily)
             self.refresh_import_button()
 
         def failed(exc):
             self._importing = False
+            self._stamp_checked()
             if not automatic:
                 self.notify(f"Your groups could not be read: {exc}", "error")
             self.refresh_import_button()
 
         self.app.run_in_background(work, done, failed)
 
-    def _add_found(self, result, automatic: bool) -> None:
+    def _stamp_checked(self) -> None:
+        self.app.settings_repo.set(GROUPS_CHECKED_KEY, to_iso(clock.utcnow()))
+
+    def _add_found(self, result, automatic: bool, tick: bool = True) -> None:
         new = self.app.group_repo.import_found(
             (found.ref.identifier, found.ref.url, found.name) for found in result.groups
         )
         self.app.settings_repo.set(IMPORT_PENDING_KEY, "0")
-        for group in new:
-            self.app.set_group_selected(group.id, True)
+        if tick:
+            for group in new:
+                self.app.set_group_selected(group.id, True)
         self.refresh()
         count = len(new)
-        if count:
+        if count and not tick:
+            message = (
+                f"Found {count} new Facebook group{'s' if count != 1 else ''} you "
+                "joined. Added to your groups, not ticked."
+            )
+        elif count:
             message = (
                 f"Added {count} of your Facebook group{'s' if count != 1 else ''}, "
                 "all ticked. Untick any you do not want to post to."
