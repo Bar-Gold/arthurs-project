@@ -68,7 +68,7 @@ The **connection indicator lives in the sidebar**, not in a screen of its own: i
     *   The client's groups are read off Facebook by themselves after the first login, and with "Get my groups from Facebook" later; they start ticked, and a removed group is never added back.
     *   A search box narrows the list by name; "Select all" / "Clear" then act on the matches only.
     *   There is no box for adding a group by its link (removed 2026-10-14): every group comes off Facebook.
-    *   A removed group can be brought back from "Show removed groups" under the list, with its posting history. It starts ticked.
+    *   A removed group can be brought back from "Show removed groups" under the list, with its posting history. It comes back unticked.
     *   **Group sets** sit above the list, one box each. Picking a set adds its groups to the ticked ones; they show greyed with the set's name, and are unticked by unpicking the set, never one by one. "Clear" unpicks the sets too.
 *   **Group sets**: its own item in the sidebar, below Create a post. Make, edit and delete sets: a name and the groups in it.
     *   A repeating post picked with a set follows it: a group added to the set later gets the next run. Now and Once take the set's groups as they are when the button is pressed.

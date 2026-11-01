@@ -220,12 +220,14 @@ class TestRemovedGroups:
         assert groups_view.removed_toggle.isHidden()
         assert qt_app.toast_label.text() == "Brought Demo 0 back."
 
-    def test_a_group_brought_back_starts_ticked(self, qt_app, groups_view):
-        """It was brought back in order to be posted to."""
+    def test_a_group_brought_back_comes_back_unticked(self, qt_app, groups_view):
+        """The user's choice (2026-11-01); it used to start ticked."""
         group_id = qt_app.group_repo.list()[0].id
+        qt_app.set_group_selected(group_id, True)
         groups_view.remove_group(group_id)
         groups_view.bring_back(group_id)
-        assert group_id in qt_app.selected_group_ids()
+        assert group_id not in qt_app.selected_group_ids()
+        assert not groups_view._checkboxes[group_id].isChecked()
 
     def test_the_toast_mentions_its_history(self, qt_app, groups_view):
         """The repeat guard already knows what it was sent, so it is said."""
@@ -255,6 +257,49 @@ class TestRemovedGroups:
         groups_view.search.setText("Demo 1")
         visible = [gid for gid, row in groups_view._removed_rows.items() if not row.isHidden()]
         assert visible == [two]
+
+    def test_showing_them_shows_only_them(self, qt_app, groups_view):
+        """The user's request (2026-11-01): the removed groups in place of
+        yours, not under the whole list."""
+        group_id = qt_app.group_repo.list()[0].id
+        groups_view.remove_group(group_id)
+        groups_view.toggle_removed()
+        assert groups_view.group_list.isHidden()
+        assert not groups_view.removed_list.isHidden()
+        assert groups_view.count_label.text() == "Removed groups (1)"
+        assert groups_view.select_all_button.isHidden()
+        assert groups_view.clear_button.isHidden()
+
+    def test_back_shows_your_groups_again(self, qt_app, groups_view):
+        groups_view.remove_group(qt_app.group_repo.list()[0].id)
+        groups_view.toggle_removed()
+        groups_view.toggle_removed()
+        assert not groups_view.group_list.isHidden()
+        assert groups_view.removed_list is None
+        assert groups_view.count_label.text().endswith("selected")
+        assert not groups_view.select_all_button.isHidden()
+
+    def test_the_last_one_brought_back_goes_back_to_your_groups(self, qt_app, groups_view):
+        group_id = qt_app.group_repo.list()[0].id
+        groups_view.remove_group(group_id)
+        groups_view.toggle_removed()
+        groups_view.bring_back(group_id)
+        assert not groups_view.group_list.isHidden()
+        assert groups_view.count_label.text().endswith("selected")
+
+    def test_coming_back_to_the_screen_shows_your_groups(self, qt_app, groups_view):
+        groups_view.remove_group(qt_app.group_repo.list()[0].id)
+        groups_view.toggle_removed()
+        groups_view.on_show()
+        assert not groups_view.group_list.isHidden()
+        assert groups_view.removed_toggle.text() == SHOW_REMOVED.format(count=1)
+
+    def test_no_removed_match_says_so(self, qt_app, groups_view):
+        groups_view.remove_group(qt_app.group_repo.list()[0].id)
+        groups_view.toggle_removed()
+        groups_view.search.setText("nothing like it")
+        assert not groups_view.empty_note.isHidden()
+        assert "No removed group matches" in groups_view.empty_note.text()
 
     def test_the_removal_toast_points_at_the_removed_groups(self, qt_app, groups_view):
         groups_view.remove_group(qt_app.group_repo.list()[0].id)

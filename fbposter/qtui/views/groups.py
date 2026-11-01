@@ -65,7 +65,8 @@ IMPORT_LABEL = "Get my groups from Facebook"
 IMPORTING_LABEL = "Getting your groups…"
 SEARCH_PLACEHOLDER = "Search your groups"
 SHOW_REMOVED = "Show removed groups ({count})"
-HIDE_REMOVED = "Hide removed groups"
+HIDE_REMOVED = "← Back to your groups"
+REMOVED_COUNT = "Removed groups ({count})"
 # Group sets offered per line above the list.
 SET_COLUMNS = 3
 
@@ -215,7 +216,6 @@ class GroupsView(QWidget):
         self._removed_rows: dict[int, QWidget] = {}
         self._removed_groups: dict[int, object] = {}
         self._show_removed = False
-        self.removed_heading: QLabel | None = None
         # Made by refresh(); None until the list is first drawn.
         self.empty_note: QLabel | None = None
         self.group_list: RowList | None = None
@@ -290,14 +290,20 @@ class GroupsView(QWidget):
         self.count_label.setObjectName("SectionHeading")
         tools.addWidget(self.count_label)
         tools.addStretch(1)
-        select_all = QPushButton("Select all")
-        select_all.clicked.connect(lambda: self.set_all(True))
-        tools.addWidget(select_all)
+        self.select_all_button = QPushButton("Select all")
+        self.select_all_button.clicked.connect(lambda: self.set_all(True))
+        tools.addWidget(self.select_all_button)
         # Not named `clear`: that shadows widgets.clear, the helper every
         # rebuild in this file depends on.
-        clear_button = QPushButton("Clear")
-        clear_button.clicked.connect(lambda: self.set_all(False))
-        tools.addWidget(clear_button)
+        self.clear_button = QPushButton("Clear")
+        self.clear_button.clicked.connect(lambda: self.set_all(False))
+        tools.addWidget(self.clear_button)
+        # Hidden while the removed groups are on show, but keeping their room,
+        # so the line above the list does not jump.
+        for button in (self.select_all_button, self.clear_button):
+            policy = button.sizePolicy()
+            policy.setRetainSizeWhenHidden(True)
+            button.setSizePolicy(policy)
         outer.addLayout(tools)
 
         self.area = QScrollArea()
@@ -311,6 +317,9 @@ class GroupsView(QWidget):
 
         # Under the list, apart from it: a removed group is not one you are
         # choosing from, and fifty of them in view would bury the ones you are.
+        # Pressed, the list shows the removed groups alone, in place of yours
+        # (the user's request, 2026-11-01); they used to sit under the whole
+        # list, a long scroll away.
         self.removed_toggle = QPushButton("")
         self.removed_toggle.setObjectName("Link")
         self.removed_toggle.setVisible(False)
@@ -332,6 +341,8 @@ class GroupsView(QWidget):
         outer.addLayout(footer)
 
     def on_show(self) -> None:
+        # Coming back to choose groups, not to the removed ones.
+        self._show_removed = False
         self.refresh()
         self.refresh_import_button()
         self._fetch_missing_names()
@@ -385,7 +396,10 @@ class GroupsView(QWidget):
     def refresh_count(self) -> None:
         chosen = len(self.selected_group_ids())
         total = len(self._checkboxes)
-        self.count_label.setText(f"{chosen} of {total} selected")
+        if self._show_removed:
+            self.count_label.setText(REMOVED_COUNT.format(count=len(self._removed_groups)))
+        else:
+            self.count_label.setText(f"{chosen} of {total} selected")
         self.next_button.setEnabled(chosen > 0)
 
     # -- actions -----------------------------------------------------------
@@ -428,16 +442,15 @@ class GroupsView(QWidget):
     def bring_back(self, group_id: int) -> None:
         """Put a removed group back in the list, from the removed groups.
 
-        It starts ticked, as a group added by pasting its link used to: it was
-        brought back in order to be posted to. Its history comes with it, and
-        the toast says so, because the repeat guard already knows what it was
-        sent. It is not put back in any repeating or queued post.
+        It comes back unticked (the user's choice, 2026-11-01; it used to start
+        ticked). Its history comes with it, and the toast says so, because the
+        repeat guard already knows what it was sent. It is not put back in any
+        repeating or queued post.
         """
         group = self.app.group_repo.bring_back(group_id)
         if group is None:
             self.refresh()
             return
-        self.app.set_group_selected(group.id, True)
         if self.app.group_repo.recent_bodies(group.id, limit=1):
             message = f"Brought {group.display_name} back, along with its posting history."
         else:
@@ -750,6 +763,9 @@ class GroupsView(QWidget):
     def refresh(self, force: bool = False) -> None:
         groups = self.app.group_repo.list()
         removed = self.app.group_repo.removed()
+        if not removed:
+            # The last one brought back: there is nothing left to show.
+            self._show_removed = False
         sets = self.app.group_set_repo.list()
         # A set deleted while picked is no longer picked.
         self.app.selected_sets &= {s.id for s in sets}
@@ -760,6 +776,10 @@ class GroupsView(QWidget):
                     self._covered.setdefault(group_id, []).append(group_set.name)
         self._groups = {group.id: group for group in groups}
         self.refresh_sets(sets)
+        # Picking from the removed groups is not on offer: no sets, no ticks.
+        self.sets_section.setVisible(bool(sets) and not self._show_removed)
+        self.select_all_button.setVisible(not self._show_removed)
+        self.clear_button.setVisible(not self._show_removed)
         snapshot = self._snapshot(groups, removed)
         if not force and snapshot == self._snapshot_shown:
             # The count still gets restated: it is one setText, and it also
@@ -773,7 +793,6 @@ class GroupsView(QWidget):
         self._rows = {}
         self._removed_rows = {}
         self._removed_groups = {group.id: group for group in removed}
-        self.removed_heading = None
         self.removed_list = None
 
         # One note for both empty cases, worded by apply_search.
@@ -791,11 +810,8 @@ class GroupsView(QWidget):
         self.removed_toggle.setText(
             HIDE_REMOVED if self._show_removed else SHOW_REMOVED.format(count=len(removed))
         )
-        if removed and self._show_removed:
-            self.removed_heading = QLabel("Removed groups")
-            self.removed_heading.setObjectName("SectionHeading")
-            self.rows.addSpacing(theme.PAD_M)
-            self.rows.addWidget(self.removed_heading)
+        if self._show_removed:
+            # The count line above heads it: "Removed groups (3)".
             self.removed_list = RowList()
             for group in removed:
                 self._removed_rows[group.id] = self.removed_list.add(self._removed_row(group))
@@ -825,16 +841,18 @@ class GroupsView(QWidget):
             visible = matches(self._removed_groups[group_id], query)
             row.setVisible(visible)
             any_removed = any_removed or visible
-        if self.removed_heading is not None:
-            self.removed_heading.setVisible(any_removed)
         # An empty box is not drawn at all, and the hairlines are redrawn
         # between the rows still showing.
-        self.group_list.setVisible(bool(shown))
+        self.group_list.setVisible(bool(shown) and not self._show_removed)
         self.group_list.update()
         if self.removed_list is not None:
             self.removed_list.setVisible(any_removed)
             self.removed_list.update()
 
+        if self._show_removed:
+            self.empty_note.setText(f"No removed group matches \"{query.strip()}\".")
+            self.empty_note.setVisible(not any_removed)
+            return
         if not self._groups:
             self.empty_note.setText(f"No groups yet. Press {IMPORT_LABEL}.")
         elif not shown:
@@ -890,9 +908,17 @@ class GroupsView(QWidget):
         holder.setObjectName("ListRow")
         layout = QHBoxLayout(holder)
         layout.setContentsMargins(theme.PAD_M, theme.PAD_XS, theme.PAD_S, theme.PAD_XS)
+        # Drawn as a row of your groups is (2026-11-01): the name in the body
+        # text, starting at the left, and the member count muted beside it.
         name = QLabel(group.display_name)
-        name.setObjectName("Muted")
+        name.setTextFormat(Qt.PlainText)
+        name.setAlignment(Qt.AlignLeft | Qt.AlignAbsolute | Qt.AlignVCenter)
         layout.addWidget(name, 1)
+        if group.members:
+            members = QLabel(group.members)
+            members.setObjectName("Muted")
+            layout.addWidget(members)
+            layout.addSpacing(theme.PAD_M)
         back = QPushButton("Bring back")
         back.setObjectName("Link")
         back.clicked.connect(lambda _c, gid=group.id: self.bring_back(gid))

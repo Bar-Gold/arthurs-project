@@ -8,6 +8,7 @@ that browser right now?"
 from __future__ import annotations
 
 import enum
+import json
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Iterator, Mapping, Sequence
@@ -55,6 +56,7 @@ class SessionStatus:
     logged_in: bool
     user_id: str | None
     detail: str
+    name: str | None = None
 
 
 def find_user_id(cookies: Sequence[Mapping[str, Any]]) -> str | None:
@@ -68,6 +70,29 @@ def find_user_id(cookies: Sequence[Mapping[str, Any]]) -> str | None:
             value = cookie.get("value")
             if value:
                 return str(value)
+    return None
+
+
+def find_account_name(html: str) -> str | None:
+    """Return the account's name from a Facebook page's own data, or None.
+
+    Reads the `CurrentUserInitialData` block (strings.py), never the markup.
+    The name is only ever shown, so anything unexpected gives None rather than
+    raising into the connection check.
+    """
+    try:
+        at = html.find(strings.ACCOUNT_DATA_MARKER)
+        if at < 0:
+            return None
+        start = html.find("{", at)
+        if start < 0:
+            return None
+        data, _ = json.JSONDecoder().raw_decode(html, start)
+        name = data.get(strings.ACCOUNT_NAME_KEY)
+        if isinstance(name, str) and name.strip():
+            return name.strip()
+    except Exception:
+        pass
     return None
 
 
@@ -141,6 +166,10 @@ def verify_session(context: BrowserContext) -> SessionStatus:
         )
         verdict = classify_url(page.url)
         landed = page.url
+        try:
+            name = find_account_name(page.content())
+        except Exception:
+            name = None  # the name is cosmetic; the check stands without it
     finally:
         page.close()
 
@@ -158,5 +187,6 @@ def verify_session(context: BrowserContext) -> SessionStatus:
     return SessionStatus(
         logged_in=True,
         user_id=user_id,
-        detail=f"Logged in as user id {user_id}.",
+        detail=f"Logged in as {name}." if name else "Logged in to Facebook.",
+        name=name,
     )

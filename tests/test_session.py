@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from fbposter import session, strings
+from fbposter import connection, session, strings
 from fbposter.session import UrlVerdict
 
 
@@ -31,6 +31,54 @@ class TestFindUserId:
     def test_empty_value_counts_as_logged_out(self):
         """Facebook blanks c_user on logout rather than always deleting it."""
         assert session.find_user_id([cookie(strings.LOGIN_COOKIE, "")]) is None
+
+
+def account_block(body: str) -> str:
+    """A page with Facebook's account data in it, shaped as seen live."""
+    return (
+        '<html><script>requireLazy(["ServerJS"]); ... '
+        f'["CurrentUserInitialData",[],{body},270],["Other",[],{{}},1]'
+        "</script></html>"
+    )
+
+
+class TestFindAccountName:
+    """The name comes from the page's own data, never from its layout."""
+
+    def test_reads_the_name(self):
+        html = account_block(
+            '{"ACCOUNT_ID":"100012345678","USER_ID":"100012345678",'
+            '"NAME":"Dana Levi","SHORT_NAME":"Dana"}'
+        )
+        assert session.find_account_name(html) == "Dana Levi"
+
+    def test_reads_a_hebrew_name_sent_escaped(self):
+        html = account_block('{"NAME":"\\u05d3\\u05e0\\u05d4 \\u05dc\\u05d5\\u05d9"}')
+        assert session.find_account_name(html) == "דנה לוי"
+
+    def test_none_without_the_block(self):
+        assert session.find_account_name("<html><body>feed</body></html>") is None
+
+    def test_none_for_broken_data(self):
+        assert session.find_account_name('["CurrentUserInitialData",[],{"NAME":') is None
+
+    @pytest.mark.parametrize("body", ['{"NAME":""}', '{"NAME":"   "}', '{"SHORT_NAME":"Dana"}', '{"NAME":7}'])
+    def test_none_without_a_usable_name(self, body):
+        assert session.find_account_name(account_block(body)) is None
+
+    def test_none_for_an_empty_page(self):
+        assert session.find_account_name("") is None
+
+
+class TestConnectedWording:
+    def test_says_the_name(self):
+        assert connection.connected_detail("Dana Levi") == "Connected as Dana Levi"
+
+    def test_never_the_number_without_a_name(self):
+        """The user id meant nothing to the client, so it is never shown."""
+        detail = connection.connected_detail(None)
+        assert detail == "Connected to Facebook"
+        assert not any(ch.isdigit() for ch in detail)
 
 
 class TestClassifyUrl:

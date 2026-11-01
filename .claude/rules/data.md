@@ -78,7 +78,7 @@ only a group with no history left to lose.
   ("Show removed groups", then "Bring back": `GroupRepo.removed` and
   `bring_back`). Pasting its link again used to be the way, until the paste box
   went (2026-10-14). It brings the history back with it, but not its place in
-  any repeating or queued post, and it starts ticked. The toast says so when
+  any repeating or queued post, and it comes back unticked (2026-11-01). The toast says so when
   there is history, because the user is otherwise about to wonder why the
   Dashboard already counts posts to this group. `add_from_url` still un-archives too.
 - **Removing a group takes it out of every repeating post and every queued

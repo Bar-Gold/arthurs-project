@@ -31,6 +31,14 @@ HOME_URL = f"{BASE_URL}/"
 # navigation required.
 LOGIN_COOKIE = "c_user"
 
+# The account's name, for "Connected as ...". Read from a block of data every
+# Facebook page carries, `"CurrentUserInitialData",[],{..., "NAME": ...}`, not
+# from anything drawn on the page, so a change of layout or language cannot
+# move it. Checked live on the home page on 2026-11-01. Cosmetic: when it is
+# missing the app says "Connected to Facebook".
+ACCOUNT_DATA_MARKER = '"CurrentUserInitialData"'
+ACCOUNT_NAME_KEY = "NAME"
+
 # URL fragments Facebook redirects to when a session is not usable. Matched
 # case-insensitively as substrings of the landed URL.
 CHECKPOINT_MARKERS = ("/checkpoint/", "/challenge/", "/confirmemail")

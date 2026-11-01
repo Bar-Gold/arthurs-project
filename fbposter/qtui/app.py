@@ -1217,7 +1217,9 @@ def run() -> int:
     window._close_chrome = lambda: tabs.close_chrome()
     window.always_on = always_on.AlwaysOn()
     session.before_attach = tabs.clear_stuck_tabs
-    window.show()
+    # Maximised, not full screen: the title bar and the taskbar stay (the
+    # user's choice, 2026-11-01). Un-maximised it falls back to WINDOW_DEFAULT.
+    window.showMaximized()
     # Only the real GUI starts the scheduler; constructing an App does not.
     QTimer.singleShot(500, window.start_worker)
     # Same rule, same reason: a window a test builds must not launch a browser.

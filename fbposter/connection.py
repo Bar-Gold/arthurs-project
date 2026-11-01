@@ -30,6 +30,11 @@ class ConnectionResult:
     detail: str
 
 
+def connected_detail(name: str | None) -> str:
+    """What the banner says once the session is good."""
+    return f"Connected as {name}" if name else "Connected to Facebook"
+
+
 def check_connection() -> ConnectionResult:
     """Probe Chrome and the Facebook session. Blocking; call off the UI thread."""
     if chrome.probe() is None:
@@ -50,7 +55,6 @@ def check_connection() -> ConnectionResult:
         return ConnectionResult(ConnectionState.ERROR, str(exc))
 
     if status.logged_in:
-        return ConnectionResult(
-            ConnectionState.CONNECTED, f"Logged in as {status.user_id}"
-        )
+        # The name, never the user id: a number tells the client nothing.
+        return ConnectionResult(ConnectionState.CONNECTED, connected_detail(status.name))
     return ConnectionResult(ConnectionState.LOGGED_OUT, status.detail)
