@@ -550,10 +550,13 @@ class GroupPoster:
                 raise GroupUnavailable(GROUP_UNAVAILABLE)
             if not verdict.is_ok:
                 raise AutomationHalted(verdict, halt_message(verdict))
+            # A group the account is not a member of looks exactly like this
+            # (read live 2026-11-03: "Join group" and no post box, nor any
+            # "unavailable" words), as does one whose admins stop it posting.
             raise ComposerNotFound(
-                "Could not find where to write a post in this group. Facebook may "
-                "have changed its page, or the account's language is not English, "
-                "Hebrew or Russian."
+                "Could not find where to write a post in this group. Usually the "
+                "account is not a member yet (a request to join still waiting) or "
+                "the group's admins do not let it post. Nothing was posted to it."
             )
 
         self._group_open = True

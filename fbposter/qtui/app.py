@@ -1071,6 +1071,8 @@ class App(QMainWindow):
             "declined": "warning",
             # One group is gone; the batch carried on without it.
             "unavailable": "warning",
+            # One group could not be posted to; the batch carried on.
+            "not_posted": "warning",
             # Found by its words only, which were in the group before; the
             # batch carried on. The user should look at that group.
             "unconfirmed": "warning",

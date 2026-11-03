@@ -66,7 +66,7 @@ HALT_MESSAGES = {
     ),
     PageVerdict.UNAVAILABLE: (
         "The group page did not load as expected. It may be unavailable, or "
-        "membership may have changed. Stopping rather than guessing."
+        "membership may have changed. Nothing more was done in this group."
     ),
 }
 

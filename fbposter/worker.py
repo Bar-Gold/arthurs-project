@@ -70,6 +70,7 @@ from .db.repo import (
     TaskRepo,
     TemplateRepo,
 )
+from .automation.detect import PageVerdict
 from .errors import (
     AutomationHalted,
     ConnectionFailed,
@@ -107,6 +108,9 @@ CONNECTION_GIVE_UP = timedelta(hours=2)
 # retried on the same five minutes, but given up on sooner (the user's choice,
 # 2026-10-20): an hour without internet is not a blip.
 PAGE_LOAD_GIVE_UP = timedelta(hours=1)
+# Looks at the group of a post a crash interrupted, when its page will not
+# render, before it is left as "Might have posted" (2026-11-03).
+RECOVERY_LOOKS = 3
 
 # Facebook publishes a video post only once it has processed the video, a
 # minute or two after Post (seen live, 2026-10-15). Until then the post is in
@@ -155,7 +159,7 @@ def _readable(exc: Exception) -> str:
 
     Only failures from before Post was clicked get here -- `GroupPoster.post`
     turns any later one into PostNotVerified -- which is what makes "nothing
-    was posted" true.
+    was posted" true. The batch goes on with the next group (`_not_posted`).
     """
     if isinstance(exc, FBPosterError):
         # Already written for the user, like "could not find where to write".
@@ -164,13 +168,12 @@ def _readable(exc: Exception) -> str:
     if "Timeout" in text and "exceeded" in text:
         return (
             "Facebook took too long to respond, usually a slow or dropped internet "
-            "connection. Nothing was posted, and the batch stopped rather than "
-            "guessing."
+            "connection. Nothing was posted to this group."
         )
     first_line = text.strip().splitlines()[0] if text.strip() else exc.__class__.__name__
     return (
-        "Something unexpected went wrong before anything was posted, so the batch "
-        f"stopped. Details: {first_line[:300]}"
+        "Something unexpected went wrong before anything was posted to this "
+        f"group. Details: {first_line[:300]}"
     )
 
 
@@ -318,6 +321,8 @@ class PostingWorker:
         self._recovery_announced = False
         self._next_recovery_at = None
         self._recovery_trouble = None
+        # Looks at a crashed post's group that came back "unknown", per target.
+        self._recovery_looks: dict[int, int] = {}
 
     # -- lifecycle ---------------------------------------------------------
     @property
@@ -1091,16 +1096,23 @@ class PostingWorker:
             self._release_companions(together)
             self._skip_unavailable(task, target, group, str(exc))
             return True
-        except (AutomationHalted, PostNotVerified) as exc:
-            # Deliberately not a retry: after the Post click it may well have
+        except AutomationHalted as exc:
+            # A security check, the login page or a "posting too fast"
+            # warning is about the account, not this group, so the batch
+            # stops. Never a retry: after the Post click it may well have
             # posted, and the exception says whether that point was reached.
+            if exc.verdict is not PageVerdict.UNAVAILABLE:
+                self._settle_companions(together, request, str(exc), exc.may_have_posted)
+                self._halt(task, target, str(exc), may_have_posted=exc.may_have_posted)
+                return True
             self._settle_companions(together, request, str(exc), exc.may_have_posted)
-            self._halt(task, target, str(exc), may_have_posted=exc.may_have_posted)
-            return True
+            return self._not_posted(task, target, group, str(exc), exc.may_have_posted)
+        except PostNotVerified as exc:
+            self._settle_companions(together, request, str(exc), exc.may_have_posted)
+            return self._not_posted(task, target, group, str(exc), exc.may_have_posted)
         except Exception as exc:
             self._settle_companions(together, request, _readable(exc), False)
-            self._halt(task, target, _readable(exc))
-            return True
+            return self._not_posted(task, target, group, _readable(exc), False)
         except BaseException as exc:
             # KeyboardInterrupt and SystemExit are not Exception, so they slid
             # past the handler above and killed the worker thread outright --
@@ -1183,7 +1195,47 @@ class PostingWorker:
             self.emit("posted", f"Posted to {group.display_name}.", task.id, target.id)
         self._warn_if_no_post_id(task, outcome)
         self._record_companions(task, together, outcome)
+        return self._after_attempt(task, outcome.halt_after)
 
+    def _not_posted(
+        self, task: Task, target: TaskTarget, group, message: str, may_have_posted: bool
+    ) -> bool:
+        """One group could not be posted to: record it, and go on with the rest.
+
+        The user's choice (2026-11-03): a group the app cannot post to never
+        stops the batch; only a warning or a block from Facebook does
+        (`AutomationHalted`). Never a retry, so this group is not posted to
+        again: after the Post click it is "Might have posted", before it "Not
+        posted". A client's batch to 104 groups stopped at the second, a group
+        with no post box, and 94 were never reached.
+        """
+        self._forget_connection_trouble(task.id)
+        if may_have_posted:
+            # Counted as sent (the user's choice, 2026-10-07): it may be live.
+            self._record_sent(target, TARGET_UNCONFIRMED, error=message)
+            self.emit(
+                "unconfirmed",
+                f"{group.display_name}: might have posted. {message} Going on with "
+                "the next group.",
+                task.id,
+                target.id,
+            )
+        else:
+            self.tasks.mark_target(target.id, TARGET_FAILED, error=message)
+            self.emit(
+                "not_posted",
+                f"{group.display_name}: not posted. {message} Going on with the "
+                "next group.",
+                task.id,
+                target.id,
+            )
+        # The group page was opened, so the next one waits the usual gap, as
+        # after a post: a run of failing groups must not become a burst of
+        # page loads.
+        return self._after_attempt(task)
+
+    def _after_attempt(self, task: Task, halt_after: str = "") -> bool:
+        """The gap after a group, then the next group or the end of the batch."""
         # One gap, written in two places. The global stamp spaces every post
         # the app makes, including the first of the *next* batch -- a batch
         # that ended without one left the following batch free to post the same
@@ -1198,10 +1250,10 @@ class PostingWorker:
         resume = self._now() + timedelta(seconds=gap)
         self.settings.set("next_post_after", to_iso(resume) or "")
 
-        if outcome.halt_after:
+        if halt_after:
             # A checkpoint or block, met while checking the groups ticked in
             # "Add groups", after the post was made and everything recorded.
-            self._stop_batch(task, outcome.halt_after)
+            self._stop_batch(task, halt_after)
             return True
 
         if self.tasks.remaining_targets(task.id) == 0:
@@ -1514,9 +1566,14 @@ class PostingWorker:
     def _escalate_unchecked(self, target: TaskTarget, reason: str) -> None:
         """Hand an unresolvable interruption to the user.
 
-        The batch stops rather than guessing. "It probably did not post" is the
-        guess that produces a duplicate, and a duplicate is the worst thing
-        this app can do.
+        Recorded as "Might have posted" rather than guessing. "It probably did
+        not post" is the guess that produces a duplicate, and a duplicate is
+        the worst thing this app can do.
+
+        The batch is left alone (the user's choice, 2026-11-03): one group
+        that cannot be checked never stops the others. It used to halt the
+        batch, and a client's, posting fine meanwhile, was halted two hours
+        later, its real reason for stopping written over.
         """
         self._record_sent(
             target,
@@ -1530,12 +1587,9 @@ class PostingWorker:
             # Counted from when it was tried, like any stop after Post.
             at=target.attempted_at,
         )
-        self.tasks.mark_task(
-            target.task_id, TASK_HALTED, error="Interrupted; needs checking.",
-            finished=True,
-        )
+        self._recovery_looks.pop(target.id, None)
         self.emit(
-            "halted",
+            "unconfirmed",
             "A post was interrupted and may have gone out. The Dashboard shows "
             "which group to check.",
             target.task_id,
@@ -1697,7 +1751,18 @@ class PostingWorker:
 
         if verdict == "unknown":
             # The page never rendered. "Could not look" is not "did not post",
-            # so it stays claimed and recovery comes round again.
+            # so it stays claimed and recovery comes round again, but only
+            # RECOVERY_LOOKS times: every look opens the group's pages, and a
+            # client's app opened one group every 5 minutes for two hours.
+            looks = self._recovery_looks.get(target.id, 0) + 1
+            self._recovery_looks[target.id] = looks
+            if looks >= RECOVERY_LOOKS:
+                self._escalate_unchecked(
+                    target,
+                    f"the group's own list of your posts would not load, {looks} "
+                    "times",
+                )
+                return True
             return self._wait_or_escalate(
                 target, "the group's own list of your posts would not load"
             )

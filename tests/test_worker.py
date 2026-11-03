@@ -46,8 +46,10 @@ from fbposter.db.repo import (
     TaskRepo,
     TemplateRepo,
 )
+from fbposter.automation.detect import PageVerdict
 from fbposter.errors import (
     AutomationHalted,
+    ComposerNotFound,
     ConnectionFailed,
     GroupUnavailable,
     PageLoadFailed,
@@ -63,6 +65,7 @@ from fbposter.worker import (
     MISSED_GRACE,
     PAGE_LOAD_GIVE_UP,
     PAUSED_KEY,
+    RECOVERY_LOOKS,
     PostingWorker,
 )
 
@@ -393,28 +396,99 @@ class TestHalting:
         assert len(poster.requests) == 1, "kept going after a halt"
         assert tasks.targets_for(task.id)[1].state == TARGET_PENDING
 
-    def test_an_unverified_post_halts_rather_than_retrying(self, db, repos):
-        """It may well have posted. Retrying would duplicate it."""
+    def test_an_unverified_post_is_never_retried_and_the_batch_goes_on(self, db, repos):
+        """It may well have posted. Retrying would duplicate it, so it is
+        "Might have posted", and the next group still gets its post (the
+        user's choice, 2026-11-03)."""
         groups, tasks, _ = repos
-        one, _ = add_groups(groups)
-        task = tasks.create(BODY, [(one.id, BODY)])
+        one, two = add_groups(groups)
+        task = tasks.create(BODY, [(one.id, "a"), (two.id, "b")])
 
         poster = FakePoster(raises={one.url: PostNotVerified("could not confirm")})
-        worker = make_worker(db, poster)
+        ticker = Clock()
+        worker = make_worker(db, poster, ticker)
         worker.run_once()
+        ticker.advance(minutes=60)
         drain(worker)
 
-        assert tasks.get(task.id).state == TASK_HALTED
-        assert len(poster.requests) == 1
+        assert [t.state for t in tasks.targets_for(task.id)] == [
+            TARGET_UNCONFIRMED, TARGET_DONE,
+        ]
+        assert [r.group_url for r in poster.requests] == [one.url, two.url]
+        assert tasks.get(task.id).state == TASK_DONE
 
-    def test_an_unexpected_error_also_halts(self, db, repos):
+    def test_an_unexpected_error_skips_the_group_not_the_batch(self, db, repos):
         groups, tasks, _ = repos
-        one, _ = add_groups(groups)
-        task = tasks.create(BODY, [(one.id, BODY)])
+        one, two = add_groups(groups)
+        task = tasks.create(BODY, [(one.id, "a"), (two.id, "b")])
 
-        worker = make_worker(db, FakePoster(raises={one.url: RuntimeError("boom")}))
+        ticker = Clock()
+        worker = make_worker(db, FakePoster(raises={one.url: RuntimeError("boom")}), ticker)
         worker.run_once()
-        assert tasks.get(task.id).state == TASK_HALTED
+        ticker.advance(minutes=60)
+        drain(worker)
+
+        first, second = tasks.targets_for(task.id)
+        assert first.state == TARGET_FAILED and "boom" in first.error
+        assert second.state == TARGET_DONE
+        assert tasks.get(task.id).state == TASK_DONE
+        assert "not_posted" in kinds(worker)
+
+
+class TestAGroupWithNoPostBox:
+    """A client's batch to 104 groups stopped at the second one, a group with
+    no post box (the account was not a member, read live 2026-11-03), and 94
+    groups were never reached. Now it is skipped and the batch goes on."""
+
+    def test_the_rest_of_the_batch_goes_out(self, db, repos):
+        groups, tasks, _ = repos
+        one, two = add_groups(groups)
+        task = tasks.create(BODY, [(one.id, "a"), (two.id, "b")])
+
+        poster = FakePoster(raises={one.url: ComposerNotFound("no post box")})
+        ticker = Clock()
+        worker = make_worker(db, poster, ticker)
+        worker.run_once()
+        ticker.advance(minutes=60)
+        drain(worker)
+
+        first, second = tasks.targets_for(task.id)
+        assert first.state == TARGET_FAILED and first.error == "no post box"
+        assert second.state == TARGET_DONE
+        assert tasks.get(task.id).state == TASK_DONE
+        assert len(poster.requests) == 2, "the failed group was tried again"
+
+    def test_the_next_group_still_waits_the_gap(self, db, repos):
+        """The failed group's page was opened, so a run of failing groups
+        must not become a burst of page loads."""
+        groups, tasks, _ = repos
+        one, two = add_groups(groups)
+        tasks.create(BODY, [(one.id, "a"), (two.id, "b")])
+
+        poster = FakePoster(raises={one.url: ComposerNotFound("no post box")})
+        ticker = Clock()
+        worker = make_worker(db, poster, ticker)
+        worker.run_once()
+        worker.run_once()
+
+        assert len(poster.requests) == 1, "went straight on with no gap"
+
+    def test_unavailable_words_after_the_post_box_skip_the_group(self, db, repos):
+        groups, tasks, _ = repos
+        one, two = add_groups(groups)
+        task = tasks.create(BODY, [(one.id, "a"), (two.id, "b")])
+
+        poster = FakePoster(
+            raises={one.url: AutomationHalted(PageVerdict.UNAVAILABLE, "gone")}
+        )
+        ticker = Clock()
+        worker = make_worker(db, poster, ticker)
+        worker.run_once()
+        ticker.advance(minutes=60)
+        drain(worker)
+
+        assert tasks.targets_for(task.id)[1].state == TARGET_DONE
+        assert tasks.get(task.id).state == TASK_DONE
 
 
 class TestCancellation:
@@ -875,7 +949,7 @@ class TestCrashRecovery:
         target = tasks.targets_for(task.id)[0]
         assert target.state == TARGET_UNCONFIRMED
         assert "twice" in target.error
-        assert tasks.get(task.id).state == TASK_HALTED
+        assert tasks.get(task.id).state != TASK_HALTED, "one group stopped the batch"
 
 
 class TestSleepInhibition:
@@ -1213,7 +1287,7 @@ class TestRecoveryWaitsForChrome:
         worker.run_once()
 
         assert tasks.targets_for(task.id)[0].state == TARGET_UNCONFIRMED
-        assert tasks.get(task.id).state == TASK_HALTED
+        assert tasks.get(task.id).state != TASK_HALTED
 
     def test_an_ordinary_failure_still_escalates(self, db, repos):
         """Only "the browser is not there" is patient. Anything else means the
@@ -1228,7 +1302,7 @@ class TestRecoveryWaitsForChrome:
         worker.recover()
 
         assert tasks.targets_for(task.id)[0].state == TARGET_UNCONFIRMED
-        assert tasks.get(task.id).state == TASK_HALTED
+        assert tasks.get(task.id).state != TASK_HALTED
 
 
 class TestAPauseOutlivesARestart:
@@ -2227,7 +2301,27 @@ class TestRecoveryLooksTwiceBeforeSendingAgain:
         target = tasks.targets_for(task.id)[0]
         assert target.state == TARGET_UNCONFIRMED
         assert "twice" in target.error
-        assert tasks.get(task.id).state == TASK_HALTED
+        assert tasks.get(task.id).state != TASK_HALTED
+
+    def test_it_looks_at_most_three_times(self, db, repos):
+        """A client's app opened one group's pages every 5 minutes for two
+        hours, looking for a post a crash had interrupted."""
+        _, tasks, _ = repos
+        task, _, group = self._interrupted(db, repos)
+        poster = FakePoster(verify_result=False)
+        poster.verdict = "unknown"
+        ticker = Clock()
+        worker = make_worker(db, poster, ticker)
+
+        for _ in range(6):
+            worker.recover()
+            ticker.advance(seconds=CONNECTION_RETRY.total_seconds() + 1)
+
+        assert len(poster.verdict_calls) == RECOVERY_LOOKS
+        target = tasks.targets_for(task.id)[0]
+        assert target.state == TARGET_UNCONFIRMED
+        assert tasks.get(task.id).state != TASK_HALTED
+        assert poster.requests == [], "sent again after an interruption"
 
 
 class TestPicturesOnly:
@@ -2271,7 +2365,7 @@ class TestPicturesOnly:
         assert stored.state == TARGET_UNCONFIRMED
         assert "only pictures" in stored.error
         assert "twice" in stored.error
-        assert tasks.get(task.id).state == TASK_HALTED
+        assert tasks.get(task.id).state != TASK_HALTED
         assert poster.verify_calls == [] and poster.verdict_calls == []
         assert poster.requests == [], "sent again after an interruption"
 

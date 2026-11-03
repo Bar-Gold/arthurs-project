@@ -282,7 +282,8 @@ class TestNeverPostTwice:
         make_worker(db, ClickedThenStopped()).run_once()
 
         assert states(tasks, task) == [TARGET_UNCONFIRMED, TARGET_UNCONFIRMED, TARGET_PENDING]
-        assert tasks.get(task.id).state == TASK_HALTED
+        # The batch goes on with the group not ticked (2026-11-03).
+        assert tasks.get(task.id).state != TASK_HALTED
 
     def test_a_stop_before_post_marks_none(self, db, repos):
         groups, tasks, _ = repos

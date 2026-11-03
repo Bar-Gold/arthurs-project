@@ -26,6 +26,7 @@ Each is spelled out in its rule file. These are the ones no change may break:
 
 - **Never post twice.** A post is never retried once a composer was opened; the only exceptions are `ConnectionFailed` and `PageLoadFailed`, both raised before any post box exists (`worker.md`). A duplicate is worse than a missing post.
 - **Never automate login, and never click through a checkpoint, CAPTCHA or warning.** Halt the batch and tell the user (`automation.md`).
+- **One group failing never stops a batch.** Only a checkpoint, the login page or a "posting too fast" warning does; anything else is recorded for that group and the batch goes on (`worker.md`).
 - **Never call `browser.close()`** on the user's Chrome (`chrome-and-login.md`).
 - **Never delete posting history to tidy up.** Removing a group archives it (`data.md`).
 - **Every wait is an absolute time in the database, never a `sleep()` countdown** (`worker.md`).
@@ -124,7 +125,7 @@ Storage: `db/`: `connection.py` (per-thread connections), `schema.py` (migration
 `fbposter/text.py` owns one list of characters that print nothing (bidi marks, zero-width joiners, soft hyphen, BOM), and `strip_invisible()` removes them. It exists because two load-bearing comparisons are string equality against the user's own words:
 
 - **`text.normalise`** folds them, so the worker knows when the same words went to a group before (`PostRequest.sent_before`). Folding in `normalise` rather than only at the input is deliberate: bodies already stored with marks in them have to compare correctly too.
-- **`distinctive_snippet`** strips them, because Facebook drops them when it renders. A snippet still carrying one is searched for and never found, which reports a post that went out fine as failed and halts the batch.
+- **`distinctive_snippet`** strips them, because Facebook drops them when it renders. A snippet still carrying one is searched for and never found, which reports a post that went out fine as one that might not have.
 
 Both comparisons are now the fallback. A post is proved by the id in Facebook's reply to the Post click; the words are checked only when that reply carries no id, and then `sent_before` stops an older post with the same words being taken as proof that the new one went out (`automation.md`).
 
