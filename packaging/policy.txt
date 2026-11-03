@@ -1,6 +1,6 @@
 # מדיניות חסימת חשבונות והגבלת אחריות
 
-תוכנת Facebook Auto-Poster. גרסה 1, בתוקף מיום 19/10/2026.
+תוכנת Facebook Auto-Poster. גרסה 2, בתוקף מיום 03/11/2026.
 
 English version below.
 
@@ -52,17 +52,39 @@ English version below.
 
 6.3. אם ייקבע, על אף האמור, כי המפתח אחראי לנזק כלשהו, אחריותו הכוללת לא תעלה על הסכום ששילם הלקוח למפתח בשלושת החודשים שקדמו לאירוע שגרם לנזק.
 
-## 7. שונות
+## 7. רישיון שימוש
 
-7.1. על מסמך זה יחולו דיני מדינת ישראל, וסמכות השיפוט הבלעדית בכל עניין הנוגע לו נתונה לבתי המשפט המוסמכים בישראל.
+7.1. המפתח מעניק ללקוח רישיון אישי, שאינו בלעדי ואינו ניתן להעברה, להשתמש בתוכנה במחשב אחד ובחשבון פייסבוק אחד, כל עוד הלקוח משלם את דמי המנוי.
 
-7.2. אם הוראה כלשהי במסמך זה תימצא בלתי תקפה או בלתי אכיפה, אין בכך כדי לפגוע בתוקפן של יתר ההוראות.
+7.2. הלקוח אינו רשאי להעתיק את התוכנה, למכור אותה, להשכיר אותה, להעביר אותה לאחר או לאפשר לאחר להשתמש בה, ואינו רשאי לשנות אותה או לבצע בה הנדסה לאחור.
 
-7.3. המפתח רשאי לעדכן מסמך זה מעת לעת. הנוסח המחייב הוא הנוסח שהלקוח אישר בהתקנה האחרונה של התוכנה.
+7.3. כל הזכויות בתוכנה, לרבות זכויות היוצרים, שייכות למפתח בלבד. הרישיון אינו מעביר ללקוח בעלות כלשהי בתוכנה.
 
-7.4. במקרה של סתירה בין הנוסח העברי לנוסח האנגלי, הנוסח העברי יגבר.
+7.4. הלקוח רשאי להעביר את התוכנה למחשב אחר שלו, בתיאום עם המפתח.
 
-## 8. הסכמה
+7.5. אם הלקוח מפסיק לשלם את דמי המנוי, הרישיון מסתיים, והמפתח אינו מחויב עוד לתקן את התוכנה או לתמוך בה.
+
+## 8. מידע הלקוח
+
+8.1. כל המידע שהלקוח מזין לתוכנה, לרבות רשימת הקבוצות, הפוסטים, התמונות, הסרטונים והיסטוריית הפרסום, נשמר במחשב של הלקוח בלבד.
+
+8.2. התוכנה אינה שולחת מידע זה למפתח או לגורם אחר כלשהו, למעט הפוסטים עצמם, הנשלחים לפייסבוק.
+
+8.3. הכניסה של הלקוח לפייסבוק נשמרת במחשב שלו בלבד. המפתח לעולם לא יבקש מהלקוח את סיסמת הפייסבוק שלו.
+
+8.4. אם הלקוח שולח למפתח קבצים לצורך טיפול בתקלה, המפתח ישתמש בהם לצורך זה בלבד, לא יעביר אותם לאחר, וימחק אותם בתוך 30 ימים מסיום הטיפול.
+
+## 9. שונות
+
+9.1. על מסמך זה יחולו דיני מדינת ישראל, וסמכות השיפוט הבלעדית בכל עניין הנוגע לו נתונה לבתי המשפט המוסמכים בישראל.
+
+9.2. אם הוראה כלשהי במסמך זה תימצא בלתי תקפה או בלתי אכיפה, אין בכך כדי לפגוע בתוקפן של יתר ההוראות.
+
+9.3. המפתח רשאי לעדכן מסמך זה מעת לעת. הנוסח המחייב הוא הנוסח שהלקוח אישר בהתקנה האחרונה של התוכנה.
+
+9.4. במקרה של סתירה בין הנוסח העברי לנוסח האנגלי, הנוסח העברי יגבר.
+
+## 10. הסכמה
 
 בסימון האפשרות "I accept this policy" הלקוח מאשר כי קרא את המסמך, הבין אותו ומסכים לכל האמור בו, לרבות הסיכון שחשבון הפייסבוק שלו ייחסם.
 
@@ -70,7 +92,7 @@ English version below.
 
 # Account Blocking and Liability Policy
 
-Facebook Auto-Poster. Version 1, in force from 19/10/2026.
+Facebook Auto-Poster. Version 2, in force from 03/11/2026.
 
 ## 1. General
 
@@ -118,16 +140,38 @@ Facebook Auto-Poster. Version 1, in force from 19/10/2026.
 
 6.3. If, despite the above, the Developer is found liable for any damage, the Developer's total liability will not exceed the amount the client paid the Developer in the three months before the event that caused the damage.
 
-## 7. General provisions
+## 7. Licence to use
 
-7.1. This policy is governed by the laws of the State of Israel, and the competent courts in Israel have exclusive jurisdiction over any matter relating to it.
+7.1. The Developer grants the client a personal, non-exclusive, non-transferable licence to use the Software on one computer and with one Facebook account, for as long as the client pays the subscription fee.
 
-7.2. If any provision of this policy is found invalid or unenforceable, the other provisions remain in force.
+7.2. The client may not copy, sell, rent or transfer the Software, or let anyone else use it, and may not modify or reverse-engineer it.
 
-7.3. The Developer may update this policy from time to time. The binding version is the one the client accepted when last installing the Software.
+7.3. All rights in the Software, including copyright, belong to the Developer alone. The licence gives the client no ownership of the Software.
 
-7.4. If the Hebrew and English versions differ, the Hebrew version prevails.
+7.4. The client may move the Software to another computer of their own, in coordination with the Developer.
 
-## 8. Acceptance
+7.5. If the client stops paying the subscription fee, the licence ends, and the Developer is no longer obliged to fix or support the Software.
+
+## 8. The client's data
+
+8.1. Everything the client enters into the Software, including the list of groups, posts, pictures, videos and posting history, is stored only on the client's computer.
+
+8.2. The Software does not send this data to the Developer or to anyone else, except the posts themselves, which are sent to Facebook.
+
+8.3. The client's Facebook login is stored only on their own computer. The Developer will never ask the client for their Facebook password.
+
+8.4. If the client sends the Developer files to deal with a problem, the Developer will use them only for that purpose, will not pass them on, and will delete them within 30 days after the problem is dealt with.
+
+## 9. General provisions
+
+9.1. This policy is governed by the laws of the State of Israel, and the competent courts in Israel have exclusive jurisdiction over any matter relating to it.
+
+9.2. If any provision of this policy is found invalid or unenforceable, the other provisions remain in force.
+
+9.3. The Developer may update this policy from time to time. The binding version is the one the client accepted when last installing the Software.
+
+9.4. If the Hebrew and English versions differ, the Hebrew version prevails.
+
+## 10. Acceptance
 
 By choosing "I accept this policy", the client confirms that they have read and understood this policy and agree to all of it, including the risk that their Facebook account may be blocked.

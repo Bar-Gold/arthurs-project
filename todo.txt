@@ -1,4 +1,8 @@
-fix the deleted groups uncomfortable situation
-logic of create a post screen
-run "get my groups from facebook" in cron
-what happending if 2 posts need to go in the same time?
+Craete general server for myself
+Clients can send the exe file
+Shahar's logs (French group)
+Check competitors (PostPro, Nexus, PostPilot, EzPost)
+after warning behaviour
+add language change to the whole app
+remove removed groups
+check about battery health if always on
