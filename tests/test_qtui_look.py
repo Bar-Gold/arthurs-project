@@ -371,7 +371,10 @@ class TestNoLongDashes:
     def files():
         patterns = ("fbposter/**/*.py", "tests/*.py", "*.py", "**/*.md", "packaging/*.*",
                     "scripts/*.*", ".claude/rules/**/*.md")
-        skip = {".venv", ".git", "build", "dist", ".agents", ".claude", "__pycache__"}
+        # research_notes and reports hold notes made outside the app, which
+        # ship with nothing (the user's choice, 2026-11-03).
+        skip = {".venv", ".git", "build", "dist", ".agents", ".claude", "__pycache__",
+                "research_notes", "reports"}
         rules = ROOT / ".claude" / "rules"
         seen = set()
         for pattern in patterns:
