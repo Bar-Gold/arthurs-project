@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import pytest
 
+from fbposter import pace
 from fbposter.db.models import TARGET_DONE
 from fbposter.qtui.views.publish import NOW, ONCE, REPEAT
 
@@ -143,6 +144,13 @@ class TestRemovingAVersion:
 
 
 class TestSharingThemOut:
+    """One version per group while posting one group at a time. Posting to
+    several groups at once, they go in blocks of 10: `TestInBlocksOfTen`."""
+
+    @pytest.fixture(autouse=True)
+    def one_at_a_time(self, qt_app):
+        qt_app.settings_repo.set(pace.TOGETHER_KEY, "0")
+
     def test_each_group_starts_one_further_along(self, qt_app, compose, groups):
         three_versions(compose)
         pick(qt_app, groups)
@@ -176,7 +184,37 @@ class TestSharingThemOut:
         assert sent == [FIRST, SECOND, THIRD]
 
 
+class TestInBlocksOfTen:
+    """Posting to several groups at once (on by default), the first 10 groups
+    get version 1, the next 10 version 2, and so on round (the user's choice,
+    2026-11-03), so each post carries one version to 10 groups."""
+
+    def test_ten_groups_to_a_version(self, qt_app, compose):
+        many = [
+            qt_app.group_repo.add_from_url(f"https://www.facebook.com/groups/block{i}")
+            for i in range(35)
+        ]
+        three_versions(compose)
+        pick(qt_app, many)
+        bodies = compose.bodies()
+        got = [bodies[g.id] for g in many]
+        assert got == [FIRST] * 10 + [SECOND] * 10 + [THIRD] * 10 + [FIRST] * 5
+
+    def test_a_group_still_gets_one_it_has_not_had_today(self, qt_app, compose, groups):
+        task = qt_app.task_repo.create(FIRST, [(groups[0].id, FIRST)])
+        (target,) = qt_app.task_repo.targets_for(task.id)
+        qt_app.task_repo.mark_target(target.id, TARGET_DONE, posted=True)
+        three_versions(compose)
+        pick(qt_app, groups[:2])
+        assert compose.body_for(groups[0].id) == SECOND
+        assert compose.body_for(groups[1].id) == FIRST
+
+
 class TestChoosingOnStep3:
+    @pytest.fixture(autouse=True)
+    def one_at_a_time(self, qt_app):
+        qt_app.settings_repo.set(pace.TOGETHER_KEY, "0")
+
     @pytest.fixture
     def publish(self, qt_app, compose, groups):
         three_versions(compose)

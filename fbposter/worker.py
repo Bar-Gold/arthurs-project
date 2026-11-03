@@ -885,6 +885,8 @@ class PostingWorker:
             return
 
         targets: list[tuple[int, str]] = []
+        at_once = pace.together(self.settings.get(pace.TOGETHER_KEY, pace.TOGETHER_DEFAULT))
+        place = 0
         # recipient_ids, not group_ids: it adds the groups of every set the
         # post follows, read now, so a group put in a set since the post was
         # made goes out from this run on.
@@ -894,14 +896,17 @@ class PostingWorker:
                 # Removing a group takes it out of its schedules, so this is a
                 # second line, not the rule: never post to a removed group.
                 continue
-            # Rotating by run_count as well as position is what stops one
-            # wording going to every group at once, run after run. Pictures
-            # or videos alone have no wording, and go out as they are.
+            # Rotating by run_count as well as place is what stops one
+            # wording going to every group at once, run after run. Posting to
+            # several groups at once, the places go in blocks of 10, so each
+            # post carries one version (`pace.version_place`). Pictures or
+            # videos alone have no wording, and go out as they are.
             body = recurrence.pick_body(
                 schedule.bodies,
-                schedule.run_count + position,
+                schedule.run_count + pace.version_place(place, at_once),
                 self.groups.sent_on_day(group.id, now),
             )
+            place += 1
             targets.append((group.id, body.strip()))
 
         if not targets:

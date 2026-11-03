@@ -19,7 +19,7 @@ import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QLabel
 
-from fbposter import clock, recurrence
+from fbposter import clock, pace, recurrence
 from fbposter.db.models import (
     SCHEDULE_ACTIVE,
     TASK_PENDING,
@@ -158,6 +158,7 @@ class TestPostNow:
 
     def test_it_shares_out_the_versions(self, qt_app, views):
         compose, publish = views
+        qt_app.settings_repo.set(pace.TOGETHER_KEY, "0")  # one version per group
         add_version(compose, "A different wording")
 
         publish.publish()

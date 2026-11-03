@@ -44,7 +44,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from fbposter import attachments, clock, recurrence
+from fbposter import attachments, clock, pace, recurrence
 from fbposter.media import describe
 from fbposter.db.models import utcnow
 
@@ -1005,9 +1005,11 @@ class PublishView(QWidget):
         one version going out now, or about pictures alone."""
         count = len(self.wordings())
         if self.mode == REPEAT and count > 1:
-            note = (
-                f"{count} versions take turns: each run shares them out across "
-                "the groups, a different one to each in turn."
+            note = pace.rotation_note(
+                count,
+                pace.together(
+                    self.app.settings_repo.get(pace.TOGETHER_KEY, pace.TOGETHER_DEFAULT)
+                ),
             )
         elif self.mode == REPEAT and count == 1:
             # A no-break space in "step 1", or a narrow window left the 1

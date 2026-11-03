@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Sequence
 
-from .. import media, strings
+from .. import media, pace, strings
 from ..errors import (
     AutomationHalted,
     ComposerNotFound,
@@ -94,7 +94,7 @@ GROUP_UNAVAILABLE = (
 
 # "Add groups" takes up to 9 more groups: "Post in up to 9 groups that you're
 # in" (read live 2026-11-03), so one post reaches 10.
-MAX_COMPANIONS = 9
+MAX_COMPANIONS = pace.GROUPS_PER_POST - 1
 # Waiting for the picker's list to answer a search, at most; then a moment
 # more, so a second group of the same name still loading is seen too.
 PICKER_WAIT_MS = 10_000

@@ -51,7 +51,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from fbposter import clock, recurrence
+from fbposter import clock, pace, recurrence
 from fbposter.db.models import utcnow
 from fbposter.db.repo import KEEP
 from fbposter.text import strip_invisible
@@ -711,9 +711,11 @@ class ScheduleEditView(QWidget):
         wordings = self.wordings()
         count = len(wordings)
         if count > 1:
-            note = (
-                f"{count} versions take turns: each run shares them out across "
-                "the groups, a different one to each in turn."
+            note = pace.rotation_note(
+                count,
+                pace.together(
+                    self.app.settings_repo.get(pace.TOGETHER_KEY, pace.TOGETHER_DEFAULT)
+                ),
             )
         elif count == 1:
             note = "One version: every run sends it to every group."

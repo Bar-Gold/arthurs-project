@@ -49,7 +49,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from fbposter import clock, media, recurrence
+from fbposter import clock, media, pace, recurrence
 from fbposter.text import strip_invisible
 
 from .. import icons, theme
@@ -638,7 +638,8 @@ class ComposeView(QWidget):
         """Each chosen group's version, as an index into the versions.
 
         Shared out by `recurrence.pick_index`, the rule repeating posts use:
-        the group at place n starts at version n, and gets one it has not had
+        the group at place n starts at version n (in blocks of 10 while
+        posting to several groups at once), and gets one it has not had
         today when there is one, so the same listing posted twice in a day
         reaches each group in other words the second time. A version left
         empty is passed over. A group given one by hand on step 3 keeps it.
@@ -649,6 +650,11 @@ class ComposeView(QWidget):
         """
         selected = self.selected_group_ids()
         today = self.app.group_repo.sent_on_day_many(selected, clock.utcnow())
+        # In blocks of 10 while posting to several groups at once, so each
+        # post carries one version (`pace.version_place`).
+        at_once = pace.together(
+            self.app.settings_repo.get(pace.TOGETHER_KEY, pace.TOGETHER_DEFAULT)
+        )
         shared: dict[int, int | None] = {}
         for position, group_id in enumerate(selected):
             chosen = self._chosen.get(group_id)
@@ -657,7 +663,9 @@ class ComposeView(QWidget):
                 shared[group_id] = chosen
             else:
                 shared[group_id] = recurrence.pick_index(
-                    self._versions, position, today.get(group_id, ())
+                    self._versions,
+                    pace.version_place(position, at_once),
+                    today.get(group_id, ()),
                 )
         return shared
 

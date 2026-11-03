@@ -18,7 +18,7 @@ from datetime import timedelta
 
 import pytest
 
-from fbposter import clock, recurrence
+from fbposter import clock, pace, recurrence
 from fbposter.automation.humanize import HumanProfile, Humanizer
 from fbposter.automation.poster import PostOutcome, PostRequest
 from fbposter.db.models import (
@@ -398,8 +398,24 @@ class TestFiring:
 
 
 class TestWordingRotation:
-    def test_each_group_gets_a_different_wording_in_one_run(self, db, repos):
+    def test_posting_together_ten_groups_share_a_wording(self, db, repos):
+        # The user's choice, 2026-11-03: the first 10 groups get one wording,
+        # the next 10 the next, so each post carries one wording to 10.
         groups, tasks, schedules, _settings = repos
+        made_groups = add_groups(groups, 25)
+        make_schedule(schedules, [g.id for g in made_groups])
+
+        make_worker(db).run_once()
+        queued = tasks.list_recent()[0]
+        bodies = [t.body for t in tasks.targets_for(queued.id)]
+        assert len(set(bodies[:10])) == 1
+        assert len(set(bodies[10:20])) == 1
+        assert bodies[0] != bodies[10]
+        assert bodies[20] != bodies[10]
+
+    def test_each_group_gets_a_different_wording_in_one_run(self, db, repos):
+        groups, tasks, schedules, settings = repos
+        settings.set(pace.TOGETHER_KEY, "0")  # one group at a time
         made_groups = add_groups(groups, 3)
         make_schedule(schedules, [g.id for g in made_groups])
 

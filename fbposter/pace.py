@@ -20,6 +20,8 @@ SPEED_KEY = "post_speed"
 # On unless the client turns it off: "1" or "0".
 TOGETHER_KEY = "post_together"
 TOGETHER_DEFAULT = "1"
+# Facebook's most: the post's own group and 9 ticked in "Add groups".
+GROUPS_PER_POST = 10
 QUIET_ON_KEY = "quiet_hours_on"
 QUIET_START_KEY = "quiet_hours_start"
 QUIET_END_KEY = "quiet_hours_end"
@@ -56,6 +58,37 @@ def describe_span(value: str) -> str:
     if low >= 60:
         return f"{low / 60:g}-{high / 60:g} min"
     return f"{low:g}-{high:g} sec"
+
+
+def together(value: str) -> bool:
+    """Whether posting to several groups at once is on, from the stored value."""
+    return (value or TOGETHER_DEFAULT) == "1"
+
+
+def version_place(position: int, at_once: bool) -> int:
+    """Where a group stands in the turn the versions take.
+
+    Posting to several groups at once, the versions go in blocks of
+    GROUPS_PER_POST (the user's choice, 2026-11-03): the first 10 groups get
+    version 1, the next 10 version 2, and so on round, so each post carries
+    one version to 10 groups. Otherwise each group is a place of its own:
+    group 1 version 1, group 2 version 2, as before.
+    """
+    return position // GROUPS_PER_POST if at_once else position
+
+
+def rotation_note(count: int, at_once: bool) -> str:
+    """How a repeating post's versions go out, for the screens that say so."""
+    if at_once:
+        return (
+            f"{count} versions take turns, {GROUPS_PER_POST} groups to a version: "
+            "the first 10 groups get one, the next 10 the next, and each run "
+            "starts on the next one."
+        )
+    return (
+        f"{count} versions take turns: each run shares them out across "
+        "the groups, a different one to each in turn."
+    )
 
 
 def is_quiet(on: bool, start: int, end: int, local_hour: int) -> bool:
