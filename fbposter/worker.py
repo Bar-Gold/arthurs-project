@@ -34,10 +34,10 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
-from . import attachments, clock, media, recurrence, session, strings, tabs
+from . import attachments, clock, media, pace, recurrence, session, strings, tabs
 from .automation import GroupPoster
 from .automation.humanize import Humanizer
-from .automation.poster import PostOutcome, PostRequest
+from .automation.poster import MAX_COMPANIONS, Companion, PostOutcome, PostRequest
 from .db import Database
 from .db.models import (
     SCHEDULE_PAUSED,
@@ -79,7 +79,7 @@ from .errors import (
     PostNotVerified,
 )
 from .power import SleepBlocker
-from .text import normalise
+from .text import normalise, strip_invisible
 
 # A scheduled slot older than this was almost certainly missed while the
 # machine was asleep. Firing a burst of late posts is exactly the behaviour the
@@ -192,6 +192,12 @@ class Poster(Protocol):
     def pending_verdict(self, group_url: str, body: str) -> str: ...
 
     def live_link(self, held_url: str) -> str | None: ...
+
+
+def _fold_name(name: str) -> str:
+    """A group's name as "Add groups" is matched on: no invisible characters,
+    single spaces, any case."""
+    return " ".join(strip_invisible(name or "").split()).casefold()
 
 
 class LivePoster:
@@ -826,7 +832,7 @@ class PostingWorker:
         """Turn any schedule that has come due into an ordinary batch.
 
         Deliberately the only thing schedules do. Everything after this point --
-        the serial queue, the 2-4 minute gap, crash recovery -- is the
+        the serial queue, the gap between posts, crash recovery -- is the
         existing path, untouched, because a
         second posting path would have to re-earn all of it.
         """
@@ -929,6 +935,14 @@ class PostingWorker:
 
     # -- the moment of posting ---------------------------------------------
     def _attempt(self, task: Task, target: TaskTarget, now) -> bool:
+        # Quiet hours come before the gap: a skip is not a post, so it waits
+        # for nothing and sets no gap. Read on every tick, so turning them on
+        # reaches a batch already queued, or half-way through, at once.
+        quiet = self._quiet_hours(now)
+        if quiet:
+            self._skip_for_quiet_hours(task, quiet)
+            return True
+
         # The pacing between posts is global, and this is where that is
         # enforced. `tasks.resume_at` spaces the groups within one batch, which
         # is not the same thing: a second batch stayed claimable throughout the
@@ -954,8 +968,39 @@ class PostingWorker:
 
         # Nothing else is checked. There are no posting rules (the user's
         # choice, 2026-10-18): how often, how many, when and with what words
-        # are the user's to decide, and the Posting tips screen advises.
+        # are the user's to decide, and the Posting tips screen advises. The
+        # quiet hours above are not a rule either: the client sets them, and
+        # they are off until then.
         return self._post(task, target, group)
+
+    def _quiet_hours(self, now) -> str:
+        """The quiet hours ("23:00-08:00") when `now` is inside them, else ""."""
+        on = self.settings.get(pace.QUIET_ON_KEY, "0") == "1"
+        if not on:
+            return ""
+        start = self.settings.get_int(pace.QUIET_START_KEY, pace.DEFAULT_QUIET_START)
+        end = self.settings.get_int(pace.QUIET_END_KEY, pace.DEFAULT_QUIET_END)
+        if not pace.is_quiet(on, start, end, clock.local_hour(now)):
+            return ""
+        return pace.describe_quiet(start, end)
+
+    def _skip_for_quiet_hours(self, task: Task, hours: str) -> None:
+        """Skip the rest of a batch that is due in the quiet hours (the user's
+        choice, 2026-11-03): skipped, never held for the morning, and a batch
+        half-way through skips the groups it has not reached."""
+        skipped = self.tasks.skip_pending(
+            task.id,
+            f"Not posted: it was due in your quiet hours ({hours}). "
+            "You can change them on the Settings screen.",
+        )
+        if skipped:
+            self.emit(
+                "skipped",
+                f"Quiet hours ({hours}): {skipped} group"
+                f"{'s were' if skipped != 1 else ' was'} not posted to.",
+                task.id,
+            )
+        self._finish(task)
 
     # -- the actual post ---------------------------------------------------
     def _post(self, task: Task, target: TaskTarget, group) -> bool:
@@ -985,16 +1030,36 @@ class PostingWorker:
             )
             return True
 
+        # Claimed before the browser is touched, like the first group: from
+        # the Post click on, none of them may ever be posted to again.
+        together = self._companions(task, target, group)
+        if together:
+            self.emit(
+                "posting",
+                f"Posting to {group.display_name} and {len(together)} more "
+                f"group{'s' if len(together) != 1 else ''} at once…",
+                task.id,
+                target.id,
+            )
         request = PostRequest(
             group_url=group.url,
             body=target.body,
             media_paths=tuple(Path(p) for p in task.media_paths),
             sent_before=self._sent_before(group.id, target.body),
+            companions=tuple(
+                Companion(
+                    other_group.url,
+                    other_group.name,
+                    self._sent_before(other_group.id, other.body),
+                )
+                for other, other_group in together
+            ),
         )
 
         try:
             outcome = self.poster.post(request)
         except ConnectionFailed as exc:
+            self._release_companions(together)
             # The one failure that is safe to wait out. It is raised by
             # session.attach() before a page even exists, so nothing was typed
             # and nothing can have been published -- the reasoning that makes
@@ -1009,6 +1074,7 @@ class PostingWorker:
             self._defer_for_connection(task, target, exc)
             return True
         except PageLoadFailed as exc:
+            self._release_companions(together)
             # The second, and only other, failure safe to wait out: the group
             # page itself would not load, so no post box ever existed. A
             # client's laptop woke from sleep mid-batch and this halted it.
@@ -1017,14 +1083,17 @@ class PostingWorker:
         except GroupUnavailable as exc:
             # One group is gone, not the account, and nothing was typed: the
             # batch carries on without it rather than halting.
+            self._release_companions(together)
             self._skip_unavailable(task, target, group, str(exc))
             return True
         except (AutomationHalted, PostNotVerified) as exc:
             # Deliberately not a retry: after the Post click it may well have
             # posted, and the exception says whether that point was reached.
+            self._settle_companions(together, request, str(exc), exc.may_have_posted)
             self._halt(task, target, str(exc), may_have_posted=exc.may_have_posted)
             return True
         except Exception as exc:
+            self._settle_companions(together, request, _readable(exc), False)
             self._halt(task, target, _readable(exc))
             return True
         except BaseException as exc:
@@ -1034,6 +1103,9 @@ class PostingWorker:
             # still held so the machine could not sleep. Record and release,
             # then let it carry on unwinding. Where in the post it stopped is
             # not known, so it is recorded as possibly posted.
+            self._settle_companions(
+                together, request, "The app was stopped in the middle of posting.", True
+            )
             self._halt(
                 task,
                 target,
@@ -1105,6 +1177,7 @@ class PostingWorker:
             )
             self.emit("posted", f"Posted to {group.display_name}.", task.id, target.id)
         self._warn_if_no_post_id(task, outcome)
+        self._record_companions(task, together, outcome)
 
         # One gap, written in two places. The global stamp spaces every post
         # the app makes, including the first of the *next* batch -- a batch
@@ -1112,9 +1185,19 @@ class PostingWorker:
         # second. `tasks.resume_at` still carries this batch's own wait,
         # because that is what the Queue screen shows and what survives a
         # restart.
-        gap = self.human.gap_between_groups()
+        # The client's speed from Settings, read now, so a change made
+        # mid-batch takes effect from the next group. Never chosen, it is the
+        # profile's own range, which is Safe.
+        chosen = self.settings.get(pace.SPEED_KEY, "")
+        gap = self.human.gap_between_groups(pace.gap_span(chosen) if chosen else None)
         resume = self._now() + timedelta(seconds=gap)
         self.settings.set("next_post_after", to_iso(resume) or "")
+
+        if outcome.halt_after:
+            # A checkpoint or block, met while checking the groups ticked in
+            # "Add groups", after the post was made and everything recorded.
+            self._stop_batch(task, outcome.halt_after)
+            return True
 
         if self.tasks.remaining_targets(task.id) == 0:
             self._finish(task)
@@ -1128,6 +1211,99 @@ class PostingWorker:
             task.id,
         )
         return True
+
+    # -- several groups in one post ("Add groups", 2026-11-03) -----------------
+    def _companions(self, task: Task, target: TaskTarget, group) -> list:
+        """The groups this post also goes to, through Facebook's "Add groups",
+        claimed. Up to MAX_COMPANIONS, from the same batch, with the same words.
+
+        Only the same words: one post carries one text, and a group given
+        another version gets it in a post of its own. Pictures and videos go
+        with it (both read live, 2026-11-03). Never a group without a
+        name, or with a name another of the client's groups shares: the
+        picker shows nothing but the name, so it could not tell them apart.
+        Claimed like the first group, so a second copy of the app can never
+        post to them too.
+        """
+        if self.settings.get(pace.TOGETHER_KEY, pace.TOGETHER_DEFAULT) != "1":
+            return []
+        seen = {_fold_name(group.name)}
+        chosen = []
+        for other in self.tasks.targets_for(task.id):
+            if len(chosen) >= MAX_COMPANIONS:
+                break
+            if other.id == target.id or other.state != TARGET_PENDING:
+                continue
+            if other.body != target.body:
+                continue
+            other_group = self.groups.active(other.group_id)
+            if other_group is None:
+                continue
+            name = _fold_name(other_group.name)
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            if self.tasks.claim_target(other.id):
+                chosen.append((other, other_group))
+        return chosen
+
+    def _release_companions(self, together: list) -> None:
+        """Nothing was posted: each goes back in the queue, unattempted."""
+        for other, _group in together:
+            self.tasks.release_target(other.id)
+
+    def _settle_companions(
+        self, together: list, request: PostRequest, message: str, may_have_posted: bool
+    ) -> None:
+        """The post stopped. A group ticked before a Post click may have it,
+        and is recorded so; every other one goes back in the queue."""
+        added = set(request.added) if may_have_posted else set()
+        for other, other_group in together:
+            if other_group.url in added:
+                self._record_sent(other, TARGET_UNCONFIRMED, error=message)
+            else:
+                self.tasks.release_target(other.id)
+
+    def _record_companions(self, task: Task, together: list, outcome: PostOutcome) -> None:
+        """Record each group ticked in "Add groups"; any not ticked goes back
+        in the queue, to be posted to on its own."""
+        if not together:
+            return
+        results = {result.group_url: result.outcome for result in outcome.companions}
+        went = 0
+        for other, other_group in together:
+            result = results.get(other_group.url)
+            if result is None or not result.posted:
+                self.tasks.release_target(other.id)
+                continue
+            went += 1
+            if result.pending:
+                self._record_sent(
+                    other, TARGET_AWAITING_APPROVAL, error=result.detail,
+                    post_url=result.post_url,
+                )
+            elif result.unconfirmed:
+                self._record_sent(other, TARGET_UNCONFIRMED, error=result.detail)
+            else:
+                self._record_sent(
+                    other, TARGET_DONE, post_url=result.post_url,
+                    error="" if result.verified else result.detail,
+                )
+        if went:
+            self.emit(
+                "posted",
+                f"The same post went to {went} more group{'s' if went != 1 else ''} "
+                "at once, through Add groups.",
+                task.id,
+            )
+
+    def _stop_batch(self, task: Task, message: str) -> None:
+        """Halt a batch with nothing left running: everything is recorded."""
+        self._forget_connection_trouble(task.id)
+        self.tasks.set_resume_at(task.id, None)
+        self.tasks.mark_task(task.id, TASK_HALTED, error=message, finished=True)
+        self.blocker.release()
+        self.emit("halted", message, task.id)
 
     def _sent_before(self, group_id: int, body: str, *, besides: int = 0) -> bool:
         """Have these exact words gone to this group before?

@@ -1,8 +1,12 @@
-"""Settings screen: whether the app is posting, which Facebook account it
-posts as, and what this PC does to keep it posting.
+"""Settings screen: whether the app is posting, how fast and when, which
+Facebook account it posts as, and what this PC does to keep it posting.
 
 There is no posting-rules card any more: the app has no rules to set (the
-user's choice, 2026-10-18). Advice is on the Posting tips screen.
+user's choice, 2026-10-18). Advice is on the Posting tips screen. The speed
+and the quiet hours (2026-11-03) are the client's own choices, not rules: the
+speed starts at Safe, the 2-4 minutes it always was, and quiet hours start
+off. Each takes effect the moment it is changed, posts already queued
+included, because the worker reads them on every tick (`fbposter/pace.py`).
 
 Not a step in the flow, so it sits apart from Compose, Groups and Publish in
 the sidebar. Everything here is something you set once and come back to
@@ -16,20 +20,24 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QButtonGroup,
     QFrame,
     QHBoxLayout,
     QLabel,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
 
-from fbposter import onboarding
+from fbposter import onboarding, pace
+from fbposter.clock import sane_hour as clock_hour
 from fbposter.connection import ConnectionState
 
 from .. import theme
-from ..widgets import Switch, badge, card, row, set_badge
+from ..widgets import Switch, badge, card, row, segmented, set_badge
+from .publish import TimeList
 
 # What the scheduler row says for each worker state: headline, colour, detail.
 STATUS = {
@@ -76,10 +84,55 @@ AWAKE_HELP = (
     "around it, not in a bag."
 )
 
+SPEED_LABEL = "Time between posts"
+SPEED_HELP = (
+    "Safe waits 2-4 minutes between groups, Normal 1-2 minutes, Fast 30-90 "
+    "seconds. Faster finishes sooner, but looks more like a bot to Facebook."
+)
+TOGETHER_LABEL = "Post to up to 10 groups at once"
+TOGETHER_HELP = (
+    "Uses Facebook's own Add groups: one post goes to 10 groups, each getting "
+    "a post of its own, so 80 groups take 8 posts. Groups given a different "
+    "version go in posts of their own."
+)
+QUIET_LABEL = "Quiet hours"
+QUIET_HELP = (
+    "Nothing is posted in these hours. A post due then is skipped, not sent "
+    "later, and one half-way through its groups stops."
+)
+HOURS_LABEL = "From and to"
+# "23:00" and the arrow: the hour lists' two digits were not enough.
+HOUR_LIST_WIDTH = 116
+
+
+class HourList(TimeList):
+    """An hour of the day, "23:00", picked from a list that ignores the wheel."""
+
+    def __init__(self, name: str) -> None:
+        super().__init__((), name)
+        self.setFixedWidth(HOUR_LIST_WIDTH)
+        for hour in range(24):
+            self.addItem(f"{hour:02d}:00", hour)
+
+
+def hour_field(hours: HourList) -> QFrame:
+    """One hour list in the box a time of day is drawn in (`#TimeField`)."""
+    box = QFrame()
+    box.setObjectName("TimeField")
+    box.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+    layout = QHBoxLayout(box)
+    layout.setContentsMargins(1, 1, 1, 1)
+    layout.setSpacing(0)
+    layout.addWidget(hours)
+    return box
+
 
 class SettingsView(QWidget):
     title = "Settings"
-    subtitle = "Whether the app is posting, the account it posts as, and this PC."
+    subtitle = (
+        "Whether the app is posting, how fast and when, the account it posts "
+        "as, and this PC."
+    )
 
     def __init__(self, app) -> None:
         super().__init__()
@@ -112,6 +165,7 @@ class SettingsView(QWidget):
         column.setContentsMargins(0, 0, 0, 0)
         column.setSpacing(theme.PAD_M)
         column.addWidget(self._build_scheduler())
+        column.addWidget(self._build_pace())
         column.addWidget(self._build_account())
         column.addWidget(self._build_pc())
         column.addStretch(1)
@@ -200,6 +254,44 @@ class SettingsView(QWidget):
         inner.addWidget(self.waiting_label)
         return box
 
+    def _build_pace(self) -> QWidget:
+        box, inner = self._card("How posts go out")
+        toggle, buttons = segmented([label for label, _span in pace.SPEEDS.values()])
+        self.speed_buttons = dict(zip(pace.SPEEDS, buttons))
+        self.speed_group = QButtonGroup(self)
+        self.speed_group.setExclusive(True)
+        for key, button in self.speed_buttons.items():
+            self.speed_group.addButton(button)
+            button.clicked.connect(lambda _checked=False, key=key: self.set_speed(key))
+        inner.addWidget(self._setting(SPEED_LABEL, toggle, self._muted(SPEED_HELP)))
+
+        self._divider(inner)
+        self.together_box = Switch(TOGETHER_LABEL)
+        self.together_box.clicked.connect(self.set_together)
+        inner.addWidget(
+            self._setting(TOGETHER_LABEL, self.together_box, self._muted(TOGETHER_HELP))
+        )
+
+        self._divider(inner)
+        self.quiet_box = Switch(QUIET_LABEL)
+        self.quiet_box.clicked.connect(self.set_quiet)
+        inner.addWidget(self._setting(QUIET_LABEL, self.quiet_box, self._muted(QUIET_HELP)))
+
+        self.quiet_start = HourList("Quiet hours from")
+        self.quiet_end = HourList("Quiet hours to")
+        hours = QHBoxLayout()
+        hours.setSpacing(theme.PAD_S)
+        hours.addWidget(hour_field(self.quiet_start))
+        hours.addWidget(QLabel("to"))
+        hours.addWidget(hour_field(self.quiet_end))
+        self.quiet_note = self._muted()
+        self.hours_row = self._setting(HOURS_LABEL, hours, self.quiet_note)
+        inner.addSpacing(theme.PAD_S)
+        inner.addWidget(self.hours_row)
+        self.quiet_start.currentIndexChanged.connect(lambda _i: self.set_quiet_hours())
+        self.quiet_end.currentIndexChanged.connect(lambda _i: self.set_quiet_hours())
+        return box
+
     def _build_account(self) -> QWidget:
         self.switch_button = QPushButton(onboarding.SWITCH_ACTION)
         self.switch_button.clicked.connect(self.begin_switch)
@@ -250,6 +342,7 @@ class SettingsView(QWidget):
     # -- showing -----------------------------------------------------------
     def on_show(self) -> None:
         self.refresh_status()
+        self.load_pace()
         self.refresh_account()
         self.load_pc()
 
@@ -279,6 +372,80 @@ class SettingsView(QWidget):
     # -- the scheduler -----------------------------------------------------
     def toggle(self) -> None:
         self.app.toggle_worker()
+
+    # -- speed and quiet hours ---------------------------------------------
+    # Saved the moment they change, with nothing to press: the worker reads
+    # them on every tick, so the next post already goes by them.
+    def load_pace(self) -> None:
+        """Show what is stored. Signals are held, so showing saves nothing."""
+        settings = self.app.settings_repo
+        chosen = pace.speed(settings.get(pace.SPEED_KEY, pace.DEFAULT_SPEED))
+        self.speed_buttons[chosen].setChecked(True)
+        self.together_box.setChecked(
+            settings.get(pace.TOGETHER_KEY, pace.TOGETHER_DEFAULT) == "1"
+        )
+        self.quiet_box.setChecked(settings.get(pace.QUIET_ON_KEY, "0") == "1")
+        for hours, key, default in (
+            (self.quiet_start, pace.QUIET_START_KEY, pace.DEFAULT_QUIET_START),
+            (self.quiet_end, pace.QUIET_END_KEY, pace.DEFAULT_QUIET_END),
+        ):
+            hours.blockSignals(True)
+            hours.set_value(clock_hour(settings.get_int(key, default), default))
+            hours.blockSignals(False)
+        self._restate_quiet()
+
+    def set_speed(self, key: str) -> None:
+        self.app.settings_repo.set(pace.SPEED_KEY, key)
+        self.app.toast(
+            f"Posts now go out {pace.describe_span(key)} apart.", "success"
+        )
+
+    def set_together(self, on: bool) -> None:
+        self.app.settings_repo.set(pace.TOGETHER_KEY, "1" if on else "0")
+        self.app.toast(
+            "Each post now goes to up to 10 groups at once." if on
+            else "Each post now goes to one group at a time.",
+            "success",
+        )
+
+    def set_quiet(self, on: bool) -> None:
+        settings = self.app.settings_repo
+        settings.set(pace.QUIET_ON_KEY, "1" if on else "0")
+        # The hours shown are the ones that count from now on.
+        settings.set(pace.QUIET_START_KEY, self.quiet_start.value())
+        settings.set(pace.QUIET_END_KEY, self.quiet_end.value())
+        self._restate_quiet()
+        self.app.toast(
+            f"Quiet hours on: nothing is posted {self._quiet_words()}."
+            if on else "Quiet hours off: posts go out at any hour.",
+            "success",
+        )
+
+    def set_quiet_hours(self) -> None:
+        settings = self.app.settings_repo
+        settings.set(pace.QUIET_START_KEY, self.quiet_start.value())
+        settings.set(pace.QUIET_END_KEY, self.quiet_end.value())
+        self._restate_quiet()
+
+    def _quiet_words(self) -> str:
+        return (
+            f"from {self.quiet_start.currentText()} "
+            f"until {self.quiet_end.currentText()}"
+        )
+
+    def _restate_quiet(self) -> None:
+        on = self.quiet_box.isChecked()
+        self.quiet_start.setEnabled(on)
+        self.quiet_end.setEnabled(on)
+        if not on:
+            self.quiet_note.setText("Off. Posts go out at any hour.")
+        elif self.quiet_start.value() == self.quiet_end.value():
+            self.quiet_note.setText(
+                "The same hour twice is no quiet hours at all. Pick two "
+                "different hours."
+            )
+        else:
+            self.quiet_note.setText(f"Nothing is posted {self._quiet_words()}.")
 
     # -- the Facebook account ----------------------------------------------
     def _connected(self) -> bool:

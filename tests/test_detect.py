@@ -149,6 +149,8 @@ class TestEveryLanguageIsCovered:
         "UNAVAILABLE_MARKERS",
         "PENDING_APPROVAL_MARKERS",
         "MY_CONTENT_PAGE_MARKERS",
+        "ADD_GROUPS_BUTTONS",
+        "ADD_GROUPS_DONE",
     ]
 
     @pytest.mark.parametrize("language", list(ALPHABETS))

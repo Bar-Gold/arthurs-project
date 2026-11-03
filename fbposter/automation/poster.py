@@ -1,7 +1,7 @@
-"""Posting to one group.
+"""Posting to one group, and through "Add groups" to up to 9 more with it.
 
-The flow is: arrive, look around, open the composer, type, attach, publish,
-then confirm it actually appeared. Between every meaningful step the page is
+The flow is: arrive, look around, open the composer, type, attach, tick the
+other groups, publish, then confirm it actually appeared, in each group. Between every meaningful step the page is
 re-classified, and anything unexpected halts the batch instead of pressing on.
 
 Two rules from CLAUDE.md are load-bearing here:
@@ -92,6 +92,43 @@ GROUP_UNAVAILABLE = (
     "deleted. Nothing was posted to it."
 )
 
+# "Add groups" takes up to 9 more groups: "Post in up to 9 groups that you're
+# in" (read live 2026-11-03), so one post reaches 10.
+MAX_COMPANIONS = 9
+# Waiting for the picker's list to answer a search, at most; then a moment
+# more, so a second group of the same name still loading is seen too.
+PICKER_WAIT_MS = 10_000
+PICKER_SETTLE_MS = 1_000
+# Waiting for a tick to show on its box.
+TICK_WAIT_MS = 3_000
+# A video post shows in a group only once Facebook has processed the video,
+# so groups not showing it yet are looked at again: this many more times,
+# this far apart.
+VIDEO_RECHECKS = 3
+VIDEO_RECHECK_MS = 60_000
+
+# What each companion's result says. Facebook's reply to the Post click names
+# the first group's post only (read live 2026-11-03), so every other group is
+# looked up on its own "Your content" page.
+TOGETHER_FOUND = (
+    "Posted together with the first group, and found in this group's list of "
+    "your posts."
+)
+TOGETHER_NOT_FOUND = (
+    "Posted together with the first group, but not found in this group's list "
+    "of your posts yet. It may well have gone out, so look at the group before "
+    "posting it again."
+)
+TOGETHER_PICTURES = (
+    "Posted together with the first group. Only pictures or videos were sent, "
+    "so there were no words to check it by. Look at the group to be sure."
+)
+TOGETHER_UNCHECKED = (
+    "Posted together with the first group, but checking this group was "
+    "stopped. It may well have gone out, so look at the group before posting "
+    "it again."
+)
+
 
 def _page_load_problem(exc: Exception) -> str:
     """Why the group page would not open, in a line worth reading."""
@@ -122,6 +159,25 @@ def _after_click(exc: Exception) -> str:
 
 
 @dataclass(frozen=True)
+class Companion:
+    """A group the same post goes to through "Add groups" (2026-11-03)."""
+
+    group_url: str
+    # The group's name as Facebook writes it: the picker shows nothing else.
+    name: str
+    sent_before: bool = False
+
+
+@dataclass(frozen=True)
+class CompanionResult:
+    """What became of one companion. `outcome` is None when it was not ticked,
+    so nothing went to it and it can be posted to on its own."""
+
+    group_url: str
+    outcome: "PostOutcome | None" = None
+
+
+@dataclass(frozen=True)
 class PostRequest:
     group_url: str
     body: str
@@ -130,6 +186,13 @@ class PostRequest:
     # with them can sit in the feed, and finding the words there is then no
     # proof of this post.
     sent_before: bool = False
+    # Up to MAX_COMPANIONS more groups, ticked in "Add groups" so the one post
+    # goes to each of them too.
+    companions: tuple[Companion, ...] = ()
+    # The group links ticked so far, filled in as each is ticked. A list on a
+    # frozen request on purpose: when a step after the ticks raises, this is
+    # how the worker learns which groups the post may have gone to.
+    added: list = field(default_factory=list, compare=False)
 
 
 def _post_id_from_story_id(story_id: Any) -> str:
@@ -255,6 +318,11 @@ class PostOutcome:
     # Found by its words alone, and the same words were in the group before
     # this post, so what was found may be the older one. Might have posted.
     unconfirmed: bool = False
+    # One per companion in the request, in its order.
+    companions: tuple[CompanionResult, ...] = ()
+    # A checkpoint, login page or block met while checking the companions,
+    # after the post was made: everything is recorded, then the batch halts.
+    halt_after: str = ""
 
 
 @dataclass
@@ -327,6 +395,8 @@ class GroupPoster:
         # Whether the post's words were already on the group page before it
         # was posted (see _note_words_already_here).
         self.words_seen_before = False
+        # Groups "Add groups" could not tick, and why: for `dry-run`.
+        self.not_ticked: dict[str, str] = {}
 
     # -- guards ------------------------------------------------------------
     def _page_text(self) -> str:
@@ -619,6 +689,181 @@ class GroupPoster:
                 since_guard = 0
                 self.guard()
 
+    def _find_add_groups(self, dialog: Any) -> Any | None:
+        candidates = []
+        for name in strings.ADD_GROUPS_BUTTONS:
+            candidates.append(dialog.get_by_role("button", name=name, exact=False))
+            candidates.append(dialog.locator('[role="button"]', has_text=name))
+        return self._first_present(candidates)
+
+    def _picker(self) -> Any:
+        """The "Add groups" list: the dialog with a search box, found by its
+        input and not by any of Facebook's words."""
+        return (
+            self.page.get_by_role("dialog")
+            .filter(has=self.page.locator('input[type="search"]'))
+            .last
+        )
+
+    @staticmethod
+    def _same_name(shown: str, wanted: str) -> bool:
+        def fold(text: str) -> str:
+            return " ".join(strip_invisible(text).split()).casefold()
+
+        first_line = (shown or "").strip().split("\n")[0]
+        return bool(wanted.strip()) and fold(first_line) == fold(wanted)
+
+    def _search_for(self, search: Any, text: str) -> None:
+        """Type into the list's search box, and only there.
+
+        Checked before a key is pressed: a stray Control+A and Delete, or a
+        group's name, typed into the post window would change the post.
+        """
+        search.click()
+        self.page.wait_for_timeout(RENDER_POLL_MS)
+        if not search.evaluate("el => el === document.activeElement"):
+            search.focus()
+            if not search.evaluate("el => el === document.activeElement"):
+                raise ComposerNotFound(
+                    "Could not type in the list of groups to add. Nothing was "
+                    "posted."
+                )
+        self.page.keyboard.press("Control+A")
+        self.page.keyboard.press("Delete")
+        if text:
+            self.human.type_text(self.page.keyboard, text)
+
+    def _rows_named(self, picker: Any, name: str) -> list:
+        """The list's rows with exactly this name, once the search has
+        answered. Polled, never a fixed wait: the list can take a few seconds.
+        Looked at once more after the first match, so a second group with the
+        same name still loading is not missed."""
+        rows = picker.get_by_role("button").filter(
+            has=self.page.locator('input[type="checkbox"]')
+        )
+
+        def matching() -> list:
+            found = []
+            for index in range(rows.count()):
+                try:
+                    if self._same_name(rows.nth(index).inner_text(), name):
+                        found.append(rows.nth(index))
+                except Exception:
+                    continue
+            return found
+
+        waited = 0
+        found = matching()
+        while not found and waited < PICKER_WAIT_MS:
+            self.page.wait_for_timeout(RENDER_POLL_MS)
+            waited += RENDER_POLL_MS
+            found = matching()
+        if found:
+            self.page.wait_for_timeout(PICKER_SETTLE_MS)
+            found = matching()
+        return found
+
+    def _becomes_checked(self, box: Any) -> bool:
+        waited = 0
+        while waited < TICK_WAIT_MS:
+            self.page.wait_for_timeout(RENDER_POLL_MS)
+            waited += RENDER_POLL_MS
+            try:
+                if box.is_checked():
+                    return True
+            except Exception:
+                continue
+        return False
+
+    def add_groups(self, dialog: Any, companions: Sequence[Companion], added: list) -> list[Companion]:
+        """Tick each companion in "Add groups". Returns the ones ticked.
+
+        Each is searched for by its name, and ticked only when exactly one
+        group in the list has exactly that name: the list shows nothing else,
+        and two groups can share a name ("Salad Recipes" twice on the test
+        account), so anything less certain is left to be posted on its own.
+        A tick that does not take is not counted. Each link goes into `added`
+        the moment it is ticked, so a failure later still says where the post
+        may have gone.
+
+        Pictures go in before this: once a group is ticked, Facebook takes
+        the Photo/video button out of the post window (read live 2026-11-03),
+        though pictures already in it stay and go to every group.
+
+        No "Add groups" button (Facebook changed it, or a language it has not
+        been read in) ticks nothing, and the post goes to its own group alone.
+        """
+        companions = list(companions)[:MAX_COMPANIONS]
+        if not companions:
+            return []
+        button = self._find_add_groups(dialog)
+        if button is None:
+            return []
+        self.human.hover_then_click(button)
+        picker = self._picker()
+        picker.wait_for(state="visible", timeout=ACTION_TIMEOUT_MS)
+        search = picker.locator('input[type="search"]').first
+
+        ticked: list[Companion] = []
+        unsure: list[Companion] = []
+        for companion in companions:
+            self._search_for(search, companion.name)
+            matches = self._rows_named(picker, companion.name)
+            if len(matches) != 1:
+                self.not_ticked[companion.name] = (
+                    "no group in the list has exactly this name" if not matches
+                    else "more than one group in the list has this name"
+                )
+                continue
+            row = matches[0]
+            box = row.locator('input[type="checkbox"]').first
+            try:
+                # Ticked already (a fresh post window ticks nothing, but if it
+                # ever did), the post goes there all the same, so it counts.
+                if not box.is_checked():
+                    self.human.hover_then_click(row)
+                    if not self._becomes_checked(box):
+                        unsure.append(companion)
+                        continue
+            except Exception:
+                # Whether the click took is not known, and a group the post
+                # may have gone to must never be posted to again on its own.
+                added.append(companion.group_url)
+                raise
+            ticked.append(companion)
+            added.append(companion.group_url)
+
+        # A tick that had not shown when it was looked at may still land, and
+        # the post would then go to a group the app thinks it did not. So each
+        # is looked at again, once the list has settled: what is ticked now is
+        # what Facebook posts to.
+        for companion in unsure:
+            self._search_for(search, companion.name)
+            matches = self._rows_named(picker, companion.name)
+            checked = len(matches) == 1 and matches[0].locator(
+                'input[type="checkbox"]'
+            ).first.is_checked()
+            if checked:
+                ticked.append(companion)
+                added.append(companion.group_url)
+            else:
+                self.not_ticked[companion.name] = "the tick did not take"
+
+        self._search_for(search, "")
+        done = self._first_present(
+            [picker.get_by_role("button", name=name, exact=True) for name in strings.ADD_GROUPS_DONE]
+        )
+        if done is None:
+            raise ComposerNotFound(
+                "The list of groups to add had no Done button. Facebook may have "
+                "changed its page. Nothing was posted."
+            )
+        self.human.hover_then_click(done)
+        # The list is a view inside the post window, which stays: the search
+        # box going from sight is the sign it closed (read live 2026-11-03).
+        search.wait_for(state="hidden", timeout=ACTION_TIMEOUT_MS)
+        return ticked
+
     def publish(self, dialog: Any) -> bool:
         """Click Post. Returns whether the composer actually closed.
 
@@ -883,15 +1128,27 @@ class GroupPoster:
             self.type_body(dialog, request.body)
             self.attach_media(dialog, request.media_paths)
             self.guard()
+            # After the pictures: ticking a group takes the Photo/video
+            # button away (read live 2026-11-03).
+            ticked = self.add_groups(dialog, request.companions, request.added)
+            self.guard()
 
             if self.dry_run:
                 self.discard()
+                also = (
+                    f" {len(ticked)} more group{'s were' if len(ticked) != 1 else ' was'} "
+                    "ticked in Add groups."
+                    if ticked else ""
+                )
                 return PostOutcome(
                     posted=False,
                     dry_run=True,
                     detail=(
                         "Dry run: composed and attached everything, stopped before "
-                        "clicking Post, and discarded the draft."
+                        f"clicking Post, and discarded the draft.{also}"
+                    ),
+                    companions=tuple(
+                        CompanionResult(c.group_url) for c in request.companions
                     ),
                 )
 
@@ -910,6 +1167,13 @@ class GroupPoster:
             self.discard()
             raise
 
+        outcome = self._judge(request, created, closed)
+        if not request.companions:
+            return outcome
+        return self._with_companions(outcome, request, ticked)
+
+    def _judge(self, request: PostRequest, created: CreatedPost | None, closed: bool) -> PostOutcome:
+        """What became of the post in its own group, the first one."""
         if created:
             return self._created_outcome(request, created)
 
@@ -974,6 +1238,120 @@ class GroupPoster:
             "before queueing it again, because posting it twice is worse than not "
             "posting it at all."
         )
+
+    def _with_companions(
+        self, outcome: PostOutcome, request: PostRequest, ticked: Sequence[Companion]
+    ) -> PostOutcome:
+        """Look each ticked group up on its own, after the post.
+
+        Facebook's reply names the first group's post only (read live
+        2026-11-03), so each other group is looked up on its "Your content"
+        page. A checkpoint or block met there stops the looking: the post is
+        made, so everything is still recorded, and the batch then halts.
+        """
+        results: dict[str, PostOutcome] = {}
+        halt = ""
+
+        def look(companions: Sequence[Companion]) -> None:
+            nonlocal halt
+            for companion in companions:
+                if halt:
+                    results[companion.group_url] = PostOutcome(
+                        posted=True, unconfirmed=True, detail=TOGETHER_UNCHECKED
+                    )
+                    continue
+                try:
+                    self.human.read_pause()
+                    results[companion.group_url] = self.check_companion(companion, request.body)
+                except AutomationHalted as exc:
+                    halt = f"{exc} {SENT_BEFORE_STOP}"
+                    results[companion.group_url] = PostOutcome(
+                        posted=True, unconfirmed=True, detail=TOGETHER_UNCHECKED
+                    )
+                except Exception:
+                    results[companion.group_url] = PostOutcome(
+                        posted=True, unconfirmed=True, detail=TOGETHER_UNCHECKED
+                    )
+
+        look(ticked)
+        # Facebook publishes a video post only once it has processed the
+        # video, a minute or two after the click for a big one (seen live,
+        # 2026-10-15), so a group not showing it yet is looked at again, all
+        # of them together, before it is called "might have posted". A 5
+        # second video showed in every group on the first look (2026-11-03).
+        if any(media.is_video(path) for path in request.media_paths):
+            for _ in range(VIDEO_RECHECKS):
+                missing = [
+                    c for c in ticked
+                    if results.get(c.group_url) is not None
+                    and results[c.group_url].detail == TOGETHER_NOT_FOUND
+                ]
+                if not missing or halt:
+                    break
+                self.page.wait_for_timeout(VIDEO_RECHECK_MS)
+                look(missing)
+        return PostOutcome(
+            posted=outcome.posted,
+            detail=outcome.detail,
+            post_url=outcome.post_url,
+            dry_run=outcome.dry_run,
+            verified=outcome.verified,
+            pending=outcome.pending,
+            unconfirmed=outcome.unconfirmed,
+            companions=tuple(
+                CompanionResult(c.group_url, results.get(c.group_url))
+                for c in request.companions
+            ),
+            halt_after=halt,
+        )
+
+    def _shows(self, snippet: str) -> bool:
+        wanted = " ".join(snippet.casefold().split())
+        shown = " ".join(strip_invisible(self._page_text()).casefold().split())
+        return wanted in shown
+
+    def check_companion(self, companion: Companion, body: str) -> PostOutcome:
+        """Did the post reach a group ticked in "Add groups"?
+
+        Read live on 2026-11-03: a group that publishes it shows it on its
+        Published tab (`strings.my_posted_url`), and a group that holds posts
+        shows it on Pending (`strings.my_content_url`). Both list only the
+        account's own posts, so someone else's identical listing cannot be
+        taken for this one; an older post of the client's own with the same
+        words can, which is what `sent_before` is for. Not found on either is
+        "might have posted", never "not posted": it was ticked, and Post was
+        clicked.
+
+        A checkpoint, login page or block raises. "This content isn't
+        available" does not: it is what Pending says in a group that never
+        holds posts.
+        """
+        snippet = distinctive_snippet(body)
+        if not snippet:
+            return PostOutcome(posted=True, verified=False, detail=TOGETHER_PICTURES)
+        for url, held in (
+            (strings.my_posted_url(companion.group_url), False),
+            (strings.my_content_url(companion.group_url), True),
+        ):
+            try:
+                self.page.goto(url, timeout=NAV_TIMEOUT_MS, wait_until="domcontentloaded")
+                self.page.wait_for_timeout(FEED_SETTLE_MS)
+            except Exception:
+                continue
+            verdict = classify(self.page.url, self._page_text())
+            if not verdict.is_ok and verdict is not PageVerdict.UNAVAILABLE:
+                raise AutomationHalted(verdict, halt_message(verdict))
+            if not self._shows(snippet):
+                continue
+            if held:
+                return self._pending_outcome()
+            if companion.sent_before:
+                return PostOutcome(
+                    posted=True, verified=False, unconfirmed=True,
+                    detail=WORDS_WERE_THERE_BEFORE,
+                )
+            return PostOutcome(posted=True, verified=True, detail=TOGETHER_FOUND)
+        return PostOutcome(posted=True, verified=False, unconfirmed=True, detail=TOGETHER_NOT_FOUND)
 
     def _listen_for_creation(self) -> list:
         """Start keeping Facebook's reply to the Post click.

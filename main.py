@@ -17,7 +17,7 @@ from pathlib import Path
 
 from fbposter import chrome, config, session
 from fbposter.automation import GroupPoster
-from fbposter.automation.poster import PostRequest
+from fbposter.automation.poster import Companion, PostRequest
 from fbposter.errors import ChromeNotRunningError, FBPosterError
 
 SETUP_INSTRUCTIONS = """
@@ -188,15 +188,32 @@ def cmd_dry_run(args: argparse.Namespace) -> int:
         "Everything except the Post click. The draft is discarded afterwards.\n"
     )
 
-    request = PostRequest(group_url=args.group_url, body=args.text, media_paths=media)
+    # "--add-group NAME": also tick that group in Add groups, by its name as
+    # Facebook writes it, as the worker does for groups going out together.
+    companions = tuple(
+        Companion(group_url=f"(not posted) {name}", name=name)
+        for name in (args.add_group or [])
+    )
+    request = PostRequest(
+        group_url=args.group_url, body=args.text, media_paths=media, companions=companions
+    )
     with session.attach() as context:
         page = _new_page(context)
+        poster = GroupPoster(page, dry_run=True)
         try:
-            outcome = GroupPoster(page, dry_run=True).post(request)
+            outcome = poster.post(request)
         finally:
             page.close()
 
     print(outcome.detail)
+    if companions:
+        ticked = {url.removeprefix("(not posted) ") for url in request.added}
+        for companion in companions:
+            if companion.name in ticked:
+                print(f"  ticked: {companion.name}")
+            else:
+                why = poster.not_ticked.get(companion.name, "not reached")
+                print(f"  NOT ticked: {companion.name} ({why})")
     return 0
 
 
@@ -243,6 +260,11 @@ def build_parser() -> argparse.ArgumentParser:
     # Waits for the upload to finish, as a real post does, then discards it.
     dry_run.add_argument(
         "--video", action="append", help="video to attach; repeat for several"
+    )
+    # Ticks it in Add groups, then discards the draft like the rest.
+    dry_run.add_argument(
+        "--add-group", action="append",
+        help="also tick this group (its name on Facebook) in Add groups; repeat for several",
     )
     dry_run.set_defaults(func=cmd_dry_run)
 

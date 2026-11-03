@@ -57,6 +57,11 @@ YOUR_GROUPS_URL = f"{BASE_URL}/groups/joins/"
 # Where Facebook lists your own posts in a group, "Pending" first. Verified on
 # 2026-08-17: /pending/ is the *admin* moderation queue and is not this.
 MY_CONTENT_PATH = "my_pending_content"
+# The same page's Published tab: your own posts the group has published. Read
+# live on 2026-11-03: a post made with "Add groups" shows here in every group
+# that did not hold it. A group that never holds posts answers the Pending
+# tab with "This content isn't available right now".
+MY_POSTED_PATH = "my_posted_content"
 
 # The call Facebook's page makes when Post is clicked, and whose reply carries
 # the new post's own link (data.story_create.story.url). Read off the live site
@@ -85,6 +90,14 @@ def my_content_url(group_url_or_identifier: str) -> str:
     if not base.startswith("http"):
         base = f"{BASE_URL}/groups/{base}"
     return f"{base}/{MY_CONTENT_PATH}/"
+
+
+def my_posted_url(group_url_or_identifier: str) -> str:
+    """The "Your content" page's Published tab for a group."""
+    base = group_url_or_identifier.rstrip("/")
+    if not base.startswith("http"):
+        base = f"{BASE_URL}/groups/{base}"
+    return f"{base}/{MY_POSTED_PATH}/"
 
 
 # Proof the "Your content" page actually rendered. Without this, a page that
@@ -151,6 +164,27 @@ COMPOSER_TEXTBOX = (
 # Russian is "Отправить" (send), NOT the literal "Опубликовать" (publish) -- see
 # the module docstring. Read off the live composer, not translated.
 POST_BUTTONS = ("Post", "פרסום", "Отправить")
+
+# "Add groups" in the post window: tick up to 9 more groups the account is in,
+# and the one post goes to each of them as a post of its own. Read live on
+# 2026-11-03 for a plain member (not only an admin), with text and with a
+# picture. Its text, not an aria-label, names it; once groups are ticked it
+# reads "3 groups" instead, which is why only the first look uses it. The
+# picker it opens is the dialog with a search box (input[type="search"]),
+# found without words; each group is a button holding a tick box, named by
+# the group's name alone: no link and no number (2026-11-03). All three
+# languages read live the same day, the account switched to each in turn.
+ADD_GROUPS_BUTTONS = (
+    "Add groups",
+    "הוספת קבוצות",  # "adding groups"
+    "Добавить группы",  # "add groups"
+)
+# Closes the picker, keeping the ticks. Its aria-label and its text agree.
+ADD_GROUPS_DONE = (
+    "Done",
+    "סיום",  # "finish"
+    "Готово",  # "ready"
+)
 
 PHOTO_VIDEO_BUTTONS = (
     "Photo/video",

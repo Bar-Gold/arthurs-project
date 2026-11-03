@@ -1164,6 +1164,17 @@ class TaskRepo:
             f"UPDATE task_targets SET {', '.join(sets)} WHERE id = ?", tuple(params)
         )
 
+    def skip_pending(self, task_id: int, note: str) -> int:
+        """Mark every group of a batch not yet posted to as skipped, with why.
+        Conditional on `pending`, like `claim_target`, so a group already being
+        posted to is never touched. Returns how many were skipped."""
+        with self.db.transaction() as connection:
+            return connection.execute(
+                "UPDATE task_targets SET state = ?, error = ?, attempted_at = ? "
+                "WHERE task_id = ? AND state = ?",
+                (TARGET_SKIPPED, note, to_iso(utcnow()), task_id, TARGET_PENDING),
+            ).rowcount
+
     def remaining_targets(self, task_id: int) -> int:
         row = self.db.query_one(
             "SELECT COUNT(*) AS n FROM task_targets WHERE task_id = ? AND state = ?",

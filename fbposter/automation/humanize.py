@@ -43,7 +43,9 @@ class HumanProfile:
     # Between groups in a batch: 2-4 minutes (the user's choice, 2026-10-18;
     # it was 10-25). A post itself takes about a minute and a half, so one
     # listing to 80 groups is about six hours. Guides put the floor at 2-3
-    # minutes: closer than that reads as automation.
+    # minutes: closer than that reads as automation. Since 2026-11-03 the
+    # client picks the speed on Settings (`fbposter/pace.py`), and the worker
+    # passes it in; this is the range when nothing is passed.
     group_gap_seconds: tuple[float, float] = (120, 240)
 
 
@@ -66,11 +68,14 @@ class Humanizer:
     def settle(self) -> float:
         return self._pause_ms(self.profile.click_settle_ms)
 
-    def gap_between_groups(self) -> float:
+    def gap_between_groups(self, span: tuple[float, float] | None = None) -> float:
         """Seconds to wait before the next group. Not slept here -- the Phase 5
         scheduler owns that wait so it can be interrupted and survive a restart.
+
+        `span` is the client's speed from Settings (`pace.gap_span`); without
+        one, the profile's own range.
         """
-        low, high = self.profile.group_gap_seconds
+        low, high = span or self.profile.group_gap_seconds
         return self.rng.uniform(low, high)
 
     # -- interaction -------------------------------------------------------

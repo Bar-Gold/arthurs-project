@@ -89,20 +89,23 @@ PAGES = {
             ),
             Tip(
                 "Leave time between groups",
-                "The app waits 2-4 minutes between groups by itself, on top of the "
-                "time each post takes. Posting faster than that looks like a bot.",
+                "The app waits between posts by itself, on top of the time each "
+                "post takes: 2-4 minutes on Safe, the speed it starts on, less on "
+                "Normal or Fast (Settings). Faster finishes sooner, but looks more "
+                "like a bot.",
             ),
             Tip(
                 "Two posts due at the same time",
-                "The app posts to one group at a time, never to two at once. When "
-                "two posts are due together, for example two repeating posts, the "
-                "first goes out to all its groups and the second waits its turn, "
-                "then follows with the same 2-4 minute gap between groups. The "
-                "second still goes out even hours late, so a listing to 60 groups "
-                "can push the next one back by 2-4 hours. A post is dropped in one "
-                "case only: its time came while the computer was asleep or off, or "
-                "posting was paused, and more than 2 hours have passed since. To "
-                "keep a listing on time, leave room between your repeating posts.",
+                "The app makes one post at a time, never two at once, and each "
+                "post can go to up to 10 groups. When two posts are due together, "
+                "for example two repeating posts, the first goes out to all its "
+                "groups and the second waits its turn, then follows with the same "
+                "wait between posts. The second still goes out even if it is late, "
+                "so a long listing can push the next one back. A post is dropped "
+                "in two cases only: its time came while the computer was asleep or "
+                "off, or posting was paused, and more than 2 hours have passed "
+                "since; or it was due in your quiet hours. To keep a listing on "
+                "time, leave room between your repeating posts.",
             ),
             Tip(
                 "Post while people are awake",
@@ -187,19 +190,22 @@ PAGES = {
             ),
             Tip(
                 "זמן בין קבוצה לקבוצה",
-                "התוכנה ממתינה מעצמה 2 עד 4 דקות בין קבוצה לקבוצה, בנוסף לזמן "
-                "שכל פוסט לוקח. פרסום מהיר יותר נראה כמו בוט.",
+                "התוכנה ממתינה מעצמה בין פוסט לפוסט, בנוסף לזמן שכל פוסט לוקח: "
+                "2 עד 4 דקות במהירות Safe, שאיתה היא מתחילה, ופחות ב-Normal או "
+                "ב-Fast (במסך Settings). פרסום מהיר יותר מסתיים מוקדם יותר, אבל "
+                "נראה יותר כמו בוט.",
             ),
             Tip(
                 "שני פוסטים באותה שעה",
-                "התוכנה מפרסמת לקבוצה אחת בכל פעם, אף פעם לא לשתיים במקביל. כששני "
-                "פוסטים מתוזמנים לאותה שעה, למשל שני פוסטים חוזרים, הראשון יוצא לכל "
-                "הקבוצות שלו, והשני מחכה לתורו ויוצא אחריו, עם אותה המתנה של 2 עד 4 "
-                "דקות בין קבוצה לקבוצה. הפוסט השני יוצא גם אם הוא מתעכב בכמה שעות, "
-                "כך שמודעה ל-60 קבוצות יכולה לדחות את זו שאחריה ב-2 עד 4 שעות. פוסט "
-                "לא יוצא רק במקרה אחד: אם הגיע זמנו כשהמחשב היה כבוי או במצב שינה, "
-                "או כשהפרסום היה מושהה, ועברו מאז יותר מ-2 שעות. כדי שמודעה תצא "
-                "בזמן, כדאי להשאיר מרווח זמן בין הפוסטים החוזרים.",
+                "התוכנה מפרסמת פוסט אחד בכל פעם, אף פעם לא שניים במקביל, וכל פוסט "
+                "יכול לצאת לעד 10 קבוצות. כששני פוסטים מתוזמנים לאותה שעה, למשל שני "
+                "פוסטים חוזרים, הראשון יוצא לכל הקבוצות שלו, והשני מחכה לתורו ויוצא "
+                "אחריו, עם אותה המתנה בין פוסט לפוסט. הפוסט השני יוצא גם אם הוא "
+                "מתעכב, כך שמודעה ארוכה יכולה לדחות את זו שאחריה. פוסט לא יוצא רק "
+                "בשני מקרים: אם הגיע זמנו כשהמחשב היה כבוי או במצב שינה, או כשהפרסום "
+                "היה מושהה, ועברו מאז יותר מ-2 שעות; או אם זמנו נפל בשעות השקטות "
+                "שלך. כדי שמודעה תצא בזמן, כדאי להשאיר מרווח זמן בין הפוסטים "
+                "החוזרים.",
             ),
             Tip(
                 "לפרסם כשאנשים ערים",
@@ -286,22 +292,25 @@ PAGES = {
             ),
             Tip(
                 "Паузы между группами",
-                "Между группами программа сама ждёт от 2 до 4 минут, не считая "
-                "времени на публикацию самого поста. Если публиковать быстрее, это "
-                "выглядит как работа бота.",
+                "Между постами программа сама делает паузу, не считая времени на "
+                "публикацию самого поста: от 2 до 4 минут на скорости Safe, с "
+                "которой она начинает, и меньше на Normal или Fast (экран "
+                "Settings). Чем быстрее, тем раньше всё выйдет, но тем больше это "
+                "похоже на работу бота.",
             ),
             Tip(
                 "Два поста на одно время",
-                "Программа публикует в одну группу за раз, никогда в две "
-                "одновременно. Если два поста назначены на одно время, например два "
-                "повторяющихся поста, первый уходит во все свои группы, а второй ждёт "
-                "своей очереди и выходит следом, с той же паузой от 2 до 4 минут "
-                "между группами. Второй выйдет, даже если задержится на несколько "
-                "часов: объявление в 60 групп может сдвинуть следующее на 2-4 часа. "
-                "Пост не выходит только в одном случае: его время наступило, когда "
-                "компьютер спал или был выключен или публикация стояла на паузе, и с "
-                "тех пор прошло больше 2 часов. Чтобы объявление вышло вовремя, "
-                "оставляйте промежуток между повторяющимися постами.",
+                "Программа публикует один пост за раз, никогда два одновременно, и "
+                "каждый пост может уйти сразу в несколько групп, до 10. Если два поста "
+                "назначены на одно время, например два повторяющихся поста, первый "
+                "уходит во все свои группы, а второй ждёт своей очереди и выходит "
+                "следом, с той же паузой между постами. Второй выйдет, даже если "
+                "задержится: длинное объявление может сдвинуть следующее. Пост не "
+                "выходит только в двух случаях: его время наступило, когда компьютер "
+                "спал или был выключен или публикация стояла на паузе, и с тех пор "
+                "прошло больше 2 часов; или его время пришлось на ваши тихие часы. "
+                "Чтобы объявление вышло вовремя, оставляйте промежуток между "
+                "повторяющимися постами.",
             ),
             Tip(
                 "Публикуйте, когда люди не спят",

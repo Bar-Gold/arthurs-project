@@ -1,4 +1,5 @@
-"""The Settings screen: pausing, the account, and this PC.
+"""The Settings screen: pausing, speed and quiet hours, the account, and
+this PC.
 
 The posting-rules card went on 2026-10-18 with the rules themselves.
 
@@ -12,7 +13,7 @@ from __future__ import annotations
 
 import pytest
 
-from fbposter import login, onboarding
+from fbposter import login, onboarding, pace
 from fbposter.always_on import Status
 from fbposter.db.repo import GroupRepo, SettingsRepo, TaskRepo
 from fbposter.qtui.app import FLOW_STEPS, NAV_ITEMS
@@ -232,6 +233,84 @@ class TestThereAreNoPostingRules:
 
     def test_the_subtitle_does_not_mention_rules(self, settings):
         assert "rules" not in settings.subtitle
+
+
+class TestSpeedAndQuietHours:
+    """The client's own pace (2026-11-03): saved the moment it changes, read
+    by the worker on every tick, so it reaches posts already queued."""
+
+    def test_it_starts_at_safe_with_quiet_hours_off(self, settings):
+        assert settings.speed_buttons["safe"].isChecked()
+        assert not settings.quiet_box.isChecked()
+        assert not settings.quiet_start.isEnabled()
+        assert settings.quiet_start.value() == pace.DEFAULT_QUIET_START
+        assert settings.quiet_end.value() == pace.DEFAULT_QUIET_END
+
+    def test_picking_a_speed_saves_it(self, qt_app, settings):
+        settings.speed_buttons["fast"].click()
+        assert SettingsRepo(qt_app.db).get(pace.SPEED_KEY) == "fast"
+        assert settings.speed_buttons["fast"].isChecked()
+        assert not settings.speed_buttons["safe"].isChecked()
+        assert "30-90 sec" in qt_app.toast_label.text()
+
+    def test_it_shows_what_is_stored(self, qt_app):
+        stored = SettingsRepo(qt_app.db)
+        stored.set(pace.SPEED_KEY, "normal")
+        stored.set(pace.QUIET_ON_KEY, "1")
+        stored.set(pace.QUIET_START_KEY, 22)
+        stored.set(pace.QUIET_END_KEY, 7)
+        qt_app.show_view("settings")
+        view = qt_app.views["settings"]
+        assert view.speed_buttons["normal"].isChecked()
+        assert view.quiet_box.isChecked()
+        assert (view.quiet_start.value(), view.quiet_end.value()) == (22, 7)
+        assert "from 22:00 until 07:00" in view.quiet_note.text()
+
+    def test_turning_quiet_hours_on_saves_the_hours_shown(self, qt_app, settings):
+        settings.quiet_box.click()
+        stored = SettingsRepo(qt_app.db)
+        assert stored.get(pace.QUIET_ON_KEY) == "1"
+        assert stored.get_int(pace.QUIET_START_KEY, -1) == pace.DEFAULT_QUIET_START
+        assert stored.get_int(pace.QUIET_END_KEY, -1) == pace.DEFAULT_QUIET_END
+        assert settings.quiet_start.isEnabled()
+
+    def test_changing_an_hour_saves_it(self, qt_app, settings):
+        settings.quiet_box.click()
+        settings.quiet_end.set_value(6)
+        assert SettingsRepo(qt_app.db).get_int(pace.QUIET_END_KEY, -1) == 6
+        assert "until 06:00" in settings.quiet_note.text()
+
+    def test_the_same_hour_twice_says_so(self, settings):
+        settings.quiet_box.click()
+        settings.quiet_end.set_value(settings.quiet_start.value())
+        assert "same hour" in settings.quiet_note.text()
+
+    def test_posting_together_starts_on(self, settings):
+        assert settings.together_box.isChecked()
+
+    def test_turning_posting_together_off_saves_it(self, qt_app, settings):
+        settings.together_box.click()
+        assert SettingsRepo(qt_app.db).get(pace.TOGETHER_KEY) == "0"
+        assert "one group at a time" in qt_app.toast_label.text()
+
+    def test_showing_the_screen_saves_nothing(self, qt_app):
+        qt_app.show_view("settings")
+        stored = SettingsRepo(qt_app.db)
+        assert stored.get(pace.SPEED_KEY, "") == ""
+        assert stored.get(pace.QUIET_ON_KEY, "") == ""
+        assert stored.get(pace.TOGETHER_KEY, "") == ""
+
+    def test_the_hour_lists_ignore_the_wheel(self, settings):
+        from PySide6.QtCore import QPoint, QPointF, Qt
+        from PySide6.QtGui import QWheelEvent
+
+        before = settings.quiet_start.value()
+        event = QWheelEvent(
+            QPointF(5, 5), QPointF(5, 5), QPoint(0, 0), QPoint(0, -120),
+            Qt.NoButton, Qt.NoModifier, Qt.NoScrollPhase, False,
+        )
+        settings.quiet_start.wheelEvent(event)
+        assert settings.quiet_start.value() == before
 
 
 class TestSwitchingAccount:

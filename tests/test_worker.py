@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from fbposter import clock
+from fbposter import clock, pace
 from fbposter.automation.humanize import HumanProfile, Humanizer
 from fbposter.automation.poster import PostOutcome, PostRequest
 from fbposter.db.models import (
@@ -447,10 +447,189 @@ class TestCancellation:
         assert tasks.get(task.id).state == TASK_CANCELLED
 
 
+class TestTheSpeed:
+    """The client picks the time between posts on Settings (2026-11-03)."""
+
+    @pytest.mark.parametrize(
+        "speed, low, high",
+        [("safe", 120, 240), ("normal", 60, 120), ("fast", 30, 90)],
+    )
+    def test_each_speed_spaces_the_next_group(self, db, repos, speed, low, high):
+        groups, tasks, settings = repos
+        settings.set(pace.SPEED_KEY, speed)
+        one, two = add_groups(groups)
+        task = tasks.create(BODY, [(one.id, "a"), (two.id, "b")])
+
+        ticker = Clock()
+        make_worker(db, FakePoster(), ticker).run_once()
+
+        wait = (tasks.get(task.id).resume_at - ticker.now).total_seconds()
+        assert low <= wait <= high
+
+    def test_never_chosen_it_is_the_profiles_own_range(self, db, repos):
+        groups, tasks, _ = repos
+        one, two = add_groups(groups)
+        task = tasks.create(BODY, [(one.id, "a"), (two.id, "b")])
+
+        ticker = Clock()
+        make_worker(db, FakePoster(), ticker, gap_seconds=(600, 1500)).run_once()
+
+        wait = (tasks.get(task.id).resume_at - ticker.now).total_seconds()
+        assert 600 <= wait <= 1500
+
+    def test_a_change_mid_batch_counts_from_the_next_group(self, db, repos):
+        groups, tasks, settings = repos
+        one, two, three = add_groups(groups, 3)
+        task = tasks.create(BODY, [(one.id, "a"), (two.id, "b"), (three.id, "c")])
+
+        ticker = Clock()
+        worker = make_worker(db, FakePoster(), ticker)
+        worker.run_once()
+        settings.set(pace.SPEED_KEY, "fast")
+        ticker.advance(minutes=30)
+        worker.run_once()
+
+        wait = (tasks.get(task.id).resume_at - ticker.now).total_seconds()
+        assert 30 <= wait <= 90
+
+
+class TestQuietHours:
+    """Off until the client sets them. Inside them a batch is skipped, never
+    held for the morning, and one half-way through skips the rest (the user's
+    choices, 2026-11-03). Read every tick, so it reaches queued posts too."""
+
+    @staticmethod
+    def quiet(settings, start=23, end=8, on=True):
+        settings.set(pace.QUIET_ON_KEY, "1" if on else "0")
+        settings.set(pace.QUIET_START_KEY, start)
+        settings.set(pace.QUIET_END_KEY, end)
+
+    def test_a_batch_due_in_them_is_skipped_not_posted(self, db, repos):
+        groups, tasks, settings = repos
+        self.quiet(settings)
+        one, two = add_groups(groups)
+        task = tasks.create(BODY, [(one.id, "a"), (two.id, "b")])
+
+        poster = FakePoster()
+        worker = make_worker(db, poster, Clock(clock.parse_local("2026-08-11 01:00")))
+        worker.run_once()
+
+        assert poster.requests == []
+        targets = tasks.targets_for(task.id)
+        assert [t.state for t in targets] == [TARGET_SKIPPED, TARGET_SKIPPED]
+        assert "quiet hours (23:00-08:00)" in targets[0].error
+        assert tasks.get(task.id).state == TASK_DONE
+        assert "skipped" in kinds(worker)
+
+    def test_a_skip_sets_no_gap(self, db, repos):
+        groups, tasks, settings = repos
+        self.quiet(settings)
+        (one,) = add_groups(groups, 1)
+        tasks.create(BODY, [(one.id, "a")])
+
+        make_worker(db, FakePoster(), Clock(clock.parse_local("2026-08-11 01:00"))).run_once()
+
+        assert settings.get("next_post_after", "") == ""
+
+    def test_a_batch_crossing_the_start_skips_the_rest(self, db, repos):
+        groups, tasks, settings = repos
+        self.quiet(settings)
+        one, two, three = add_groups(groups, 3)
+        task = tasks.create(BODY, [(one.id, "a"), (two.id, "b"), (three.id, "c")])
+
+        ticker = Clock(clock.parse_local("2026-08-10 22:55"))
+        poster = FakePoster()
+        worker = make_worker(db, poster, ticker)
+        worker.run_once()
+        ticker.advance(minutes=30)  # 23:25
+        drain(worker)
+
+        assert len(poster.requests) == 1
+        states = [t.state for t in tasks.targets_for(task.id)]
+        assert states == [TARGET_DONE, TARGET_SKIPPED, TARGET_SKIPPED]
+
+    def test_turned_on_while_a_batch_waits_it_reaches_that_batch(self, db, repos):
+        groups, tasks, settings = repos
+        one, two = add_groups(groups)
+        task = tasks.create(BODY, [(one.id, "a"), (two.id, "b")])
+
+        ticker = Clock(clock.parse_local("2026-08-11 01:00"))
+        poster = FakePoster()
+        worker = make_worker(db, poster, ticker)
+        worker.run_once()
+        self.quiet(settings)
+        ticker.advance(minutes=30)
+        drain(worker)
+
+        assert len(poster.requests) == 1
+        assert tasks.targets_for(task.id)[1].state == TARGET_SKIPPED
+
+    def test_turned_off_the_next_post_goes_out(self, db, repos):
+        groups, tasks, settings = repos
+        self.quiet(settings, on=False)
+        (one,) = add_groups(groups, 1)
+        tasks.create(BODY, [(one.id, "a")])
+
+        poster = FakePoster()
+        make_worker(db, poster, Clock(clock.parse_local("2026-08-11 01:00"))).run_once()
+
+        assert len(poster.requests) == 1
+
+    def test_outside_them_posts_go_out(self, db, repos):
+        groups, tasks, settings = repos
+        self.quiet(settings)
+        (one,) = add_groups(groups, 1)
+        tasks.create(BODY, [(one.id, "a")])
+
+        poster = FakePoster()
+        make_worker(db, poster, Clock(clock.parse_local("2026-08-11 08:00"))).run_once()
+
+        assert len(poster.requests) == 1
+
+    def test_hours_within_one_day_work_too(self, db, repos):
+        groups, tasks, settings = repos
+        self.quiet(settings, start=13, end=15)
+        (one,) = add_groups(groups, 1)
+        tasks.create(BODY, [(one.id, "a")])
+
+        poster = FakePoster()
+        make_worker(db, poster, Clock(clock.parse_local("2026-08-11 14:30"))).run_once()
+
+        assert poster.requests == []
+
+    def test_the_same_hour_twice_is_no_quiet_hours(self, db, repos):
+        groups, tasks, settings = repos
+        self.quiet(settings, start=9, end=9)
+        (one,) = add_groups(groups, 1)
+        tasks.create(BODY, [(one.id, "a")])
+
+        poster = FakePoster()
+        make_worker(db, poster, Clock(clock.parse_local("2026-08-11 09:30"))).run_once()
+
+        assert len(poster.requests) == 1
+
+    def test_a_repeating_slot_in_them_posts_nothing(self, db, repos):
+        groups, _tasks, settings = repos
+        self.quiet(settings)
+        (one,) = add_groups(groups, 1)
+        slot = clock.parse_local("2026-08-11 02:00")
+        ScheduleRepo(db).create(
+            name="Night", bodies=[BODY], group_ids=[one.id], times=["02:00"],
+            next_run_at=slot,
+        )
+
+        poster = FakePoster()
+        drain(make_worker(db, poster, Clock(slot)))
+
+        assert poster.requests == []
+
+
 class TestThereAreNoPostingRules:
     """The user's choice, 2026-10-18: no daily limit, no cooldown, no posting
     hours and no repeated-text rule. Whatever is queued goes out, one group at
-    a time with the gap between them; the advice is on Posting tips."""
+    a time with the gap between them; the advice is on Posting tips. Quiet
+    hours (2026-11-03) are the client's own and start off, so with nothing
+    set these all still hold (`TestQuietHours`)."""
 
     def test_it_posts_at_one_in_the_morning(self, db, repos):
         groups, tasks, _ = repos
