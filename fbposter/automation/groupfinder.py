@@ -15,9 +15,12 @@ groups, one of them managed):
   word of Facebook's.
 * The address is `https://www.facebook.com/groups/<number>/`, or the group's
   short name for one that has one (`.../groups/SneakerHeadsInIsrael/`).
-* All 12 were there on arrival. A longer list is assumed to load as it is
-  scrolled, so the reader scrolls until it has the count from the heading, or
-  nothing new appears.
+* All 12 were there on arrival. A longer list loads 20 at a time as it is
+  scrolled, read live on 2026-11-03 with 46 groups in English, Hebrew and
+  Russian: 20 on arrival, then 40, then 46, each batch a second or more after
+  the bottom of the list is reached. So the reader scrolls to the bottom and
+  waits there for the next batch, until it has the count from the heading, or
+  waiting has stopped bringing any.
 
 Nothing here may raise into the caller. A failure comes back as a
 `FoundGroups` with `error` set, and nothing is added.
@@ -43,9 +46,23 @@ LIST_TIMEOUT_MS = 15_000
 LIST_POLL_MS = 200
 # Bounds on the scrolling, so a client in hundreds of groups, or a page that
 # never stops growing, costs minutes at most and never an open-ended session.
-MAX_SCROLLS = 60
+# A round scrolls to the bottom of the list and waits there for the next
+# batch. The reader used to scroll a few hundred pixels and look at once, and
+# gave up after three looks with nothing new: a client in about 100 groups got
+# the first 20 (2026-11-03). Three rounds of reaching the bottom and waiting
+# with nothing new is 45 seconds of patience: a slowed page (CPU x6, 1 Mbps)
+# took 30 seconds for one batch live.
+MAX_SCROLLS = 200
 QUIET_SCROLLS = 3
-TIME_LIMIT_S = 180
+# With the last round (up to a minute) and the page load, well under the daily
+# look's 10-minute clearance (`GROUPS_CHECK_CLEARANCE`), so a
+# read never shares Chrome with a post.
+TIME_LIMIT_S = 420
+# Scrolling to the bottom: at most this many skims (`Humanizer.browse`) a round.
+STEPS_PER_ROUND = 15
+# Waiting at the bottom for the next batch to arrive.
+GROWTH_WAIT_S = 15.0
+GROWTH_POLL_S = 0.5
 
 HAS_LIST = """
 () => !!document.querySelector('[role="main"] a[href*="/groups/"]')
@@ -59,10 +76,13 @@ READ = """
     text: (a.innerText || '').trim(),
     labelled: a.hasAttribute('aria-label'),
   })) : [];
-  const heading = main ? main.querySelector('h1, h2, [role="heading"]') : null;
+  const headings = main ? Array.from(main.querySelectorAll('h1, h2, [role="heading"]'))
+    .map(h => (h.innerText || '').trim()) : [];
+  const root = document.documentElement;
   return {
     links,
-    heading: heading ? (heading.innerText || '').trim() : '',
+    headings,
+    at_bottom: window.scrollY + window.innerHeight >= root.scrollHeight - 300,
     text: document.body ? (document.body.innerText || '').slice(0, 5000) : '',
   };
 }
@@ -156,11 +176,59 @@ def groups_from_links(links: list[dict]) -> list[FoundGroup]:
 
 def expected_count(heading: str) -> int | None:
     """The number in brackets in the list's heading: "(12)", "(1,204)"."""
-    match = re.search(r"\((\d[\d,.\s]*)\)", heading or "")
+    match = re.search(r"\((\d[\d,.\s]*)\)", strip_invisible(heading or ""))
     if not match:
         return None
     digits = re.sub(r"\D", "", match.group(1))
     return int(digits) if digits else None
+
+
+def expected_from(headings: list[str]) -> int | None:
+    """The count of the whole list: the largest number in brackets in any
+    heading. The first heading is not reliably the list's own, and the list of
+    every group joined counts at least as many as any part of it would."""
+    counts = [n for n in (expected_count(h) for h in headings) if n is not None]
+    return max(counts) if counts else None
+
+
+class _Links:
+    """Every link read so far, each once, in the order first seen. Kept across
+    rounds, because a long list may drop what has scrolled away."""
+
+    def __init__(self) -> None:
+        self._seen: dict[tuple, dict] = {}
+
+    def add(self, links: list[dict] | None) -> None:
+        for link in links or []:
+            key = (link.get("href"), link.get("text"), bool(link.get("labelled")))
+            self._seen.setdefault(key, link)
+
+    def groups(self) -> list[FoundGroup]:
+        return groups_from_links(list(self._seen.values()))
+
+
+def _to_the_bottom(page: Any, humanizer: Humanizer, links: _Links) -> None:
+    """Skim down until the end of the list is on screen, the way a person
+    scrolls to see more. Bounded, for a page whose end never comes."""
+    for _ in range(STEPS_PER_ROUND):
+        humanizer.browse(page)
+        seen = page.evaluate(READ)
+        links.add(seen.get("links"))
+        if seen.get("at_bottom", True):
+            return
+
+
+def _wait_for_more(page: Any, humanizer: Humanizer, links: _Links, known: int) -> int:
+    """At the bottom, give the next batch time to arrive. Returns how many
+    groups there are now."""
+    count = len(links.groups())
+    for _ in range(int(GROWTH_WAIT_S / GROWTH_POLL_S)):
+        if count > known:
+            break
+        humanizer.sleep(GROWTH_POLL_S)
+        links.add(page.evaluate(READ).get("links"))
+        count = len(links.groups())
+    return count
 
 
 def read_your_groups(
@@ -180,9 +248,10 @@ def read_your_groups(
     if verdict is not detect.PageVerdict.OK:
         return FoundGroups(error=PAGE_PROBLEMS.get(verdict, detect.halt_message(verdict)))
 
-    links = list(seen.get("links") or [])
-    found = groups_from_links(links)
-    expected = expected_count(seen.get("heading", ""))
+    links = _Links()
+    links.add(seen.get("links"))
+    found = links.groups()
+    expected = expected_from(seen.get("headings") or [])
     if not found and expected is None:
         # No list and no heading: not the page it should be. Adding nothing
         # is safe; calling it "no groups" would not be.
@@ -195,12 +264,16 @@ def read_your_groups(
             break
         if quiet >= QUIET_SCROLLS or clock() - started > TIME_LIMIT_S:
             break
-        humanizer.browse(page)
-        # Kept across rounds: a long list may drop what has scrolled away.
-        links += page.evaluate(READ).get("links") or []
-        more = groups_from_links(links)
-        quiet = quiet + 1 if len(more) == len(found) else 0
-        found = more
+        known = len(found)
+        _to_the_bottom(page, humanizer, links)
+        if _wait_for_more(page, humanizer, links, known) > known:
+            quiet = 0
+        else:
+            quiet += 1
+            # A little way back up, as a person does when nothing loads; the
+            # next round comes down to the bottom again.
+            page.mouse.wheel(0, -humanizer.rng.randint(*humanizer.profile.scroll_delta))
+        found = links.groups()
     return FoundGroups(groups=found, expected=expected)
 
 

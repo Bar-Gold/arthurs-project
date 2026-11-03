@@ -96,6 +96,7 @@ class TestReadingTheLinks:
             ("All groups you've joined (12)", 12),
             ("כל הקבוצות שהצטרפת אליהן (1,204)", 1204),
             ("Все группы (3)", 3),
+            ("כל הקבוצות שהצטרפת אליהן (‏46)", 46),
             ("All groups you've joined", None),
             ("", None),
         ],
@@ -105,16 +106,28 @@ class TestReadingTheLinks:
 
 
 class FakeListPage:
-    """The "Your groups" page: a list that grows as it is scrolled."""
+    """The "Your groups" page: a list that grows as it is scrolled.
 
-    def __init__(self, pages, heading="All groups you've joined (3)", url=None, text=""):
+    `delay` is how many more looks the next part takes to arrive after a
+    scroll, as Facebook's next batch does live; `far` is how many skims it
+    takes before the end of the list is on screen.
+    """
+
+    def __init__(self, pages, heading="All groups you've joined (3)", url=None, text="",
+                 delay=0, far=0, headings=None):
         self.pages = list(pages)  # the links visible after each scroll
-        self.heading = heading
+        self.headings = headings if headings is not None else [heading]
         self.url = url or strings.YOUR_GROUPS_URL
         self.text = text
+        self.delay = delay
+        self.far = far
         self.visits = []
         self.wheels = 0
         self.shown = 0
+        self.skims = 0
+        self.armed = False
+        self.waited = 0
+        self.below = far
         self.mouse = self
 
     def goto(self, url, **_kw):
@@ -127,11 +140,22 @@ class FakeListPage:
         self.wheels += 1
 
     def evaluate(self, _script):
-        if self.wheels:  # a scroll since the last look shows the next part
-            self.shown += 1
+        if self.wheels:  # a scroll since the last look starts the next part
             self.wheels = 0
+            self.skims += 1
+            self.below -= 1
+            if not self.armed:
+                self.armed, self.waited = True, 0
+        if self.armed:
+            if self.waited >= self.delay:
+                self.shown += 1
+                self.armed = False
+            else:
+                self.waited += 1
+        at_bottom = self.below <= 0
         links = self.pages[min(self.shown, len(self.pages) - 1)]
-        return {"links": links, "heading": self.heading, "text": self.text}
+        return {"links": links, "headings": self.headings, "at_bottom": at_bottom,
+                "text": self.text}
 
 
 def instant():
@@ -151,6 +175,41 @@ class TestReadingThePage:
         page = FakeListPage([card("1", "A"), card("2", "B"), card("3", "C")])
         result = read_your_groups(page, instant())
         assert [f.name for f in result.groups] == ["A", "B", "C"]
+
+    def test_waits_at_the_bottom_for_the_next_batch(self):
+        """The client's bug (2026-11-03): about 100 groups and only the first 20
+        read, because the next batch came later than the reader looked."""
+        parts = [card(str(n), f"G{n}") for n in range(1, 6)]
+        page = FakeListPage(
+            [sum(parts[:k], []) for k in range(1, 6)],
+            heading="All groups you've joined (5)",
+            delay=8,
+        )
+        result = read_your_groups(page, instant())
+        assert len(result.groups) == 5 and result.complete
+
+    def test_keeps_skimming_until_the_end_is_on_screen(self):
+        page = FakeListPage([card("1", "A"), card("1", "A") + card("2", "B")],
+                            heading="All groups you've joined (2)", far=3)
+        result = read_your_groups(page, instant())
+        assert len(result.groups) == 2
+        assert page.skims == 3, "stopped skimming before the end of the list"
+
+    def test_a_batch_that_never_comes_ends_the_read(self):
+        page = FakeListPage([card("1", "A"), card("1", "A") + card("2", "B")],
+                            heading="All groups you've joined (2)", delay=10_000)
+        result = read_your_groups(page, instant())
+        assert result.ok and len(result.groups) == 1 and not result.complete
+
+    def test_the_count_is_the_largest_in_any_heading(self):
+        """A smaller count heading first must not end the read at its number."""
+        parts = [card(str(n), f"G{n}") for n in range(1, 6)]
+        page = FakeListPage(
+            [sum(parts[:k], []) for k in range(1, 6)],
+            headings=["Groups you manage (1)", "All groups you've joined (5)"],
+        )
+        result = read_your_groups(page, instant())
+        assert result.expected == 5 and len(result.groups) == 5
 
     def test_stops_when_nothing_new_appears(self):
         page = FakeListPage([card("1", "A")], heading="All groups you've joined (50)")
