@@ -61,6 +61,11 @@ Dashboard counts. Two clicks in the UI, no warning, and it was silently gone.
 The one place a group row is deleted is an account switch (`replace_with`), and
 only a group with no history left to lose.
 
+- **A group the account left on Facebook is archived too, never deleted**
+  (`GroupRepo.sync_with`, the user's choice, 2026-11-09), and stamped
+  `left_at`, which keeps it out of `removed()`: the user asked for it to go
+  from the Groups screen entirely, history kept. Every un-archive clears
+  `left_at`. See "Reading the client's groups off Facebook" (`automation.md`).
 - **`list()` already excludes archived groups**, so every screen needed no
   change; `get()` deliberately still finds them, because the Dashboard has to
   name a group it posted to last week.

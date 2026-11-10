@@ -109,6 +109,8 @@ class Group:
     # As Facebook writes it ("12K members"); empty until read.
     members: str = ""
     members_read_at: datetime | None = None
+    # Set when Facebook's list showed the account is no longer in it.
+    left_at: datetime | None = None
 
     @classmethod
     def from_row(cls, row: Mapping[str, Any]) -> "Group":
@@ -124,6 +126,7 @@ class Group:
             created_at=from_iso(row["created_at"]),
             members=row["members"] or "",
             members_read_at=from_iso(row["members_read_at"]),
+            left_at=from_iso(row["left_at"]) if "left_at" in row.keys() else None,
         )
 
     @property

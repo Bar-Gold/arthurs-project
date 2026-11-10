@@ -60,6 +60,8 @@ KEEP = object()
 
 # What a queued post records for a group the user removed before its turn.
 GROUP_REMOVED = "You removed this group from your list before its turn."
+# The same, for a group the account left on Facebook (`GroupRepo.sync_with`).
+GROUP_LEFT = "You left this group on Facebook before its turn."
 
 # A member count that could not be read is tried again after this long, not
 # on every visit to the Groups screen (`GroupRepo.missing_details`).
@@ -102,6 +104,15 @@ class Replacement(NamedTuple):
     brought_back: list
     # group id -> what removing it took it out of.
     removals: dict
+
+
+class Sync(NamedTuple):
+    """What `GroupRepo.sync_with` changed, for the Groups screen to say."""
+
+    added: list
+    rejoined: list
+    # group id -> what taking it off the list took it out of.
+    left: dict
 
 
 def _insert_found(connection, identifier: str, url: str, name: str, cooldown: int) -> int:
@@ -230,7 +241,9 @@ class GroupRepo:
             # history back with it -- returning a fresh empty group would be
             # the repeated-text guard going blank, which is the thing archiving
             # exists to prevent.
-            self.db.write("UPDATE groups SET archived = 0 WHERE id = ?", (existing.id,))
+            self.db.write(
+                "UPDATE groups SET archived = 0, left_at = NULL WHERE id = ?", (existing.id,)
+            )
             restored = self.get(existing.id)
             assert restored is not None
             return restored
@@ -279,6 +292,64 @@ class GroupRepo:
                 added.append(_insert_found(connection, identifier, url, name, default_cooldown))
         return [group for group in (self.get(group_id) for group_id in added) if group]
 
+    def sync_with(self, found: Iterable[tuple[str, str, str]]) -> Sync:
+        """Make the list follow every group the account is in, read off Facebook.
+
+        The user's choices (2026-11-09). New groups are added as
+        `import_found` adds them. A listed group the account is no longer in
+        is taken off the list as Remove takes one (out of repeating posts,
+        queued posts and group sets) and stamped `left_at`, which hides it
+        from the removed groups too; it is never deleted, so the Dashboard
+        keeps its posts. Found again, because the account rejoined, it comes
+        back with its history. A group the user removed by hand is not
+        touched either way.
+
+        A group with a turn `running` is mid-post and is left alone; the next
+        read takes it off. One transaction. The caller only asks once the
+        whole list was read (`FoundGroups.complete`): a partial read would take
+        off groups the account is in.
+        """
+        found = list(found)
+        wanted = {identifier.lower() for identifier, _url, _name in found}
+        default_cooldown = SettingsRepo(self.db).get_int("default_cooldown_hours", 8)
+        added: list[int] = []
+        back: list[int] = []
+        left: dict[int, Removal] = {}
+        now = to_iso(utcnow())
+        with self.db.transaction() as connection:
+            for identifier, url, name in found:
+                known = connection.execute(
+                    "SELECT id, archived, left_at FROM groups WHERE lower(identifier) = lower(?)",
+                    (identifier,),
+                ).fetchone()
+                if known is None:
+                    added.append(_insert_found(connection, identifier, url, name, default_cooldown))
+                elif known["archived"] and known["left_at"]:
+                    connection.execute(
+                        "UPDATE groups SET archived = 0, left_at = NULL, "
+                        "name = CASE WHEN name = '' THEN ? ELSE name END WHERE id = ?",
+                        (name, known["id"]),
+                    )
+                    back.append(known["id"])
+            listed = connection.execute(
+                "SELECT id, identifier FROM groups WHERE archived = 0 ORDER BY id"
+            ).fetchall()
+            for row in listed:
+                if row["identifier"].lower() in wanted:
+                    continue
+                busy = connection.execute(
+                    "SELECT 1 FROM task_targets WHERE group_id = ? AND state = ?",
+                    (row["id"], TARGET_RUNNING),
+                ).fetchone()
+                if busy:
+                    continue
+                left[row["id"]] = self._archive(connection, row["id"], GROUP_LEFT)
+                connection.execute(
+                    "UPDATE groups SET left_at = ? WHERE id = ?", (now, row["id"])
+                )
+        groups = lambda ids: [g for g in (self.get(i) for i in ids) if g]  # noqa: E731
+        return Sync(added=groups(added), rejoined=groups(back), left=left)
+
     def replace_with(self, found: Iterable[tuple[str, str, str]]) -> Replacement:
         """Make the list exactly the groups read off Facebook, after an account switch.
 
@@ -312,7 +383,7 @@ class GroupRepo:
                     added.append(_insert_found(connection, identifier, url, name, default_cooldown))
                 elif known["archived"]:
                     connection.execute(
-                        "UPDATE groups SET archived = 0, "
+                        "UPDATE groups SET archived = 0, left_at = NULL, "
                         "name = CASE WHEN name = '' THEN ? ELSE name END WHERE id = ?",
                         (name, known["id"]),
                     )
@@ -364,7 +435,7 @@ class GroupRepo:
             return self._archive(connection, group_id)
 
     @staticmethod
-    def _archive(connection, group_id: int) -> Removal:
+    def _archive(connection, group_id: int, why: str = GROUP_REMOVED) -> Removal:
         """`remove`, inside a transaction the caller already holds."""
         unfinished = (TASK_PENDING, TASK_RUNNING)
         connection.execute("UPDATE groups SET archived = 1 WHERE id = ?", (group_id,))
@@ -407,7 +478,7 @@ class GroupRepo:
         connection.execute(
             "UPDATE task_targets SET state = ?, error = ? "
             f"WHERE group_id = ? AND state = ? AND {in_unfinished}",
-            (TARGET_SKIPPED, GROUP_REMOVED, group_id, TARGET_PENDING, *unfinished),
+            (TARGET_SKIPPED, why, group_id, TARGET_PENDING, *unfinished),
         )
 
         finished = []
@@ -456,7 +527,9 @@ class GroupRepo:
             ).fetchone()
             if row is None or not row["archived"]:
                 return False  # gone, or already added back
-            connection.execute("UPDATE groups SET archived = 0 WHERE id = ?", (group_id,))
+            connection.execute(
+                "UPDATE groups SET archived = 0, left_at = NULL WHERE id = ?", (group_id,)
+            )
             for schedule_id, position in removal.schedule_rows:
                 connection.execute(
                     "INSERT OR IGNORE INTO schedule_targets (schedule_id, group_id, position) "
@@ -485,7 +558,9 @@ class GroupRepo:
 
     def removed(self) -> list[Group]:
         """The groups the user removed, for the Groups screen's Removed list."""
-        rows = self.db.query("SELECT * FROM groups WHERE archived = 1 ORDER BY id")
+        rows = self.db.query(
+            "SELECT * FROM groups WHERE archived = 1 AND left_at IS NULL ORDER BY id"
+        )
         return [Group.from_row(row) for row in rows]
 
     def bring_back(self, group_id: int) -> Group | None:
@@ -501,7 +576,8 @@ class GroupRepo:
         """
         with self.db.transaction() as connection:
             changed = connection.execute(
-                "UPDATE groups SET archived = 0 WHERE id = ? AND archived = 1", (group_id,)
+                "UPDATE groups SET archived = 0, left_at = NULL WHERE id = ? AND archived = 1",
+                (group_id,),
             ).rowcount
         return self.get(group_id) if changed else None
 

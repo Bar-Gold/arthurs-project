@@ -658,3 +658,191 @@ class TestTheDailyLook:
         assert not qt_app._groups_check.isActive()
         qt_app.check_groups_daily(MORNING)
         assert qt_app.group_repo.list() == []
+
+
+# -- Requests waiting for an admin, and groups the account left (2026-11-09) --
+from fbposter.automation.groupfinder import joined_count  # noqa: E402
+from fbposter.db.repo import GROUP_LEFT, start_new_account  # noqa: E402
+
+PENDING_HEADING = "Pending group requests (1)"
+
+
+def requested(identifier: str, name: str) -> list[dict]:
+    """A group the account asked to join, above the joined list: drawn like
+    any other card, "View group" and all."""
+    return [dict(link, pending=True) for link in card(identifier, name)]
+
+
+class TestRequestsAreNotJoined:
+    """Read live on 2026-11-09: "Pending group requests (1)" above "All groups
+    you've joined (46)", one card under it, the joined list below."""
+
+    def test_a_request_is_left_out(self):
+        links = requested("980414154465411", "try-group") + card("1", "A")
+        found = groups_from_links(links, skip_pending=True)
+        assert [f.ref.identifier for f in found] == ["1"]
+
+    def test_one_link_in_the_list_is_enough(self):
+        """A group shown above the list as well is still joined."""
+        links = requested("1", "A") + card("1", "A")
+        assert [f.name for f in groups_from_links(links, skip_pending=True)] == ["A"]
+
+    def test_without_the_heading_nothing_is_left_out(self):
+        links = requested("2", "B") + card("1", "A")
+        assert len(groups_from_links(links)) == 2
+
+    @pytest.mark.parametrize(
+        "headings,count",
+        [
+            ([PENDING_HEADING, "All groups you've joined (46)"], 46),
+            (["All groups you've joined (46)"], 46),
+            (["Groups you manage (1)", "All groups you've joined (5)"], 5),
+            # Laid out some other way: nothing is known.
+            (["All groups you've joined (5)", "Pending group requests (2)"], None),
+            (["All groups you've joined"], None),
+        ],
+    )
+    def test_the_joined_count_is_the_last_and_largest(self, headings, count):
+        assert joined_count(headings) == count
+
+    def test_the_page_leaves_the_request_out_and_is_complete(self):
+        page = FakeListPage(
+            [requested("980414154465411", "try-group") + card("1", "A") + card("2", "B")],
+            headings=[PENDING_HEADING, "All groups you've joined (2)"],
+        )
+        result = read_your_groups(page, instant())
+        assert [f.name for f in result.groups] == ["A", "B"]
+        assert result.complete
+
+    def test_a_page_laid_out_another_way_takes_nothing_off(self):
+        page = FakeListPage(
+            [requested("9", "Asked") + card("1", "A")],
+            headings=["All groups you've joined (5)", "Pending group requests (1)"],
+        )
+        result = read_your_groups(page, instant())
+        assert len(result.groups) == 2
+        assert result.expected is None and not result.complete
+
+
+class TestGroupsTheAccountLeft:
+    """The user's choices (2026-11-09): off the list and off the removed
+    groups too, the history kept, and back by itself on rejoining."""
+
+    def found(self, *pairs):
+        return [(identifier, f"{G}{identifier}/", name) for identifier, name in pairs]
+
+    def posted(self, app, group):
+        task = app.task_repo.create("Hi", [(group.id, "Hi")])
+        app.db.write("UPDATE task_targets SET state = 'done' WHERE task_id = ?", (task.id,))
+        return task
+
+    def test_it_goes_from_the_list_and_the_removed_groups(self, qt_app):
+        repo = qt_app.group_repo
+        stays = repo.add_from_url(f"{G}1/", name="Stays")
+        left = repo.add_from_url(f"{G}2/", name="Left")
+        sync = repo.sync_with(self.found(("1", "Stays"), ("3", "New")))
+        assert list(sync.left) == [left.id]
+        assert [g.name for g in sync.added] == ["New"]
+        assert [g.id for g in repo.list()] == [stays.id, sync.added[0].id]
+        assert repo.removed() == []
+        assert repo.active(left.id) is None
+
+    def test_its_history_is_kept(self, qt_app):
+        repo = qt_app.group_repo
+        left = repo.add_from_url(f"{G}2/", name="Left")
+        task = self.posted(qt_app, left)
+        repo.sync_with([])
+        assert [t.state for t in qt_app.task_repo.targets_for(task.id)] == ["done"]
+        assert repo.get(left.id).name == "Left", "the Dashboard still names it"
+
+    def test_rejoining_brings_it_back_with_its_history(self, qt_app):
+        repo = qt_app.group_repo
+        left = repo.add_from_url(f"{G}2/", name="Left")
+        task = self.posted(qt_app, left)
+        repo.sync_with([])
+        sync = repo.sync_with(self.found(("2", "Left")))
+        assert [g.id for g in sync.rejoined] == [left.id]
+        assert [g.id for g in repo.list()] == [left.id]
+        assert repo.get(left.id).left_at is None
+        assert len(qt_app.task_repo.targets_for(task.id)) == 1
+
+    def test_a_group_removed_by_hand_is_not_touched(self, qt_app):
+        repo = qt_app.group_repo
+        mine = repo.add_from_url(f"{G}2/", name="Mine")
+        repo.remove(mine.id)
+        repo.sync_with(self.found(("2", "Mine")))
+        assert repo.list() == [] and [g.id for g in repo.removed()] == [mine.id]
+        repo.sync_with([])
+        assert [g.id for g in repo.removed()] == [mine.id], "still in the removed groups"
+
+    def test_it_is_taken_out_of_what_was_waiting_for_it(self, qt_app):
+        repo = qt_app.group_repo
+        stays = repo.add_from_url(f"{G}1/")
+        left = repo.add_from_url(f"{G}2/")
+        post = qt_app.schedule_repo.create(
+            name="Daily", bodies=["Hi"], group_ids=[stays.id, left.id], times=["09:00"]
+        )
+        group_set = qt_app.group_set_repo.create("Mine", [stays.id, left.id])
+        task = qt_app.task_repo.create("Hi", [(stays.id, "Hi"), (left.id, "Hi")])
+        sync = repo.sync_with(self.found(("1", "")))
+        assert sync.left[left.id].batch_ids == (task.id,)
+        assert qt_app.schedule_repo.get(post.id).group_ids == [stays.id]
+        assert qt_app.group_set_repo.get(group_set.id).group_ids == [stays.id]
+        turns = {t.group_id: (t.state, t.error) for t in qt_app.task_repo.targets_for(task.id)}
+        assert turns[left.id] == ("skipped", GROUP_LEFT)
+
+    def test_a_group_mid_post_is_left_for_the_next_read(self, qt_app):
+        repo = qt_app.group_repo
+        left = repo.add_from_url(f"{G}2/")
+        task = qt_app.task_repo.create("Hi", [(left.id, "Hi")])
+        qt_app.db.write("UPDATE task_targets SET state = 'running' WHERE task_id = ?", (task.id,))
+        assert repo.sync_with([]).left == {}
+        assert [g.id for g in repo.list()] == [left.id]
+
+    def test_the_account_switch_clears_it_away(self, qt_app):
+        repo = qt_app.group_repo
+        left = repo.add_from_url(f"{G}2/")
+        repo.sync_with([])
+        start_new_account(qt_app.db)
+        assert repo.get(left.id) is None
+
+
+class TestTheButtonFollowsFacebook:
+    def test_a_group_left_is_taken_off_and_unticked(self, window):
+        window.settings_repo.set(SETUP_COMPLETE_KEY, "1")
+        old = window.group_repo.add_from_url(f"{G}9/", name="Old")
+        window.set_group_selected(old.id, True)
+        window.views["groups"].import_from_facebook()
+        assert [g.name for g in window.group_repo.list()] == ["TRY", "Bikes"]
+        assert old.id not in window.selected_groups
+        text = window.toast_label.text()
+        assert "Added 2" in text and "Took 1 group you are no longer in off your list" in text
+
+    def test_it_says_what_it_was_taken_out_of(self, window):
+        window.settings_repo.set(SETUP_COMPLETE_KEY, "1")
+        old = window.group_repo.add_from_url(f"{G}9/", name="Old")
+        window.schedule_repo.create(
+            name="Daily", bodies=["Hi"], group_ids=[old.id], times=["09:00"]
+        )
+        window.views["groups"].import_from_facebook()
+        assert "and out of 1 repeating post." in window.toast_label.text()
+
+    def test_a_short_read_takes_nothing_off(self, window):
+        window.settings_repo.set(SETUP_COMPLETE_KEY, "1")
+        window.group_repo.add_from_url(f"{G}9/", name="Old")
+        window.group_finder = StubFinder(FoundGroups(groups=found(("1", "A")).groups, expected=4))
+        window.views["groups"].import_from_facebook()
+        assert [g.name for g in window.group_repo.list()] == ["Old", "A"]
+
+    def test_a_read_without_a_count_takes_nothing_off(self, window):
+        window.settings_repo.set(SETUP_COMPLETE_KEY, "1")
+        window.group_repo.add_from_url(f"{G}9/", name="Old")
+        window.group_finder = StubFinder(FoundGroups(groups=found(("1", "A")).groups))
+        window.views["groups"].import_from_facebook()
+        assert [g.name for g in window.group_repo.list()] == ["Old", "A"]
+
+    def test_the_daily_look_takes_it_off_too(self, daily):
+        old = daily.group_repo.add_from_url(f"{G}9/", name="Old")
+        look(daily)
+        assert old.id not in {g.id for g in daily.group_repo.list()}
+        assert "Took 1 group you are no longer in" in daily.toast_label.text()

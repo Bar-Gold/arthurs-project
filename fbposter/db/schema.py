@@ -441,6 +441,18 @@ def _migration_015(connection: sqlite3.Connection) -> None:
     )
 
 
+def _migration_016(connection: sqlite3.Connection) -> None:
+    """When the account was found to have left a group (the user's choice,
+    2026-11-09).
+
+    A group no longer on Facebook's list of the groups joined is archived and
+    stamped here: off the Groups screen, its removed groups included, but its
+    history kept for the Dashboard. Found on the list again, it comes back.
+    NULL is every group until then, and every group the user removed by hand.
+    """
+    connection.execute("ALTER TABLE groups ADD COLUMN left_at TEXT")
+
+
 # Index i applies when user_version == i, and bumps it to i + 1.
 MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _migration_001,
@@ -458,6 +470,7 @@ MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _migration_013,
     _migration_014,
     _migration_015,
+    _migration_016,
 ]
 
 LATEST_VERSION = len(MIGRATIONS)

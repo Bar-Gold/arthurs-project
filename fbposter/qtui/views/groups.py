@@ -476,10 +476,11 @@ class GroupsView(QWidget):
         )
 
     def import_from_facebook(self, automatic: bool = False, daily: bool = False) -> None:
-        """Read every group the account is in, and add the ones not in the list.
+        """Read every group the account is in, add the ones not in the list,
+        and take off it the ones the account left (`_add_found`).
 
         New groups start ticked (the user's choice). A group the user removed
-        is never added back (`GroupRepo.import_found`). The automatic run after
+        is never added back (`GroupRepo.import_found`, `sync_with`). The automatic run after
         the first login says nothing when it fails: it is tried again at the
         next connection, and the client never asked for it.
 
@@ -539,29 +540,56 @@ class GroupsView(QWidget):
         self.app.settings_repo.set(GROUPS_CHECKED_KEY, to_iso(clock.utcnow()))
 
     def _add_found(self, result, automatic: bool, tick: bool = True) -> None:
-        new = self.app.group_repo.import_found(
-            (found.ref.identifier, found.ref.url, found.name) for found in result.groups
-        )
+        """Add what is new, and take off the list the groups the account left.
+
+        Taking off needs a read that got every group the page counts
+        (`FoundGroups.complete`), because a group the read missed would be
+        taken off a list it belongs on; a short read only adds. A group taken
+        off keeps its history and comes back if the account rejoins
+        (`GroupRepo.sync_with`, the user's choices, 2026-11-09).
+        """
+        found = [(f.ref.identifier, f.ref.url, f.name) for f in result.groups]
+        if result.complete:
+            sync = self.app.group_repo.sync_with(found)
+            new, left = sync.added + sync.rejoined, sync.left
+        else:
+            new, left = self.app.group_repo.import_found(found), {}
         self.app.settings_repo.set(IMPORT_PENDING_KEY, "0")
         if tick:
             for group in new:
                 self.app.set_group_selected(group.id, True)
+        for group_id in left:
+            self.app.set_group_selected(group_id, False)
         self.refresh()
         count = len(new)
+        parts = []
         if count and not tick:
-            message = (
+            parts.append(
                 f"Found {count} new Facebook group{'s' if count != 1 else ''} you "
                 "joined. Added to your groups, not ticked."
             )
         elif count:
-            message = (
+            parts.append(
                 f"Added {count} of your Facebook group{'s' if count != 1 else ''}, "
                 "all ticked. Untick any you do not want to post to."
             )
-        elif automatic:
-            return  # nothing new, and nobody asked
-        else:
-            message = "No new groups found. Every group you are in is already in the list."
+        if left:
+            gone = len(left)
+            removals = left.values()
+            listed = taken_out_of(
+                len({row[0] for r in removals for row in r.schedule_rows}),
+                len({task_id for r in removals for task_id in r.batch_ids}),
+                len({row[0] for r in removals for row in r.set_rows}),
+            )
+            parts.append(
+                f"Took {gone} group{'s' if gone != 1 else ''} you are no longer in "
+                "off your list" + (f", and out of {listed}." if listed else ".")
+            )
+        if not parts:
+            if automatic:
+                return  # nothing new, and nobody asked
+            parts.append("No new groups found. Every group you are in is already in the list.")
+        message = " ".join(parts)
         short = result.expected is not None and len(result.groups) < result.expected
         if short:
             message += (
