@@ -82,6 +82,23 @@ powershell -ExecutionPolicy Bypass -File packaging\build.ps1 -SkipInstaller  # .
 
 `probe` and `dry-run` are the tools for re-checking selectors whenever Facebook changes its markup. Reach for them before touching `poster.py`.
 
+### "Check if Facebook moved something"
+
+When the user says that (or anything like it), it means **every place the app reads or clicks on a Facebook page**, and there is one command for it (the user's request, 2026-11-10; `fbposter/fbcheck.py`):
+
+```powershell
+.\.venv\Scripts\python.exe main.py check-facebook          # never posts
+.\.venv\Scripts\python.exe main.py check-facebook --post   # plus ONE real post to TRY
+```
+
+1. **Close the app first** (it shares Chrome, and the check must never overlap a real post), then `main.py launch` if Chrome closed with it.
+2. **Run it without `--post`.** On the test group TRY it checks the login, the home page and the account's name, the "Your groups" list (count, names, requests left out), a group's name and member count, the "not available" page, the post box and its buttons, typing, attaching a picture and `checkup/five_second.mp4`, the upload bar, ticking bar-test in Add groups, the Post button ready (never pressed), throwing the draft away, and the "Your content" pages. A checkpoint, login page or block stops it; nothing clicks through one.
+3. **Ask the user before `--post`**, every time (their choice). It is the only way to check Facebook's reply to the Post click, the post's link and the post on "Your content".
+4. **For every FAILED step, read the live page before changing anything** (a read-only script on the app's Chrome, as in `automation.md`), because a failure can be the check's own mistake: on its first run two were (a page read before its words loaded, and Pending being "not available" in a group that holds no posts). Fix `strings.py` or the selector, add the word in all three languages only as read live, rerun the check, then the suite.
+5. **Say what `NOT_CHECKABLE` lists** as not checked (security checks, blocks, posts held for an admin).
+
+`tests/test_fbcheck.py` fails when a Facebook string, a page script or a `GroupPoster` step is added that no check covers and `NOT_CHECKABLE` does not explain. Add it to a check's `covers` (and make the check exercise it), never just to the list.
+
 `status` exits 0 when logged in, 1 when not, 2 on error (Chrome not running, etc.).
 
 There is no linter or formatter configured, and no pytest config file. The suite is the whole check. Baseline: **about 2200 tests, about 35s with `-n auto`** on 8 cores, about 2 minutes on one. Leave `-n auto` off for one file or one test: starting the workers costs more than it saves. A full run of *two minutes or more* with `-n auto` means something is reaching the network (see the `SilentNamer` note in `.claude/rules/ui.md`), or a test window is not being thrown away (see `.claude/rules/testing.md`).

@@ -1,7 +1,8 @@
 ---
 paths:
   - "fbposter/automation/**"
-  - "fbposter/{strings,groups,media}.py"
+  - "fbposter/{strings,groups,media,fbcheck}.py"
+  - "tests/test_fbcheck.py"
   - "tests/fake_page.py"
   - "tests/test_{poster,detect,humanize,groupinfo,group_import,groups,video,together}.py"
 ---

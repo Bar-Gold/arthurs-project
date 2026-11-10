@@ -7,6 +7,7 @@
     python main.py status    attach over CDP and report on the Facebook session
     python main.py probe     check the composer selectors resolve (types nothing)
     python main.py dry-run   full rehearsal that never clicks Post
+    python main.py check-facebook   has Facebook moved anything the app uses?
 """
 
 from __future__ import annotations
@@ -217,6 +218,45 @@ def cmd_dry_run(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_check_facebook(args: argparse.Namespace) -> int:
+    """Every place the app reads or clicks on Facebook, checked on the test group."""
+    from fbposter import fbcheck
+
+    _require_chrome()
+    options = fbcheck.Options(
+        group_url=args.group or fbcheck.TEST_GROUP_URL,
+        group_name=args.name or fbcheck.TEST_GROUP_NAME,
+        second_name=args.second or fbcheck.SECOND_GROUP_NAME,
+        video=Path(args.video) if args.video else fbcheck.TEST_VIDEO,
+        post=args.post,
+    )
+    print(
+        f"Checking everything the app does on Facebook, in '{options.group_name}'.\n"
+        + ("ONE REAL POST will be made there at the end.\n" if options.post
+           else "Nothing is posted: the draft is thrown away before Post.\n")
+    )
+
+    def show(result) -> None:
+        mark = {fbcheck.OK: "ok", fbcheck.FAILED: "FAILED", fbcheck.SKIPPED: "skipped"}
+        print(f"  [{mark[result.status]}] {result.title}")
+        if result.detail:
+            print(f"        {result.detail}")
+
+    with session.attach() as context:
+        page = _new_page(context)
+        try:
+            results = fbcheck.run_checks(context, page, options, report=show)
+        finally:
+            page.close()
+
+    print("\nNot checkable on demand:")
+    for name, why in fbcheck.NOT_CHECKABLE.items():
+        print(f"  {name}: {why}")
+    failed = [r for r in results if r.status == fbcheck.FAILED]
+    print(f"\n{len(failed)} failed." if failed else "\nNothing has moved.")
+    return 1 if failed else 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="main.py",
@@ -267,6 +307,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="also tick this group (its name on Facebook) in Add groups; repeat for several",
     )
     dry_run.set_defaults(func=cmd_dry_run)
+
+    check = subparsers.add_parser(
+        "check-facebook",
+        help="check every place the app reads or clicks on Facebook (posts only with --post)",
+    )
+    check.add_argument("--post", action="store_true",
+                       help="also make ONE real post to the test group")
+    check.add_argument("--group", help="the test group's URL (default: TRY)")
+    check.add_argument("--name", help="the test group's name on Facebook")
+    check.add_argument("--second", help="the group to tick in Add groups (default: bar-test)")
+    check.add_argument("--video", help="a short video to attach (default: checkup/five_second.mp4)")
+    check.set_defaults(func=cmd_check_facebook)
 
     return parser
 
