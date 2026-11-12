@@ -25,6 +25,7 @@ without a browser, a real clock, or a thread.
 
 from __future__ import annotations
 
+import logging
 import queue
 import threading
 import time
@@ -142,6 +143,8 @@ FOLLOW_UP_GIVE_UP = timedelta(days=30)
 MISSES_BEFORE_DECLINED = 2
 
 FINISHED_STATES = {TASK_DONE, TASK_HALTED, TASK_CANCELLED, TASK_MISSED}
+
+log = logging.getLogger(__name__)
 
 # "1" while the user has paused posting. Stored rather than held in memory,
 # because the app restarts on its own -- the logon task, a Windows Update
@@ -376,6 +379,12 @@ class PostingWorker:
         self.settings.set(PAUSED_KEY, "0")
 
     def emit(self, kind: str, message: str, task_id: int | None = None, target_id: int | None = None) -> None:
+        # Every event goes in the log file too (`applog`), so a client's log
+        # tells the batch's whole story in the order it happened.
+        log.log(
+            logging.WARNING if kind in ("error", "not_posted", "unconfirmed") else logging.INFO,
+            "[%s] batch %s, group turn %s: %s", kind, task_id, target_id, message,
+        )
         self.events.put(WorkerEvent(kind, message, task_id, target_id))
 
     # -- the loop ----------------------------------------------------------
@@ -398,11 +407,13 @@ class PostingWorker:
                 try:
                     self.recover()
                 except Exception as exc:  # never let the thread die silently
+                    log.exception("Recovery failed")
                     self.emit("error", f"Recovery failed: {exc}")
 
             try:
                 did_work = self.run_once()
             except Exception as exc:
+                log.exception("Scheduler error")
                 self.emit("error", f"Scheduler error: {exc}")
                 did_work = False
 
@@ -1066,6 +1077,15 @@ class PostingWorker:
             ),
         )
 
+        log.info(
+            "Post: batch %s, %d picture(s) or video(s), speed %s, several at once %s. "
+            "First group: %s (%s). Also ticking %d: %s",
+            task.id, len(request.media_paths),
+            self.settings.get(pace.SPEED_KEY, "") or "default",
+            self.settings.get(pace.TOGETHER_KEY, pace.TOGETHER_DEFAULT),
+            group.name, group.url, len(together),
+            "; ".join(f"{g.name} ({g.url})" for _o, g in together) or "none",
+        )
         try:
             outcome = self.poster.post(request)
         except ConnectionFailed as exc:
@@ -1108,9 +1128,12 @@ class PostingWorker:
             self._settle_companions(together, request, str(exc), exc.may_have_posted)
             return self._not_posted(task, target, group, str(exc), exc.may_have_posted)
         except PostNotVerified as exc:
+            # With what lay under it, when something raised after the click.
+            log.warning("Post not verified at %s", group.name, exc_info=exc)
             self._settle_companions(together, request, str(exc), exc.may_have_posted)
             return self._not_posted(task, target, group, str(exc), exc.may_have_posted)
         except Exception as exc:
+            log.exception("Not posted to %s", group.name)
             self._settle_companions(together, request, _readable(exc), False)
             return self._not_posted(task, target, group, _readable(exc), False)
         except BaseException as exc:
@@ -1331,8 +1354,15 @@ class PostingWorker:
         for other, other_group in together:
             result = results.get(other_group.url)
             if result is None or not result.posted:
+                log.info("Add groups: %s was not ticked, back in the queue.", other_group.name)
                 self.tasks.release_target(other.id)
                 continue
+            log.info(
+                "Add groups: %s %s. %s", other_group.name,
+                "held for an admin" if result.pending
+                else "might have posted" if result.unconfirmed else "posted",
+                result.detail,
+            )
             went += 1
             if result.pending:
                 self._record_sent(

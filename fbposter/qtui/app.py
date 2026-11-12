@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .. import always_on, chrome, clock, config, keepalive, login, onboarding, power, session, tabs
+from .. import always_on, applog, chrome, clock, config, keepalive, login, onboarding, power, session, tabs
 from ..automation.groupfinder import LiveGroupFinder
 from ..automation.groupinfo import LiveGroupNamer
 from ..db import Database
@@ -1198,6 +1198,10 @@ def run() -> int:
         )
         box.exec()
         return 1
+
+    # After the lock: one app writes the log, so turning it over to a new file
+    # never meets a second copy holding it open.
+    applog.start()
 
     theme.activate()
     theme.load_fonts()

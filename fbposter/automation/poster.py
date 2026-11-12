@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Sequence
@@ -29,6 +30,8 @@ from ..errors import (
 from ..text import strip_invisible
 from .detect import PageVerdict, classify, halt_message
 from .humanize import Humanizer
+
+log = logging.getLogger(__name__)
 
 NAV_TIMEOUT_MS = 45_000
 # Generous on purpose. These were 15s and a slow connection blew straight
@@ -287,6 +290,11 @@ def read_created_post(reply_text: str, group_url: str = "") -> CreatedPost | Non
         if post_id and group_url:
             return CreatedPost(group_url.rstrip("/") + f"/permalink/{post_id}/")
     return None
+
+
+def _first_line(exc: Exception) -> str:
+    text = str(exc).strip()
+    return text.splitlines()[0][:200] if text else type(exc).__name__
 
 
 def _call_name(request: Any) -> str:
@@ -766,6 +774,20 @@ class GroupPoster:
             found = matching()
         return found
 
+    def _row_names(self, picker: Any) -> str:
+        """The names the list is showing, for the log when a search found no
+        single match. Never raises: it only explains."""
+        try:
+            rows = picker.get_by_role("button").filter(
+                has=self.page.locator('input[type="checkbox"]')
+            )
+            names = []
+            for index in range(min(rows.count(), 12)):
+                names.append((rows.nth(index).inner_text() or "").strip().split("\n")[0])
+            return " | ".join(names) or "(no rows)"
+        except Exception as exc:
+            return f"(could not read the rows: {type(exc).__name__})"
+
     def _becomes_checked(self, box: Any) -> bool:
         waited = 0
         while waited < TICK_WAIT_MS:
@@ -801,6 +823,7 @@ class GroupPoster:
             return []
         button = self._find_add_groups(dialog)
         if button is None:
+            log.warning("Add groups: no Add groups button in the post window; posting to one group.")
             return []
         self.human.hover_then_click(button)
         picker = self._picker()
@@ -816,6 +839,10 @@ class GroupPoster:
                 self.not_ticked[companion.name] = (
                     "no group in the list has exactly this name" if not matches
                     else "more than one group in the list has this name"
+                )
+                log.info(
+                    "Add groups: %s not ticked, %s. The list showed: %s",
+                    companion.name, self.not_ticked[companion.name], self._row_names(picker),
                 )
                 continue
             row = matches[0]
@@ -851,6 +878,7 @@ class GroupPoster:
                 added.append(companion.group_url)
             else:
                 self.not_ticked[companion.name] = "the tick did not take"
+                log.info("Add groups: %s not ticked, the tick did not take.", companion.name)
 
         self._search_for(search, "")
         done = self._first_present(
@@ -861,6 +889,10 @@ class GroupPoster:
                 "The list of groups to add had no Done button. Facebook may have "
                 "changed its page. Nothing was posted."
             )
+        log.info(
+            "Add groups: ticked %d of %d: %s", len(ticked), len(companions),
+            "; ".join(c.name for c in ticked) or "none",
+        )
         self.human.hover_then_click(done)
         # The list is a view inside the post window, which stays: the search
         # box going from sight is the sign it closed (read live 2026-11-03).
@@ -1272,6 +1304,7 @@ class GroupPoster:
                         posted=True, unconfirmed=True, detail=TOGETHER_UNCHECKED
                     )
                 except Exception:
+                    log.exception("Checking %s after the post failed", companion.name)
                     results[companion.group_url] = PostOutcome(
                         posted=True, unconfirmed=True, detail=TOGETHER_UNCHECKED
                     )
@@ -1339,12 +1372,22 @@ class GroupPoster:
             try:
                 self.page.goto(url, timeout=NAV_TIMEOUT_MS, wait_until="domcontentloaded")
                 self.page.wait_for_timeout(FEED_SETTLE_MS)
-            except Exception:
+            except Exception as exc:
+                log.info("Check %s: %s would not load: %s", companion.name, url, _first_line(exc))
                 continue
-            verdict = classify(self.page.url, self._page_text())
+            text = self._page_text()
+            verdict = classify(self.page.url, text)
             if not verdict.is_ok and verdict is not PageVerdict.UNAVAILABLE:
                 raise AutomationHalted(verdict, halt_message(verdict))
             if not self._shows(snippet):
+                # What the page said instead, so the log shows whether it was
+                # empty, still loading, or somewhere else.
+                log.info(
+                    "Check %s: not on %s (landed on %s, %s, %d characters). "
+                    "Looked for: %r. The page began: %r",
+                    companion.name, url, self.page.url, verdict.name, len(text),
+                    snippet[:80], " ".join(text.split())[:300],
+                )
                 continue
             if held:
                 return self._pending_outcome()
