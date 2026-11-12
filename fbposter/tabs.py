@@ -217,7 +217,10 @@ def started_on(argv: list[str], profile_dir: Path) -> bool:
 
 def _same_path(a: str, b: Path) -> bool:
     def norm(p: str) -> str:
-        return os.path.normcase(os.path.normpath(p)).rstrip("\\/")
+        text = os.path.normcase(os.path.normpath(p)).rstrip("\\/")
+        # A Mac disk ignores case too, as Windows does, but normcase there
+        # leaves it alone.
+        return text.lower() if config.IS_MAC else text
 
     return bool(a) and norm(a) == norm(str(b))
 
@@ -250,9 +253,14 @@ def command_line(pid: int) -> list[str] | None:
     """The command line a running process was started with, split into args.
 
     Read from Windows itself: NtQueryInformationProcess for the text, then
-    CommandLineToArgvW to split it exactly as the process saw it. None when it
-    cannot be read -- which counts as "not the app's Chrome".
+    CommandLineToArgvW to split it exactly as the process saw it. On a Mac,
+    from macOS (`macos.command_line`). None when it cannot be read -- which
+    counts as "not the app's Chrome".
     """
+    if config.IS_MAC:
+        from . import macos
+
+        return macos.command_line(pid)
     if os.name != "nt":
         return None
     from ctypes import wintypes

@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .. import always_on, chrome, clock, config, keepalive, login, onboarding, power, session, tabs
+from .. import always_on, chrome, clock, config, keepalive, login, macos, onboarding, power, session, tabs
 from ..automation.groupfinder import LiveGroupFinder
 from ..automation.groupinfo import LiveGroupNamer
 from ..db import Database
@@ -136,7 +136,8 @@ NAV_HINTS = {
     "group_sets": "Keep groups together, to pick as one",
     "repeating": "Pause, edit or delete the posts that repeat",
     "tips": "Advice for posting safely, in Hebrew, English or Russian",
-    "settings": "Pause posting, the Facebook account, and this PC",
+    "settings": "Pause posting, the Facebook account, and this "
+    + ("Mac" if config.IS_MAC else "PC"),
 }
 
 PILL_STATES: dict[ConnectionState, tuple[str, str, str]] = {
@@ -705,7 +706,7 @@ class App(QMainWindow):
 
     def _report_stuck(self, detail: str | None) -> None:
         detail = detail or (
-            "Chrome is not answering. Close it from the taskbar and the app "
+            f"Chrome is not answering. Close it from the {TASKBAR} and the app "
             "will start it again."
         )
         self.connection_result = ConnectionResult(ConnectionState.ERROR, detail)
@@ -1171,6 +1172,10 @@ def ask_before_closing(parent, waiting: str) -> bool:
     return box.clickedButton() is go
 
 
+# Where the user finds a running app's window: the Dock on a Mac.
+TASKBAR = "Dock" if config.IS_MAC else "taskbar"
+
+
 def run() -> int:
     """Launch the GUI. Returns an exit code."""
     import sys
@@ -1193,7 +1198,7 @@ def run() -> int:
         box = QMessageBox(QMessageBox.Information, APP_TITLE,
                           "The auto-poster is already running.")
         box.setInformativeText(
-            "Look for its window in the taskbar. Two copies would mean two "
+            f"Look for its window in the {TASKBAR}. Two copies would mean two "
             "schedulers sharing one database, so this one will close."
         )
         box.exec()
@@ -1217,8 +1222,17 @@ def run() -> int:
     window.group_finder = LiveGroupFinder()
     window._restart_chrome = lambda: tabs.restart_chrome()
     window._close_chrome = lambda: tabs.close_chrome()
-    window.always_on = always_on.AlwaysOn()
+    window.always_on = always_on.for_this_computer()
     session.before_attach = tabs.clear_stuck_tabs
+    if config.IS_MAC:
+        # Chrome is hidden rather than parked off-screen on a Mac, and un-hides
+        # itself when a tab opens, so each tab the app opens hides it again,
+        # and the login shows it (macos.py). Wired here only, like the rest.
+        session.after_new_page = macos.hide_app_chrome
+        login.show_window = macos.show_app_chrome
+        # The Mac stays awake while the app is open, never longer: caffeinate
+        # ends by itself with this process (the user's choice, 2026-11-12).
+        window._keep_awake = macos.keep_awake_while_running()
     # Maximised, not full screen: the title bar and the taskbar stay (the
     # user's choice, 2026-11-01). Un-maximised it falls back to WINDOW_DEFAULT.
     window.showMaximized()

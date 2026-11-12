@@ -30,12 +30,20 @@ only because they just pressed a button that says a Chrome window will open.
 
 from __future__ import annotations
 
+from typing import Callable
+
 from . import chrome, config, session, strings
 from .errors import ChromeNotFoundError, FBPosterError
 
+# Un-hides the app's Chrome and puts it in front, once the login window has
+# been opened. Only a Mac needs it (Chrome there is hidden rather than parked
+# off-screen, see macos.py), so `qtui.app.run()` sets it to
+# `macos.show_app_chrome` there. Inert by default, like `session.before_attach`.
+show_window: Callable[[], object] | None = None
+
 
 def chrome_installed() -> bool:
-    """Whether chrome.exe exists anywhere the app knows to look."""
+    """Whether Chrome is installed anywhere the app knows to look."""
     try:
         chrome.find_chrome()
     except ChromeNotFoundError:
@@ -95,7 +103,8 @@ def hide_login_window() -> None:
     """
     try:
         with session.attach() as context:
-            page = context.new_page()
+            # Through session.new_page, which on a Mac also hides Chrome again.
+            page = session.new_page(context)
             try:
                 _set_bounds(context, page, config.OFFSCREEN_BOUNDS)
             finally:
@@ -116,6 +125,11 @@ def _open_facebook(*, move_on_screen: bool, sign_out_first: bool = False) -> Non
                 "The Chrome window this app uses is open but could not be brought "
                 "on screen. Close every Chrome window, then press the button again."
             )
+        if show_window is not None:
+            try:
+                show_window()  # the user just pressed the button for this window
+            except Exception:
+                pass
         if sign_out_first:
             # Before the navigation, never after. Cleared afterwards, the page
             # in front of the user is still the old account's feed, and the

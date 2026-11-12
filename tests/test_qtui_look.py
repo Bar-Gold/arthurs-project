@@ -280,8 +280,13 @@ class TestTheSettingsPage:
     def test_each_control_sits_at_the_right_of_its_row(self, qt_app):
         from PySide6.QtCore import Qt
 
+        from fbposter import config
+
         settings = qt_app.views["settings"]
-        for control in (settings.autostart_box, settings.awake_box):
+        # A Mac has no keep-awake switch: the app keeps it awake while open.
+        controls = (settings.autostart_box,) if config.IS_MAC else (
+            settings.autostart_box, settings.awake_box)
+        for control in controls:
             line = control.parentWidget().layout()
             last = line.itemAt(line.count() - 1)
             assert last.widget() is control, control.accessibleName()

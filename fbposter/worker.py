@@ -250,7 +250,7 @@ class LivePoster:
         hanging it from being cleared (see tabs.py).
         """
         with session.attach() as context, tabs.posting():
-            page = context.new_page()
+            page = session.new_page(context)
             try:
                 yield page
             finally:
@@ -442,7 +442,7 @@ class PostingWorker:
         self._battery_warned = True
         self.emit(
             "power",
-            "Posting on battery. Windows can still suspend the machine and cut "
+            "Posting on battery. The computer can still go to sleep and cut "
             "the batch short. Plug in to be sure it finishes.",
         )
 

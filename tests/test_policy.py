@@ -55,6 +55,18 @@ class TestTheInstallerShowsIt:
             assert f'"{label}"' in half
 
 
+    def test_the_mac_button_is_named_too(self):
+        """The Mac installer (build_mac.sh) has no wording of its own: macOS
+        draws the licence buttons itself, "Agree" in English, so both
+        languages quote that as well (2026-11-12)."""
+        for half in halves():
+            assert f'"{MAC_AGREE}"' in half
+
+
+# The button macOS's own installer accepts a licence with, in English.
+MAC_AGREE = "Agree"
+
+
 class TestWhatItSays:
     def test_both_languages_name_the_seller(self):
         hebrew, english = halves()

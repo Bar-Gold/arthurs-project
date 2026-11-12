@@ -42,6 +42,27 @@ if TYPE_CHECKING:  # annotations only -- `from __future__ import annotations`
 # running on the machine.
 before_attach: Callable[[], object] | None = None
 
+# Run after the app opens a tab of its own (`new_page`). On a Mac, Chrome
+# un-hides itself whenever a tab opens, so `qtui.app.run()` sets this to
+# `macos.hide_app_chrome` there (see macos.py). Inert by default for the same
+# reason as `before_attach`: no test may hide a Chrome running on the machine.
+after_new_page: Callable[[], object] | None = None
+
+
+def new_page(context):
+    """Open a tab of the app's own, and keep its Chrome out of sight.
+
+    Every tab the app opens for work goes through here. The login window does
+    not (`login.py`): that one is opened to be seen.
+    """
+    page = context.new_page()
+    if after_new_page is not None:
+        try:
+            after_new_page()
+        except Exception:
+            pass  # hiding a window must never be what stops a post
+    return page
+
 
 class UrlVerdict(enum.Enum):
     """What the URL Facebook actually served tells us about the session."""
@@ -157,7 +178,7 @@ def verify_session(context: BrowserContext) -> SessionStatus:
     # session is still good server-side. Uses its own page rather than
     # contexts[0].pages[0], which may be something the user has open, and never
     # calls bring_to_front -- the window must stay in the background.
-    page = context.new_page()
+    page = new_page(context)
     try:
         page.goto(
             strings.HOME_URL,

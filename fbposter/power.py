@@ -15,12 +15,18 @@ through it, mid-batch and all. So on a laptop this API is not the answer --
 the power plan is, and `scripts/setup_always_on.ps1` is what sets it. The job
 left here is to stop an idle machine dozing off mid-batch, and to notice when
 that plan does not apply because the thing is running on battery.
+
+**On a Mac** `SleepBlocker` holds nothing: the app keeps the Mac awake for as
+long as it is open instead (`macos.keep_awake_while_running`, started by
+`qtui.app.run()`), which is what the user asked for (2026-11-12). Closing the
+lid still sleeps it, and the screen still turns off.
 """
 
 from __future__ import annotations
 
 import ctypes
 import os
+import sys
 from ctypes import wintypes
 
 # https://learn.microsoft.com/windows/win32/api/winbase/nf-winbase-setthreadexecutionstate
@@ -60,7 +66,20 @@ class SYSTEM_POWER_STATUS(ctypes.Structure):
 
 
 def read_ac_line_status() -> int | None:
-    """Windows' own answer, or None where the question cannot be asked."""
+    """Windows' own answer, or None where the question cannot be asked.
+
+    On a Mac, macOS's answer (`pmset`) in Windows' terms, so `on_battery`
+    needs no second version.
+    """
+    if sys.platform == "darwin":
+        from . import macos
+
+        source = macos.power_source()
+        if source == "AC Power":
+            return AC_ONLINE
+        if source == "Battery Power":
+            return AC_OFFLINE
+        return None
     if os.name != "nt":
         return None
     try:

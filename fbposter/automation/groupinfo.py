@@ -187,7 +187,7 @@ class LiveGroupNamer:
                 try:
                     for url in group_urls:
                         if page is None:
-                            page = context.new_page()
+                            page = session.new_page(context)
                         try:
                             # "commit", not "domcontentloaded": the heading is
                             # watched for from the first byte, and read as

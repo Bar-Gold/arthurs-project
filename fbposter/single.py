@@ -14,11 +14,18 @@ about what is queued.
 A Windows named mutex rather than a lock file, because the kernel drops it when
 the process ends however it ends. A lock file left behind by a crash would tell
 the user their app is already running when it is not.
+
+On a Mac the same promise comes from `flock` on a file in /tmp: it is the lock,
+not the file, that says "running", and macOS drops the lock when the process
+ends however it ends. The file left behind holds nothing. /tmp is shared by
+every account on the Mac, like the "Global" names on Windows.
 """
 
 from __future__ import annotations
 
 import ctypes
+import re
+import sys
 from ctypes import wintypes
 
 # One name per machine. Not per user: two accounts sharing C:\FBAutomation
@@ -42,6 +49,8 @@ class SingleInstance:
         self.acquired = self._acquire()
 
     def _acquire(self) -> bool:
+        if sys.platform == "darwin":
+            return self._acquire_mac()
         try:
             kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
             kernel32.CreateMutexW.argtypes = (
@@ -62,8 +71,40 @@ class SingleInstance:
             # prevents the duplicate that actually matters.
             return True
 
+    def _acquire_mac(self) -> bool:
+        import fcntl
+        import os
+
+        safe = re.sub(r"[^A-Za-z0-9._-]+", "_", self.name)
+        path = os.path.join("/tmp", f"{safe}.lock")
+        try:
+            handle = os.open(path, os.O_RDWR | os.O_CREAT, 0o666)
+        except OSError:
+            return True  # could not lock at all; do not block the user
+        try:
+            # Its own open file, so a second holder in this same process is
+            # refused too (flock is per open file, unlike fcntl locks).
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            os.close(handle)
+            return False
+        except OSError:
+            os.close(handle)
+            return True
+        self._handle = handle
+        return True
+
     def release(self) -> None:
         if self._handle is None:
+            return
+        if sys.platform == "darwin":
+            import os
+
+            try:
+                os.close(self._handle)  # closing the file drops the lock
+            except OSError:
+                pass
+            self._handle = None
             return
         try:
             ctypes.WinDLL("kernel32").CloseHandle(self._handle)

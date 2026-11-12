@@ -31,7 +31,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from fbposter import onboarding, pace
+from fbposter import config, onboarding, pace
 from fbposter.clock import sane_hour as clock_hour
 from fbposter.connection import ConnectionState
 
@@ -76,6 +76,18 @@ AUTOSTART_HELP = (
     "Windows restarts for an update. Nothing starts until somebody has signed "
     "in to Windows."
 )
+# On a Mac (2026-11-12): starting at login is a LaunchAgent, and there is no
+# keep-awake switch, because the app keeps the Mac awake while it is open.
+MAC_CARD_TITLE = "This Mac"
+MAC_AUTOSTART_LABEL = "Start the app when I log in to this Mac"
+MAC_AUTOSTART_HELP = (
+    "Opens the app when you log in, so posting carries on after the Mac "
+    "restarts. While the app is open the Mac does not fall asleep by itself; "
+    "closing the lid still puts it to sleep."
+)
+# What the "busy" and "could not tell" lines call the computer's system.
+SYSTEM_NAME = "macOS" if config.IS_MAC else "Windows"
+
 AWAKE_LABEL = "Keep this PC awake"
 AWAKE_HELP = (
     "Nothing posts while the PC is asleep. Plugged in, it stays awake with the "
@@ -131,7 +143,7 @@ class SettingsView(QWidget):
     title = "Settings"
     subtitle = (
         "Whether the app is posting, how fast and when, the account it posts "
-        "as, and this PC."
+        "as, and this " + ("Mac." if config.IS_MAC else "PC.")
     )
 
     def __init__(self, app) -> None:
@@ -321,18 +333,22 @@ class SettingsView(QWidget):
         return box
 
     def _build_pc(self) -> QWidget:
-        box, inner = self._card("This PC")
-        # Switches, not checkboxes: each one changes Windows the moment it is
-        # flipped, with nothing to save.
-        self.autostart_box = Switch(AUTOSTART_LABEL)
+        mac = config.IS_MAC
+        box, inner = self._card(MAC_CARD_TITLE if mac else "This PC")
+        # Switches, not checkboxes: each one changes the computer the moment
+        # it is flipped, with nothing to save.
+        label = MAC_AUTOSTART_LABEL if mac else AUTOSTART_LABEL
+        self.autostart_box = Switch(label)
         self.autostart_box.clicked.connect(self.set_autostart)
         inner.addWidget(self._setting(
-            AUTOSTART_LABEL, self.autostart_box, self._muted(AUTOSTART_HELP)
+            label, self.autostart_box,
+            self._muted(MAC_AUTOSTART_HELP if mac else AUTOSTART_HELP),
         ))
         self.awake_box = Switch(AWAKE_LABEL)
         self.awake_box.clicked.connect(self.set_keep_awake)
-        self._divider(inner)
-        inner.addWidget(self._setting(AWAKE_LABEL, self.awake_box, self._muted(AWAKE_HELP)))
+        if not mac:  # on a Mac it is always on while the app is open
+            self._divider(inner)
+            inner.addWidget(self._setting(AWAKE_LABEL, self.awake_box, self._muted(AWAKE_HELP)))
         self.pc_note = self._muted()
         self.pc_note.setContentsMargins(0, theme.PAD_S, 0, 0)
         self.pc_note.setVisible(False)
@@ -510,7 +526,7 @@ class SettingsView(QWidget):
 
     # -- this PC -----------------------------------------------------------
     def load_pc(self) -> None:
-        """Read where things stand, off the drawing thread: it asks Windows."""
+        """Read where things stand, off the drawing thread: it asks the system."""
         if self._pc_busy:
             return
         self._set_pc_busy(True, "")
@@ -531,7 +547,7 @@ class SettingsView(QWidget):
     def _change_pc(self, change, done_message: str) -> None:
         if self._pc_busy:
             return
-        self._set_pc_busy(True, "Changing Windows settings…")
+        self._set_pc_busy(True, f"Changing {SYSTEM_NAME} settings…")
 
         def work():
             change()
@@ -548,7 +564,9 @@ class SettingsView(QWidget):
         self.autostart_box.setChecked(bool(status.autostart))
         self.awake_box.setChecked(status.keep_awake)
         if status.autostart is None:
-            self._set_pc_note("Windows did not say whether the app starts when you sign in.")
+            self._set_pc_note(
+                f"{SYSTEM_NAME} did not say whether the app starts when you sign in."
+            )
 
     def _on_pc_failed(self, exc: Exception) -> None:
         self._set_pc_busy(False, "")

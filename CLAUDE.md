@@ -40,7 +40,7 @@ Each is spelled out in its rule file. These are the ones no change may break:
 
 ## What This Is
 
-A local, single-user Windows desktop app (Python 3.10+, Qt/PySide6) that posts text and media to Facebook groups on a schedule, by driving a real logged-in Chrome session through Playwright over CDP. Everything runs on the user's machine. No server, no cloud, no automated login.
+A local, single-user desktop app for Windows and, since 2026-11-12, macOS (Python 3.10+, Qt/PySide6) that posts text and media to Facebook groups on a schedule, by driving a real logged-in Chrome session through Playwright over CDP. Everything runs on the user's machine. No server, no cloud, no automated login.
 
 ## Commands
 
@@ -101,6 +101,28 @@ When the user says that (or anything like it), it means **every place the app re
 
 `status` exits 0 when logged in, 1 when not, 2 on error (Chrome not running, etc.).
 
+### On a Mac
+
+The same commands, with the Mac's paths. Python comes from `uv` (no admin password; this Mac's own Python was 3.9):
+
+```bash
+uv venv --python 3.12 .venv && uv pip install --python .venv/bin/python -r requirements.txt
+.venv/bin/python -m pytest tests/ -q -n auto
+.venv/bin/python main.py start
+packaging/build_mac.sh --clean    # suite, PyInstaller, .pkg: dist/FacebookAutoPoster-Setup-<v>-mac-<arch>.pkg
+```
+
+What is different on a Mac, all of it in `fbposter/macos.py` or behind `config.IS_MAC`, and Windows unchanged:
+
+- **Data** lives in `~/Library/Application Support/FBAutomation/` (profile, database, `media/`). Chrome is `/Applications/Google Chrome.app` or `~/Applications/...`.
+- **The app's Chrome is hidden, not off-screen**, because macOS will not put a window off-screen (`macos.py` has what was verified). Started with `open -n -g`, parked as far left as macOS allows, then hidden like Cmd+H. Chrome un-hides itself whenever a tab opens, so **every tab the app opens for work goes through `session.new_page`**, which hides it again (`session.after_new_page`). Never call `context.new_page()` directly except for the login window, which `login.show_window` brings forward. Both seams are inert until `qtui.app.run()` sets them.
+- **The profile lock** is Chrome's `SingletonLock` link, not `lockfile`, and the process it names must be proven to be a Chrome on this profile (`macos.lock_owner`), because a crash leaves the link behind.
+- **The own-Chrome proof** reads the command line with `sysctl(KERN_PROCARGS2)` (`macos.command_line`), never by splitting `ps` output: "Application Support" has a space in it.
+- **One copy at a time** is `flock` on `/tmp/<name>.lock` (`single.py`), dropped by macOS when the process ends.
+- **Awake while the app is open** (the user's choice, 2026-11-12): `caffeinate -i -w <app pid>`, started by `run()`. Idle sleep only: the screen still turns off and closing the lid still sleeps the Mac. No switch for it on Settings; `SleepBlocker` holds nothing there. The battery warning reads `pmset -g batt`.
+- **Start at login** is a LaunchAgent in `~/Library/LaunchAgents` (`always_on.MacAlwaysOn`), no password.
+- **The font** is the Mac's own (`.AppleSystemUIFont`). Messages say "Dock" and "this Mac" where Windows says "taskbar" and "this PC".
+
 There is no linter or formatter configured, and no pytest config file. The suite is the whole check. Baseline: **about 2200 tests, about 35s with `-n auto`** on 8 cores, about 2 minutes on one. Leave `-n auto` off for one file or one test: starting the workers costs more than it saves. A full run of *two minutes or more* with `-n auto` means something is reaching the network (see the `SilentNamer` note in `.claude/rules/ui.md`), or a test window is not being thrown away (see `.claude/rules/testing.md`).
 
 **Do not add `playwright install`.** It is unnecessary and was verified so against Chrome 150: the app attaches to the user's real Chrome over CDP and never launches Playwright's bundled Chromium, so the driver shipped inside the pip package is all that is required.
@@ -125,7 +147,7 @@ Three layers that must stay separate:
 
 UI and worker communicate through a thread-safe queue. The tables as built are `groups`, `templates`, `tasks`, `task_targets`, `schedules`, `schedule_targets`, `settings`, `post_totals`, and for group sets `group_sets`, `group_set_members` and `schedule_sets`; `tags`, `group_tags` and `run_log` were cut (README §9 and §10). Do not write code expecting them.
 
-Core: `config.py` (paths, port, Chrome flags), `chrome.py` (find/launch Chrome, probe the debug port), `session.py` (CDP attach, `c_user` cookie check), `connection.py` (the check behind the connection pill: `ConnectionState`, `check_connection`), `strings.py` (every Facebook URL and UI string, in all three languages), `clock.py` (Israel-time judgement), `power.py` (`SleepBlocker`, `on_battery`), `always_on.py` (the Settings screen's start-with-Windows and keep-awake switches, which run `setup_always_on.ps1`), `recurrence.py` (repeating-schedule timing, pure), `stats.py` (the Dashboard's numbers, pure too), `groups.py` (group-URL parsing), `text.py` (the invisible-character list, and `normalise`), `tips.py` (the Posting tips words in three languages, pure), `pace.py` (the client's speed, quiet hours and posting to several groups at once, as stored on Settings, pure), `media.py` (picture or video, Facebook's 10 GB video limit, pure), `attachments.py` (keeping a post's pictures and videos in the app's own `media/` folder, beside the database; `data.md`), `single.py` (the one-app mutex), `onboarding.py` (what setup step the user is on, pure), `login.py` (putting a visible Chrome in front of them), `keepalive.py` (when to restart a Chrome that has closed, pure), `tabs.py` (finding and closing a tab that has stopped answering, the last-resort restart, and closing Chrome when the app closes), `cdp.py` (a DevTools client on the standard library, for when Playwright is the thing hanging), `errors.py`, `worker.py` (`PostingWorker` and `LivePoster`).
+Core: `config.py` (paths, port, Chrome flags, `IS_MAC`), `macos.py` (everything the app asks macOS: hiding Chrome, a process's command line, the profile lock, the power source, `caffeinate`), `chrome.py` (find/launch Chrome, probe the debug port), `session.py` (CDP attach, `c_user` cookie check), `connection.py` (the check behind the connection pill: `ConnectionState`, `check_connection`), `strings.py` (every Facebook URL and UI string, in all three languages), `clock.py` (Israel-time judgement), `power.py` (`SleepBlocker`, `on_battery`), `always_on.py` (the Settings screen's start-with-Windows and keep-awake switches, which run `setup_always_on.ps1`), `recurrence.py` (repeating-schedule timing, pure), `stats.py` (the Dashboard's numbers, pure too), `groups.py` (group-URL parsing), `text.py` (the invisible-character list, and `normalise`), `tips.py` (the Posting tips words in three languages, pure), `pace.py` (the client's speed, quiet hours and posting to several groups at once, as stored on Settings, pure), `media.py` (picture or video, Facebook's 10 GB video limit, pure), `attachments.py` (keeping a post's pictures and videos in the app's own `media/` folder, beside the database; `data.md`), `single.py` (the one-app mutex), `onboarding.py` (what setup step the user is on, pure), `login.py` (putting a visible Chrome in front of them), `keepalive.py` (when to restart a Chrome that has closed, pure), `tabs.py` (finding and closing a tab that has stopped answering, the last-resort restart, and closing Chrome when the app closes), `cdp.py` (a DevTools client on the standard library, for when Playwright is the thing hanging), `errors.py`, `worker.py` (`PostingWorker` and `LivePoster`).
 
 Scripts: `scripts/setup_always_on.ps1`: the laptop power plan and the logon task. See `.claude/rules/power.md`.
 

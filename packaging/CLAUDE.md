@@ -37,7 +37,7 @@ The app is shipped to a client as `dist\FacebookAutoPoster-Setup-x.y.z.exe`, bui
 
 - **Edit `policy.txt`, then run `make_policy.py`**, which writes `policy.rtf`. Never edit the RTF by hand. Plain text cannot run a paragraph right to left, so Hebrew came out aligned left with its full stops on the wrong side; the RTF gives each paragraph its direction from its first letter. `tests/test_policy.py` fails while the RTF is out of date, and checks that both languages quote the accept button (`LicenseAccepted`) word for word and have the same numbered clauses.
 - **It is a draft, not checked by a lawyer.** Under the standard contracts law a court can strike a clause that removes all liability, which is why it says "to the extent the law permits" and has a fallback cap (6.3: what the client paid in the last three months). Do not change what it promises without asking the user.
-- **Changing the wording means a new version number and date** at the top of both halves (9.3: the binding version is the one accepted at the last install). Version 2 (2026-11-03) added 7, the licence (one computer, one Facebook account, ends when payment stops), and 8, the client's data (stays on their computer; files sent for a bug deleted within 30 days).
+- **Changing the wording means a new version number and date** at the top of both halves (9.3: the binding version is the one accepted at the last install). Version 2 (2026-11-03) added 7, the licence (one computer, one Facebook account, ends when payment stops), and 8, the client's data (stays on their computer; files sent for a bug deleted within 30 days). Version 3 (2026-11-12) changed only 10, to name the Mac installer's "Agree" button beside the Windows one.
 
 **No setup guide is shipped** (the user's choice, 2026-10-19). A text guide used to open in Notepad at the end of the install, which looked unprofessional, and it repeated the Welcome screen while going out of date. The installer's last page says instead that the app walks them through it (`FinishedLabel` in `[Messages]`), and `[InstallDelete]` removes the old guide and its Start Menu shortcut on an update. Do not bring back a readme: what the client needs to know belongs in the app.
 
@@ -48,3 +48,14 @@ root file's Power section says what they do and what the script changes. The app
 Settings screen runs the same script from `{app}\scripts\` with `-SkipTask`, `-SkipPower`
 and `-Revert` in combination, and reads its exit code, so the script has to stay in
 the bundle, and `-Revert` alone must still undo both halves for the uninstaller.
+
+## The Mac build
+
+`packaging/build_mac.sh` (2026-11-12) is the Mac's `build.ps1`: the suite first and **no release from a red suite**, then PyInstaller with the same `fbposter.spec` (which adds a `BUNDLE` on a Mac: `FacebookAutoPoster.app`), the same silent-failure checks against the bundle (`node`, `tzdata`, `check.svg`, the title font, the arrows) and `--selftest --quiet`, then a `.pkg`. `--force`, `--clean` and `--skip-installer` mean what `-Force`, `-Clean` and `-SkipInstaller` do. The release number is read from `installer.iss`, so both systems share one. Output: `dist/FacebookAutoPoster-Setup-<v>-mac-<arch>.pkg`.
+
+- **The `.pkg` shows `policy.rtf` as its licence and will not install until it is agreed to**, through `productbuild`'s `<license>`. macOS draws its own buttons there ("Agree" / "Disagree", in the Mac's language), so since version 3 of the policy (2026-11-12, the user's request) section 10 names both: "I accept this policy" on Windows, "Agree" on a Mac "or the same button in the Mac's own language". `tests/test_policy.py` checks both languages quote both.
+- **It installs to `/Applications`, never elsewhere**: the component is marked not relocatable, or macOS would update whatever copy of the app it found on the disk instead.
+- **It is not signed or notarised.** Without an Apple Developer ID the client's Mac says the app is from an unidentified developer; it opens from System Settings, Privacy & Security, "Open Anyway". Signing is `codesign` on the `.app` and `productsign` on the `.pkg`, then `notarytool`.
+- **One chip type per build.** It is built for the Mac it is built on (`uname -m`, and the installer refuses any other): Playwright's `node` and the `uv` Python are single-architecture. An Apple Silicon build does not run on an Intel Mac; build one there for those clients.
+- **The icon** is made from `app.png` (256px) into `build/mac/app.icns` with `sips` and `iconutil`, both part of macOS.
+- **Uninstalling** is dragging the app to the Bin. The user's data stays in `~/Library/Application Support/FBAutomation/`, as on Windows, and a "start at login" item stays in `~/Library/LaunchAgents` until it is switched off on Settings.

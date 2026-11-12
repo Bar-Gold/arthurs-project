@@ -30,13 +30,13 @@ _LAUNCH_LOCK = threading.Lock()
 
 
 def find_chrome(candidates: Sequence[Path] | None = None) -> Path:
-    """Return the path to chrome.exe, or raise ChromeNotFoundError."""
+    """Return the path to Chrome's program, or raise ChromeNotFoundError."""
     searched = tuple(candidates) if candidates is not None else config.chrome_candidates()
     for path in searched:
         if Path(path).is_file():
             return Path(path)
     raise ChromeNotFoundError(
-        "Could not find chrome.exe. Looked in:\n  "
+        "Could not find Google Chrome. Looked in:\n  "
         + "\n  ".join(str(p) for p in searched)
     )
 
@@ -108,6 +108,8 @@ def profile_in_use(profile_dir: Path) -> bool:
     how a slow second once replaced the app's Chrome outright. Verified live
     on 2026-09-25: the file exists and refuses to open while Chrome runs.
     """
+    if config.IS_MAC:
+        return _mac_profile_in_use(Path(profile_dir))
     lock = Path(profile_dir) / "lockfile"
     if not lock.exists():
         return False
@@ -118,6 +120,20 @@ def profile_in_use(profile_dir: Path) -> bool:
         return True
     except OSError:
         return False
+
+
+def _mac_profile_in_use(profile_dir: Path) -> bool:
+    """The Mac half of profile_in_use.
+
+    A Mac Chrome has no `lockfile`. It keeps a `SingletonLock` link in the
+    profile instead, naming its process, and leaves it behind when it crashes
+    (verified live on 2026-11-12). So the process it names has to be alive and
+    has to be a Chrome started on this profile: a crash can leave a number
+    that a different program now uses (`macos.lock_owner`).
+    """
+    from . import macos
+
+    return macos.lock_owner(profile_dir) is not None
 
 
 def wait_for_cdp(port: int = config.DEBUG_PORT, timeout: float = config.LAUNCH_TIMEOUT_S) -> dict[str, Any]:
@@ -149,6 +165,59 @@ def _creation_flags() -> int:
     return detached | new_group
 
 
+def mac_launch_command(args: list[str], *, visible: bool) -> list[str]:
+    """The `open` command that starts Chrome on a Mac. Pure, for the tests.
+
+    `open` rather than running the program directly, because Chrome started
+    through it belongs to macOS rather than to this Python process, so it
+    outlives the app, as DETACHED_PROCESS gives on Windows. `-n` starts a new
+    Chrome even when the user's everyday one is open (without it macOS just
+    brings that one forward), and `-g` keeps a background launch from taking
+    focus away from whatever the user is doing.
+    """
+    program = Path(args[0])
+    # .../Google Chrome.app/Contents/MacOS/Google Chrome -> the .app itself.
+    bundle = next((p for p in program.parents if p.suffix == ".app"), program)
+    command = ["open", "-n"]
+    if not visible:
+        command.append("-g")
+    return command + ["-a", str(bundle), "--args", *args[1:]]
+
+
+def _tuck_away_mac(version: dict[str, Any], profile_dir: Path) -> None:
+    """Park a newly started background Chrome's window and hide it (Mac).
+
+    macOS will not open it off-screen (see macos.py), so it is moved as far
+    left as macOS allows and then hidden. Best-effort: a window left showing
+    is untidy, a launch reported as failed over it would be far worse.
+    """
+    from . import macos
+    from .cdp import CdpClient
+
+    try:
+        with CdpClient.open(version["webSocketDebuggerUrl"]) as client:
+            deadline = time.monotonic() + MAC_WINDOW_WAIT_S
+            pages: list = []
+            while time.monotonic() < deadline:
+                targets = client.call("Target.getTargets").get("targetInfos", [])
+                pages = [t for t in targets if t.get("type") == "page"]
+                if pages:
+                    break
+                time.sleep(config.POLL_INTERVAL_S)
+            for page in pages[:1]:
+                window = client.call("Browser.getWindowForTarget", {"targetId": page["targetId"]})
+                client.call("Browser.setWindowBounds", {
+                    "windowId": window["windowId"], "bounds": dict(config.OFFSCREEN_BOUNDS),
+                })
+    except Exception:
+        pass
+    macos.hide_app_chrome(profile_dir)
+
+
+# How long a Mac launch waits for Chrome's first window before hiding it.
+MAC_WINDOW_WAIT_S = 5.0
+
+
 def launch(
     profile_dir: Path,
     port: int = config.DEBUG_PORT,
@@ -176,12 +245,17 @@ def launch(
         profile_dir.mkdir(parents=True, exist_ok=True)
         args = build_args(chrome, profile_dir, port, visible=visible)
 
+        # Popen on both systems, so there is one place a launch happens (and
+        # one place the tests stand in for). On a Mac it runs `open`, which
+        # hands Chrome to macOS and returns at once.
         subprocess.Popen(
-            args,
+            mac_launch_command(args, visible=visible) if config.IS_MAC else args,
             creationflags=_creation_flags(),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             close_fds=True,
         )
-        wait_for_cdp(port)
+        version = wait_for_cdp(port)
+        if config.IS_MAC and not visible:
+            _tuck_away_mac(version, profile_dir)
         return True

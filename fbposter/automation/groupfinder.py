@@ -322,7 +322,7 @@ class LiveGroupFinder:
     def find(self) -> FoundGroups:
         try:
             with session.attach() as context:
-                page = context.new_page()
+                page = session.new_page(context)
                 try:
                     return read_your_groups(page)
                 finally:

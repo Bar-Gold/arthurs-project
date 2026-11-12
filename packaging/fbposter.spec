@@ -11,13 +11,23 @@ gives them a Start Menu entry and an uninstaller, which is what "not technical"
 actually needs.
 
 Build with:  pyinstaller packaging/fbposter.spec --noconfirm
+
+On a Mac the same spec also wraps the folder into FacebookAutoPoster.app
+(`BUNDLE`, below). Build it through packaging/build_mac.sh, which makes the
+.icns icon this needs and the .pkg installer around it.
 """
 
+import os
+import sys
 from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_all, collect_data_files
 
 ROOT = Path(SPECPATH).resolve().parent
+MAC = sys.platform == "darwin"
+# Windows takes the .ico; a Mac app takes an .icns, which build_mac.sh makes
+# from app.png into the build folder and names here.
+ICON = os.environ.get("FBPOSTER_ICNS") if MAC else str(ROOT / "packaging" / "app.ico")
 
 # Playwright ships its driver -- a node runtime plus the JS package -- inside
 # the pip package, and the app needs it even though it never launches a
@@ -122,7 +132,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=str(ROOT / "packaging" / "app.ico"),
+    icon=ICON,
 )
 
 coll = COLLECT(
@@ -134,3 +144,23 @@ coll = COLLECT(
     upx_exclude=[],
     name="FacebookAutoPoster",
 )
+
+if MAC:
+    # The Mac's double-clickable app. Its folder inside is exactly the
+    # one-folder build above, for the same reasons.
+    app = BUNDLE(
+        coll,
+        name="FacebookAutoPoster.app",
+        icon=ICON,
+        bundle_identifier="com.fbautomation.autoposter",
+        version=os.environ.get("FBPOSTER_VERSION", "0"),
+        info_plist={
+            "CFBundleDisplayName": "Facebook Auto-Poster",
+            "CFBundleName": "Facebook Auto-Poster",
+            "NSHighResolutionCapable": True,
+            # The oldest macOS the bundled Qt runs on.
+            "LSMinimumSystemVersion": "12.0",
+            # Not a document app: one window, opened from the Dock.
+            "LSMultipleInstancesProhibited": True,
+        },
+    )

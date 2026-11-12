@@ -252,7 +252,8 @@ class TestRepeat:
         compose.attachments = [Path("C:/pictures/bike.jpg")]
         publish.set_mode(REPEAT)
         publish.publish()
-        assert qt_app.schedule_repo.list()[0].media_paths == ["C:\\pictures\\bike.jpg"]
+        # As this system writes the path: backslashes on Windows only.
+        assert qt_app.schedule_repo.list()[0].media_paths == [str(Path("C:/pictures/bike.jpg"))]
 
     def test_an_empty_compose_is_refused(self, qt_app, views):
         compose, publish = views

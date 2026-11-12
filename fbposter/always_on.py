@@ -256,6 +256,72 @@ def _first_failure(stdout: str | None, stderr: str | None) -> str:
     return "Windows did not accept the change."
 
 
+# -- the Mac ----------------------------------------------------------------
+# A LaunchAgent: a small file in the user's own ~/Library/LaunchAgents that
+# macOS reads at login. Writing or deleting it is the whole switch, and needs
+# no password. Keeping the Mac awake is not a switch there at all: the app
+# does it for as long as it is open (macos.keep_awake_while_running).
+LAUNCH_AGENT_LABEL = "com.fbautomation.autoposter"
+
+
+def launch_agent_file() -> Path:
+    return Path.home() / "Library" / "LaunchAgents" / f"{LAUNCH_AGENT_LABEL}.plist"
+
+
+def mac_start_command() -> list[str]:
+    """What macOS runs at login: the packaged app, or this checkout's `start`.
+
+    From a checkout, the same script the app was started with this time.
+    """
+    if getattr(sys, "frozen", False):
+        return [sys.executable]
+    return [sys.executable, str(Path(sys.argv[0]).resolve()), "start"]
+
+
+def launch_agent_plist(command: list[str]) -> bytes:
+    """The LaunchAgent's contents. Pure, for the tests."""
+    import plistlib
+
+    return plistlib.dumps({
+        "Label": LAUNCH_AGENT_LABEL,
+        "ProgramArguments": command,
+        "RunAtLoad": True,
+        # Started once at login. Not kept alive: closing the app must close it.
+        "KeepAlive": False,
+        "ProcessType": "Interactive",
+    })
+
+
+class MacAlwaysOn:
+    """The Mac's version of AlwaysOn. `folder` is the seam for the tests."""
+
+    def __init__(self, agent_file: Callable[[], Path] = launch_agent_file) -> None:
+        self._agent_file = agent_file
+
+    def status(self) -> Status:
+        # Keep awake is always on while the app is open (see power.py).
+        return Status(autostart=self._agent_file().exists(), keep_awake=True)
+
+    def set_autostart(self, on: bool) -> None:
+        path = self._agent_file()
+        try:
+            if on:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(launch_agent_plist(mac_start_command()))
+            else:
+                path.unlink(missing_ok=True)
+        except OSError as exc:
+            raise AlwaysOnError(f"macOS would not save the change: {exc}") from exc
+
+    def set_keep_awake(self, on: bool) -> None:
+        pass  # always on while the app is open; there is no switch on a Mac
+
+
+def for_this_computer():
+    """The real AlwaysOn for the system the app is running on."""
+    return MacAlwaysOn() if sys.platform == "darwin" else AlwaysOn()
+
+
 class Inert:
     """What every window gets until `run()` wires up the real one.
 

@@ -141,7 +141,7 @@ def _new_page(context):
     Never reuses contexts[0].pages[0] -- that is very likely a tab the user has
     open, and this one gets navigated and closed.
     """
-    return context.new_page()
+    return session.new_page(context)
 
 
 def cmd_probe(args: argparse.Namespace) -> int:

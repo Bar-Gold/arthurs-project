@@ -8,17 +8,30 @@ locations.
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 from .errors import ChromeLaunchError
 
+# The two systems the app runs on. Everything else is the same on both.
+IS_MAC = sys.platform == "darwin"
+IS_WINDOWS = os.name == "nt"
+
+# Where a Mac keeps an app's own data. There is no C:\ root to prefer, so the
+# preferred and fallback places are the same folder.
+MAC_DATA_DIR = Path.home() / "Library" / "Application Support" / "FBAutomation"
+
 # Chrome 136+ ignores --remote-debugging-port unless it is paired with a
 # --user-data-dir pointing somewhere other than the default profile, so the app
 # gets its own profile directory and the user logs into Facebook there once.
-PREFERRED_PROFILE_DIR = Path(r"C:\FBAutomation\ChromeProfile")
-FALLBACK_PROFILE_DIR = (
-    Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "FBAutomation" / "ChromeProfile"
-)
+if IS_MAC:
+    PREFERRED_PROFILE_DIR = MAC_DATA_DIR / "ChromeProfile"
+    FALLBACK_PROFILE_DIR = PREFERRED_PROFILE_DIR
+else:
+    PREFERRED_PROFILE_DIR = Path(r"C:\FBAutomation\ChromeProfile")
+    FALLBACK_PROFILE_DIR = (
+        Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "FBAutomation" / "ChromeProfile"
+    )
 
 DEBUG_PORT = 9222
 # 127.0.0.1 rather than localhost: Chrome validates the Host header on the
@@ -70,8 +83,21 @@ def cdp_endpoint(port: int = DEBUG_PORT) -> str:
     return f"http://{CDP_HOST}:{port}"
 
 
+# The program inside the app bundle, from the bundle's own folder.
+MAC_CHROME_BINARY = Path("Contents") / "MacOS" / "Google Chrome"
+
+
 def chrome_candidates() -> tuple[Path, ...]:
-    """Known chrome.exe locations, in the order they should be tried."""
+    """Known Chrome locations, in the order they should be tried.
+
+    On Windows, chrome.exe. On a Mac, the program inside Google Chrome.app,
+    which is in Applications for everyone or in the user's own Applications.
+    """
+    if IS_MAC:
+        return tuple(
+            folder / "Google Chrome.app" / MAC_CHROME_BINARY
+            for folder in (Path("/Applications"), Path.home() / "Applications")
+        )
     roots = (
         os.environ.get("ProgramFiles"),
         os.environ.get("ProgramFiles(x86)"),

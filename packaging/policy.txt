@@ -1,6 +1,6 @@
 # מדיניות חסימת חשבונות והגבלת אחריות
 
-תוכנת Facebook Auto-Poster. גרסה 2, בתוקף מיום 03/11/2026.
+תוכנת Facebook Auto-Poster. גרסה 3, בתוקף מיום 12/11/2026.
 
 English version below.
 
@@ -86,13 +86,13 @@ English version below.
 
 ## 10. הסכמה
 
-בסימון האפשרות "I accept this policy" הלקוח מאשר כי קרא את המסמך, הבין אותו ומסכים לכל האמור בו, לרבות הסיכון שחשבון הפייסבוק שלו ייחסם.
+בסימון האפשרות "I accept this policy" (במחשב Windows), או בלחיצה על הכפתור "Agree" (במחשב Mac, או על אותו כפתור בשפת המחשב), הלקוח מאשר כי קרא את המסמך, הבין אותו ומסכים לכל האמור בו, לרבות הסיכון שחשבון הפייסבוק שלו ייחסם.
 
 ---
 
 # Account Blocking and Liability Policy
 
-Facebook Auto-Poster. Version 2, in force from 03/11/2026.
+Facebook Auto-Poster. Version 3, in force from 12/11/2026.
 
 ## 1. General
 
@@ -174,4 +174,4 @@ Facebook Auto-Poster. Version 2, in force from 03/11/2026.
 
 ## 10. Acceptance
 
-By choosing "I accept this policy", the client confirms that they have read and understood this policy and agree to all of it, including the risk that their Facebook account may be blocked.
+By choosing "I accept this policy" (on a Windows computer), or by clicking "Agree" (on a Mac, or the same button in the Mac's own language), the client confirms that they have read and understood this policy and agree to all of it, including the risk that their Facebook account may be blocked.

@@ -8,6 +8,7 @@ Light/Dark switch could not be made smooth enough for them.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 # Qt stylesheets take a file path, not a data URI. Forward slashes on Windows
@@ -26,8 +27,16 @@ ICON_NAMES = (
     "chevron-left", "chevron-right",
 )
 
-FONT_FAMILY = "Segoe UI"
-FONT_MONO = "Consolas"
+# Each system's own interface face. Segoe UI is not on a Mac, where Qt would
+# fall back to whatever it found first; the Mac's own is San Francisco, which
+# Qt knows as ".AppleSystemUIFont". Hebrew falls back to the Mac's Hebrew faces
+# by itself, as it does on Windows.
+if sys.platform == "darwin":
+    FONT_FAMILY = ".AppleSystemUIFont"
+    FONT_MONO = "Menlo"
+else:
+    FONT_FAMILY = "Segoe UI"
+    FONT_MONO = "Consolas"
 # Page titles, the Home headline and the name in the sidebar, and nothing
 # else: labels, buttons and numbers stay in the UI face. Bellefair is a
 # high-contrast serif that also has Hebrew, which the Posting tips title needs

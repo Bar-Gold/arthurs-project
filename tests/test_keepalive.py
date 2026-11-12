@@ -17,10 +17,13 @@ import time
 
 import pytest
 
-from fbposter import chrome
+from fbposter import chrome, config
 from fbposter.errors import ChromeLaunchError
 from fbposter.keepalive import BACKOFF_S, MAX_ATTEMPTS, ChromeKeeper
 from fbposter.connection import ConnectionState
+
+# Where the app tells the user to close Chrome from: the Dock on a Mac.
+CLOSE_IT = "Close it from the " + ("Dock" if config.IS_MAC else "taskbar")
 
 
 class TestTheKeeper:
@@ -201,6 +204,7 @@ class TestTheProfileLock:
         (tmp_path / "lockfile").write_bytes(b"")
         assert chrome.profile_in_use(tmp_path) is False
 
+    @pytest.mark.skipif(config.IS_MAC, reason="a Mac Chrome has SingletonLock instead: test_macos.py")
     def test_a_lock_file_held_like_chrome_holds_it(self, tmp_path):
         """Open, delete-on-close, as Chrome's process singleton does."""
         import os
@@ -604,7 +608,7 @@ class TestACheckCannotHangForever:
         clock["now"] += STALL_RESTART_EVERY_S - 1
         self.stall(app, runner)
         assert len(app.restarts) == 1
-        assert "Close it from the taskbar" in app.connection_result.detail
+        assert CLOSE_IT in app.connection_result.detail
         runner.jobs.clear()
         app._set_connection(ConnectionState.UNKNOWN, announce=False)
         clock["now"] += 1
@@ -614,7 +618,7 @@ class TestACheckCannotHangForever:
     @pytest.mark.parametrize("says, expected", [
         ("posting", "A post is going out"),
         ("not_ours", "left it alone"),
-        ("would_not_close", "Close it from the taskbar"),
+        ("would_not_close", CLOSE_IT),
         ("gone", "starts it again"),
     ])
     def test_every_other_outcome_is_said_and_nothing_is_rechecked(self, stalling, says, expected):
@@ -632,7 +636,7 @@ class TestACheckCannotHangForever:
         app, runner, _clock = stalling
         app.restart_says = ChromeLaunchError("port never opened")
         self.stall(app, runner)
-        assert "Close it from the taskbar" in app.connection_result.detail
+        assert CLOSE_IT in app.connection_result.detail
         assert app._watching is False
 
     def test_the_keep_alive_waits_while_chrome_is_being_restarted(self, stalling):
