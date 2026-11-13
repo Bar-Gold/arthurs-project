@@ -34,6 +34,7 @@ Nothing here may raise into the caller. A failure comes back as a
 
 from __future__ import annotations
 
+import logging
 import random
 import re
 import time
@@ -45,6 +46,8 @@ from ..groups import GroupRef, parse_group_url
 from ..text import strip_invisible
 from . import detect
 from .humanize import Humanizer
+
+log = logging.getLogger(__name__)
 
 NAV_TIMEOUT_MS = 45_000
 # Waiting for the list to appear at all.
@@ -283,9 +286,15 @@ def read_your_groups(
     seen = page.evaluate(READ)
     verdict = detect.classify(page.url, seen.get("text", ""))
     if verdict is not detect.PageVerdict.OK:
+        log.warning("Your groups: not read, the page was %s (%s).", verdict.name, page.url)
         return FoundGroups(error=PAGE_PROBLEMS.get(verdict, detect.halt_message(verdict)))
 
     expected = joined_count(seen.get("headings") or [])
+    log.info(
+        "Your groups: headings %s, so %s groups joined.",
+        [h for h in (seen.get("headings") or []) if h][:8],
+        expected if expected is not None else "an unknown number of",
+    )
     # Requests are told apart by where the joined list's heading is, so only
     # when that heading was found.
     links = _Links(skip_pending=expected is not None)
@@ -294,15 +303,24 @@ def read_your_groups(
     if not found and expected is None:
         # No list and no heading: not the page it should be. Adding nothing
         # is safe; calling it "no groups" would not be.
+        log.warning("Your groups: no list and no heading on %s.", page.url)
         return FoundGroups(error=PAGE_PROBLEMS[detect.PageVerdict.UNAVAILABLE])
 
     started = clock()
     quiet = 0
+    rounds = 0
+    stopped = f"{MAX_SCROLLS} rounds"
     for _ in range(MAX_SCROLLS):
         if expected is not None and len(found) >= expected:
+            stopped = "every group counted was read"
             break
-        if quiet >= QUIET_SCROLLS or clock() - started > TIME_LIMIT_S:
+        if quiet >= QUIET_SCROLLS:
+            stopped = f"nothing new after {QUIET_SCROLLS} rounds at the bottom"
             break
+        if clock() - started > TIME_LIMIT_S:
+            stopped = f"the {TIME_LIMIT_S}s time limit"
+            break
+        rounds += 1
         known = len(found)
         _to_the_bottom(page, humanizer, links)
         if _wait_for_more(page, humanizer, links, known) > known:
@@ -313,7 +331,30 @@ def read_your_groups(
             # next round comes down to the bottom again.
             page.mouse.wheel(0, -humanizer.rng.randint(*humanizer.profile.scroll_delta))
         found = links.groups()
+    else:
+        if expected is not None and len(found) >= expected:
+            stopped = "every group counted was read"
+    _log_result(links, found, expected, rounds, stopped)
     return FoundGroups(groups=found, expected=expected)
+
+
+def _log_result(links: "_Links", found: list, expected: int | None, rounds: int, stopped: str) -> None:
+    """What the read found, for the log. Never raises: it only explains."""
+    try:
+        joined = {f.ref.identifier.lower() for f in found}
+        everything = groups_from_links(list(links._seen.values()))
+        requests = [f for f in everything if f.ref.identifier.lower() not in joined]
+        log.info(
+            "Your groups: read %d of %s in %d scroll rounds, stopped at %s. %s. "
+            "Left out as requests to join (%d): %s",
+            len(found), expected if expected is not None else "?", rounds, stopped,
+            "Complete, so groups not on Facebook's list can be taken off yours"
+            if expected is not None and len(found) >= expected
+            else "Not complete, so only new groups are added and none taken off",
+            len(requests), "; ".join(f.name or f.ref.identifier for f in requests) or "none",
+        )
+    except Exception:
+        log.warning("Could not log what the groups read found", exc_info=True)
 
 
 class LiveGroupFinder:

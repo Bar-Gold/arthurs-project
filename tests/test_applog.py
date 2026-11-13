@@ -129,3 +129,48 @@ class TestOnlyTheRealAppWritesIt:
         logging.getLogger("fbposter.worker").warning("no file attached")
         captured = capsys.readouterr()
         assert "no file attached" not in captured.err + captured.out
+
+
+class TestTheSupportCallsQuestions:
+    """The lines that answer "why did it do that?" (2026-11-13)."""
+
+    def test_a_groups_read_says_what_it_left_out_and_whether_it_was_complete(self, caplog):
+        from fbposter.automation.groupfinder import read_your_groups
+
+        from .test_group_import import PENDING_HEADING, FakeListPage, card, instant, requested
+
+        page = FakeListPage(
+            [requested("980414154465411", "try-group") + card("1", "A") + card("2", "B")],
+            headings=[PENDING_HEADING, "All groups you've joined (2)"],
+        )
+        with caplog.at_level(logging.INFO, logger="fbposter"):
+            read_your_groups(page, instant())
+        text = caplog.text
+        assert "read 2 of 2" in text
+        assert "Complete" in text
+        assert "Left out as requests to join (1): try-group" in text
+
+    def test_a_short_read_says_none_are_taken_off(self, caplog):
+        from fbposter.automation.groupfinder import read_your_groups
+
+        from .test_group_import import FakeListPage, card, instant
+
+        page = FakeListPage([card("1", "A")], heading="All groups you've joined (5)")
+        with caplog.at_level(logging.INFO, logger="fbposter"):
+            read_your_groups(page, instant())
+        assert "Not complete, so only new groups are added and none taken off" in caplog.text
+
+    def test_an_error_event_carries_its_traceback(self, db, caplog):
+        worker = make_worker(db)
+        with caplog.at_level(logging.INFO, logger="fbposter"):
+            try:
+                raise RuntimeError("the disk is full")
+            except RuntimeError:
+                worker.emit("error", "History cleanup skipped: the disk is full")
+        (record,) = [r for r in caplog.records if "History cleanup" in r.getMessage()]
+        assert record.exc_info is not None
+
+    def test_what_the_user_was_shown(self, qt_app, caplog):
+        with caplog.at_level(logging.INFO, logger="fbposter"):
+            qt_app.toast("Posting paused.", "warning")
+        assert "Shown to the user (warning): Posting paused." in caplog.text

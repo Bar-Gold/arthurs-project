@@ -7,6 +7,7 @@ keeps working while batches run. Feedback goes to the toast strip.
 
 from __future__ import annotations
 
+import logging
 import queue
 import threading
 import time
@@ -56,6 +57,8 @@ from .views.settings import SettingsView
 from .views.tips import TipsView
 from .views.welcome import WelcomeView
 from .widgets import AppStyle, StatusBanner, row
+
+log = logging.getLogger(__name__)
 
 APP_TITLE = "Facebook Local Auto-Poster"
 # The logo at the top of the sidebar, and the room between it and the name.
@@ -190,6 +193,7 @@ class App(QMainWindow):
         self.schedule_repo = ScheduleRepo(self.db)
         self.group_set_repo = GroupSetRepo(self.db)
         self.connection_state = ConnectionState.UNKNOWN
+        self._logged_detail = ""
         # The full result, which the setup wizard needs -- the pill only
         # ever needed the state.
         self.connection_result: ConnectionResult | None = None
@@ -572,6 +576,11 @@ class App(QMainWindow):
         a slip is one click to take back, and a deliberate action costs
         nothing extra.
         """
+        # Everything the user was told goes in the log, in the same words.
+        log.log(
+            logging.WARNING if level in ("warning", "error") else logging.INFO,
+            "Shown to the user (%s): %s", level, message,
+        )
         action = None
         if undo is not None:
             def action() -> None:
@@ -607,6 +616,9 @@ class App(QMainWindow):
             try:
                 result = fn()
             except Exception as exc:  # reported, never swallowed
+                log.warning(
+                    "Background work %s failed", getattr(fn, "__name__", "?"), exc_info=True
+                )
                 report(on_error, exc)
             else:
                 report(on_success, result)
@@ -805,6 +817,11 @@ class App(QMainWindow):
 
     def _set_connection(self, state: ConnectionState, detail: str = "",
                         announce: bool = True) -> None:
+        if state is not ConnectionState.CHECKING and (
+            state is not self.connection_state or detail != self._logged_detail
+        ):
+            log.info("Connection: %s. %s", state.name, detail)
+            self._logged_detail = detail
         self.connection_state = state
         key, label, level = PILL_STATES[state]
         # The sidebar's own shade of the colour: it sits on navy.
@@ -1013,6 +1030,7 @@ class App(QMainWindow):
 
     def _on_chrome_restart_failed(self, _exc) -> None:
         self._watching = False
+        log.warning("Starting Chrome again failed: %s", _exc)
         now = self._monotonic()
         self._keeper.failed(now)
         if self._keeper.gave_up:
@@ -1125,6 +1143,7 @@ class App(QMainWindow):
             if waiting is not None and not self._confirm_close(self, waiting):
                 event.ignore()
                 return
+            log.info("App closing%s.", f" with {waiting} still due" if waiting else "")
             self.worker.stop()
         # A closed window has nothing to keep Chrome running for. And a window
         # a test closed must not go on firing this and start a real Chrome.

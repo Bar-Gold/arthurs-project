@@ -30,8 +30,12 @@ only because they just pressed a button that says a Chrome window will open.
 
 from __future__ import annotations
 
+import logging
+
 from . import chrome, config, session, strings
 from .errors import ChromeNotFoundError, FBPosterError
+
+log = logging.getLogger(__name__)
 
 
 def chrome_installed() -> bool:
@@ -78,6 +82,7 @@ def switch_account() -> None:
     Raises FBPosterError with something the user can act on if it cannot be
     arranged. The caller shows it as-is.
     """
+    log.warning("Switching Facebook account: signing the current one out.")
     if not chrome.is_running() and chrome.launch(config.resolve_profile_dir(), visible=True):
         # No window to move, and the launch above produces the only session
         # there is to end: started where they can see it, so clear and go.

@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import logging
 import queue
+import sys
 import threading
 import time
 from contextlib import contextmanager
@@ -144,6 +145,10 @@ MISSES_BEFORE_DECLINED = 2
 
 FINISHED_STATES = {TASK_DONE, TASK_HALTED, TASK_CANCELLED, TASK_MISSED}
 
+# The least wait after a post, when the post itself took longer than the
+# client's speed (the user's choice, 2026-11-13).
+MIN_REST = timedelta(seconds=5)
+
 log = logging.getLogger(__name__)
 
 # "1" while the user has paused posting. Stored rather than held in memory,
@@ -226,6 +231,8 @@ class LivePoster:
             # Leaving the page or the connection failed *after* the post was
             # made. What happened in the group stands; reporting it as a
             # failure would say "not posted" about a post that is live.
+            if outcome is not None:
+                log.warning("Closing the page after a post failed", exc_info=True)
             if outcome is None:
                 raise
         return outcome
@@ -326,6 +333,8 @@ class PostingWorker:
         self._recovery_trouble = None
         # Looks at a crashed post's group that came back "unknown", per target.
         self._recovery_looks: dict[int, int] = {}
+        # When the post now going out began, for the speed (`_after_attempt`).
+        self._post_started = None
 
     # -- lifecycle ---------------------------------------------------------
     @property
@@ -348,6 +357,7 @@ class PostingWorker:
         """Start the one worker thread. Calling twice is a no-op, by design."""
         if self.running:
             return
+        self._log_settings()
         self._stop.clear()
         self._thread = threading.Thread(target=self._loop, name="poster", daemon=True)
         self._thread.start()
@@ -365,6 +375,22 @@ class PostingWorker:
         # itself honest for the case where the join above timed out.
         self.blocker.release()
 
+    def _log_settings(self) -> None:
+        """What the client has chosen, once at the start, for the log."""
+        try:
+            get = self.settings.get
+            log.info(
+                "Worker starting. Speed %s, several groups at once %s, quiet hours %s "
+                "(%s-%s), paused %s. %d groups, %d repeating posts.",
+                get(pace.SPEED_KEY, "") or "default",
+                get(pace.TOGETHER_KEY, pace.TOGETHER_DEFAULT),
+                get(pace.QUIET_ON_KEY, "0"), get(pace.QUIET_START_KEY, ""),
+                get(pace.QUIET_END_KEY, ""), get(PAUSED_KEY, "0"),
+                len(self.groups.list()), len(self.schedules.list()),
+            )
+        except Exception:
+            log.warning("Could not read the settings for the log", exc_info=True)
+
     def pause(self) -> None:
         """Stop posting, and stay stopped across a restart until resumed.
 
@@ -381,9 +407,11 @@ class PostingWorker:
     def emit(self, kind: str, message: str, task_id: int | None = None, target_id: int | None = None) -> None:
         # Every event goes in the log file too (`applog`), so a client's log
         # tells the batch's whole story in the order it happened.
+        # An error said from inside an `except` takes its traceback with it.
         log.log(
             logging.WARNING if kind in ("error", "not_posted", "unconfirmed") else logging.INFO,
             "[%s] batch %s, group turn %s: %s", kind, task_id, target_id, message,
+            exc_info=kind == "error" and sys.exc_info()[0] is not None,
         )
         self.events.put(WorkerEvent(kind, message, task_id, target_id))
 
@@ -1086,6 +1114,8 @@ class PostingWorker:
             group.name, group.url, len(together),
             "; ".join(f"{g.name} ({g.url})" for _o, g in together) or "none",
         )
+        # The speed counts from here: the post's own time is inside it.
+        self._post_started = self._now()
         try:
             outcome = self.poster.post(request)
         except ConnectionFailed as exc:
@@ -1268,9 +1298,19 @@ class PostingWorker:
         # The client's speed from Settings, read now, so a change made
         # mid-batch takes effect from the next group. Never chosen, it is the
         # profile's own range, which is Safe.
+        #
+        # Counted from the start of the post, not its end (the user's choice,
+        # 2026-11-13): Safe is a post every 2-4 minutes, writing it included.
+        # A post that took longer than that still leaves MIN_REST, as a person
+        # goes straight on to the next group; the next post begins like one,
+        # on the group's page with a pause and a scroll.
         chosen = self.settings.get(pace.SPEED_KEY, "")
         gap = self.human.gap_between_groups(pace.gap_span(chosen) if chosen else None)
-        resume = self._now() + timedelta(seconds=gap)
+        now = self._now()
+        started = self._post_started or now
+        self._post_started = None
+        resume = max(started + timedelta(seconds=gap), now + MIN_REST)
+        gap = (resume - now).total_seconds()
         self.settings.set("next_post_after", to_iso(resume) or "")
 
         if halt_after:
@@ -1691,6 +1731,7 @@ class PostingWorker:
                 self._defer_recovery(str(exc))
                 return
             except Exception as exc:
+                log.warning("Checking a post a crash interrupted failed", exc_info=True)
                 self._escalate_unchecked(target, str(exc))
                 continue
 
@@ -1754,6 +1795,7 @@ class PostingWorker:
         except ConnectionFailed as exc:
             return self._wait_or_escalate(target, str(exc))
         except Exception as exc:
+            log.warning("Checking a post a crash interrupted failed", exc_info=True)
             self._escalate_unchecked(target, str(exc))
             return True
 

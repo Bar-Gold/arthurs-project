@@ -86,8 +86,9 @@ AWAKE_HELP = (
 
 SPEED_LABEL = "Time between posts"
 SPEED_HELP = (
-    "Safe waits 2-4 minutes between groups, Normal 1-2 minutes, Fast 30-90 "
-    "seconds. Faster finishes sooner, but looks more like a bot to Facebook."
+    "Safe starts a new post every 2-4 minutes, Normal every 1-2 minutes, Fast "
+    "every 30-90 seconds, the time to write each post included. Faster "
+    "finishes sooner, but looks more like a bot to Facebook."
 )
 TOGETHER_LABEL = "Post to up to 10 groups at once"
 TOGETHER_HELP = (

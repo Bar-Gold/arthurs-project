@@ -41,6 +41,7 @@ at a single tab or restarts anything.
 from __future__ import annotations
 
 import ctypes
+import logging
 import os
 import threading
 import time
@@ -50,6 +51,8 @@ from typing import Callable, Iterator
 
 from . import chrome, config
 from .cdp import CdpClient, CdpError
+
+log = logging.getLogger(__name__)
 
 # How long a tab has to answer. A healthy one takes about a millisecond.
 ANSWER_S = 3.0
@@ -113,8 +116,12 @@ def clear_stuck_tabs(
             if client is None:
                 return []
             with client:
-                return _close_silent(client, sleep)
+                closed = _close_silent(client, sleep)
+            if closed:
+                log.warning("Closed %d tab(s) that had stopped answering: %s", len(closed), closed)
+            return closed
         except Exception:
+            log.info("Looking for stuck tabs failed", exc_info=True)
             return []
 
 
@@ -148,12 +155,15 @@ def restart_chrome(
         version = probe()
         if version is None:
             return GONE
+        log.warning("Restarting the app's Chrome: a connection check went unanswered.")
         if _close_owned(version, profile, open_client, command_line_of) == NOT_OURS:
+            log.warning("Did not restart Chrome: the browser on the port is not the app's.")
             return NOT_OURS
         # Whether it went is judged by the port and the profile lock.
         deadline = monotonic() + CLOSE_WAIT_S
         while probe() is not None or profile_busy():
             if monotonic() >= deadline:
+                log.warning("Chrome would not close for the restart.")
                 return WOULD_NOT_CLOSE
             sleep(0.25)
         launch()

@@ -168,8 +168,17 @@ class FakeKeyboard:
         self.typed.append(text)
         self.page.calls.append(("type", text))
 
+    def insert_text(self, text: str) -> None:
+        """A paste (2026-11-13). Recorded as "type", like the keystrokes it
+        replaced, so the order checks read the same."""
+        self.typed.append(text)
+        self.page.calls.append(("type", text))
+
     def press(self, key: str) -> None:
         self.page.calls.append(("press", key))
+        if key == "Enter":
+            # A line break, as it reaches the post box.
+            self.typed.append("\n")
 
 
 class FakeMouse:

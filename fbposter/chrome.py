@@ -8,6 +8,7 @@ cookies, IP and device fingerprint, and no automation flags are set on it.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import subprocess
 import threading
@@ -19,6 +20,8 @@ from typing import Any, Sequence
 
 from . import config
 from .errors import ChromeLaunchError, ChromeNotFoundError
+
+log = logging.getLogger(__name__)
 
 # One launch at a time. Several things start Chrome -- the startup check, the
 # wizard's button, the window noticing it has closed (see keepalive.py) -- and
@@ -176,6 +179,7 @@ def launch(
         profile_dir.mkdir(parents=True, exist_ok=True)
         args = build_args(chrome, profile_dir, port, visible=visible)
 
+        log.info("Starting Chrome (%s).", "on screen" if visible else "off screen")
         subprocess.Popen(
             args,
             creationflags=_creation_flags(),
@@ -184,4 +188,5 @@ def launch(
             close_fds=True,
         )
         wait_for_cdp(port)
+        log.info("Chrome is up on port %s.", port)
         return True

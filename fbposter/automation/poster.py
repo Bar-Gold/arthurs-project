@@ -104,6 +104,8 @@ PICKER_WAIT_MS = 10_000
 PICKER_SETTLE_MS = 1_000
 # Waiting for a tick to show on its box.
 TICK_WAIT_MS = 3_000
+# Reading a row's name right before clicking it.
+ROW_CHECK_MS = 2_000
 # A video post shows in a group only once Facebook has processed the video,
 # so groups not showing it yet are looked at again: this many more times,
 # this far apart.
@@ -592,7 +594,8 @@ class GroupPoster:
         self.page.keyboard.press("Control+A")
         self.page.keyboard.press("Delete")
 
-        self.human.type_text(self.page.keyboard, body)
+        self.human.paste_text(self.page.keyboard, body)
+        self.human.review_pause()
 
     def attach_media(self, dialog: Any, paths: Sequence[Path]) -> None:
         """Attach pictures and videos by writing straight to the file input.
@@ -742,7 +745,7 @@ class GroupPoster:
         self.page.keyboard.press("Control+A")
         self.page.keyboard.press("Delete")
         if text:
-            self.human.type_text(self.page.keyboard, text)
+            self.human.paste_text(self.page.keyboard, text)
 
     def _rows_named(self, picker: Any, name: str) -> list:
         """The list's rows with exactly this name, once the search has
@@ -754,14 +757,16 @@ class GroupPoster:
         )
 
         def matching() -> list:
-            found = []
-            for index in range(rows.count()):
-                try:
-                    if self._same_name(rows.nth(index).inner_text(), name):
-                        found.append(rows.nth(index))
-                except Exception:
-                    continue
-            return found
+            # Every row's text in one call, which never waits. Asking row by
+            # row waited 30 seconds on each row the search had just taken
+            # away: with the name pasted (2026-11-13) the list is still
+            # filtering when it is read, and ticking one group took 4.5
+            # minutes live.
+            try:
+                texts = rows.all_inner_texts()
+            except Exception:
+                return []
+            return [rows.nth(i) for i, text in enumerate(texts) if self._same_name(text, name)]
 
         waited = 0
         found = matching()
@@ -782,8 +787,8 @@ class GroupPoster:
                 has=self.page.locator('input[type="checkbox"]')
             )
             names = []
-            for index in range(min(rows.count(), 12)):
-                names.append((rows.nth(index).inner_text() or "").strip().split("\n")[0])
+            for text in rows.all_inner_texts()[:12]:
+                names.append((text or "").strip().split("\n")[0])
             return " | ".join(names) or "(no rows)"
         except Exception as exc:
             return f"(could not read the rows: {type(exc).__name__})"
@@ -846,6 +851,16 @@ class GroupPoster:
                 )
                 continue
             row = matches[0]
+            # Still this group, right before the click: a row the list moved
+            # in the meantime is never clicked, so no other group is ticked.
+            try:
+                still = self._same_name(row.inner_text(timeout=ROW_CHECK_MS), companion.name)
+            except Exception:
+                still = False
+            if not still:
+                self.not_ticked[companion.name] = "the list changed before the click"
+                log.info("Add groups: %s not ticked, the list changed before the click.", companion.name)
+                continue
             box = row.locator('input[type="checkbox"]').first
             try:
                 # Ticked already (a fresh post window ticks nothing, but if it

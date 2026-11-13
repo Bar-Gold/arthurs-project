@@ -21,6 +21,8 @@ user's choice (2026-10-15) was that a set is picked whole or not at all.
 
 from __future__ import annotations
 
+import logging
+
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
@@ -43,6 +45,8 @@ from fbposter.text import strip_invisible
 
 from .. import icons, theme
 from ..widgets import RowList, back_link, card, clear, literal, row
+
+log = logging.getLogger(__name__)
 
 # What a row says while its group's name is being fetched. It used to show the
 # group's number instead, which is meaningless to the person who pasted a link.
@@ -554,6 +558,7 @@ class GroupsView(QWidget):
             new, left = sync.added + sync.rejoined, sync.left
         else:
             new, left = self.app.group_repo.import_found(found), {}
+        _log_import(self.app.group_repo, result, new, left)
         self.app.settings_repo.set(IMPORT_PENDING_KEY, "0")
         if tick:
             for group in new:
@@ -602,6 +607,11 @@ class GroupsView(QWidget):
         self._fetch_missing_names()
 
     def _replace_with_found(self, result) -> None:
+        log.info(
+            "Your groups after an account switch: %d read of %s, %s.",
+            len(result.groups), result.expected,
+            "replacing the list" if result.complete else "not complete, nothing changed",
+        )
         """After an account switch: the list becomes the new account's groups.
 
         All or nothing. Only a read that got every group the page counts may
@@ -952,3 +962,20 @@ class GroupsView(QWidget):
         back.clicked.connect(lambda _c, gid=group.id: self.bring_back(gid))
         layout.addWidget(back)
         return holder
+
+
+def _log_import(repo, result, new, left) -> None:
+    """Which groups a read added and took off, by name. Never raises."""
+    try:
+        names = [g.display_name for g in new]
+        gone = []
+        for group_id in left:
+            group = repo.get(group_id)
+            gone.append(group.display_name if group else str(group_id))
+        log.info(
+            "Your groups: %s read. Added %d: %s. Taken off %d: %s",
+            "complete" if result.complete else "not complete",
+            len(names), "; ".join(names) or "none", len(gone), "; ".join(gone) or "none",
+        )
+    except Exception:
+        log.warning("Could not log what the groups read changed", exc_info=True)

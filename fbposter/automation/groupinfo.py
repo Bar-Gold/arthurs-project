@@ -11,12 +11,15 @@ heading, with the tab title as a fallback.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any, Protocol
 
 from .. import session
 from ..groups import clean_group_title
 from ..text import strip_invisible
+
+log = logging.getLogger(__name__)
 
 NAV_TIMEOUT_MS = 45_000
 
@@ -197,7 +200,9 @@ class LiveGroupNamer:
                             page.goto(url, timeout=NAV_TIMEOUT_MS, wait_until="commit")
                             wait_for_heading(page)
                             found[url] = GroupInfo(read_name(page), read_members(page))
-                        except Exception:
+                            log.info("Group name read: %s is %r, %r.", url, found[url].name, found[url].members)
+                        except Exception as exc:
+                            log.info("Group name not read for %s: %s", url, str(exc).strip().splitlines()[0][:200] if str(exc).strip() else type(exc).__name__)
                             # One unreachable group must not abandon the rest,
                             # and the tab it failed in may be in any state, so
                             # the next group gets a fresh one.
@@ -208,7 +213,7 @@ class LiveGroupNamer:
                         _close(page)
         except Exception:
             # No Chrome, no session: everything simply stays unknown.
-            pass
+            log.info("Group names not read: no connection to Chrome", exc_info=True)
         return found
 
 
