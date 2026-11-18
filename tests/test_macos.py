@@ -62,8 +62,20 @@ def holder(tmp_path):
         process.wait()
 
 
+def symlink(target: str, link: Path) -> None:
+    """Chrome's lock is a symbolic link. Windows lets only an administrator
+    (or Developer Mode) make one, so there the test is skipped, not failed:
+    the Mac runs it."""
+    try:
+        os.symlink(target, link)
+    except OSError as exc:
+        if sys.platform == "win32":
+            pytest.skip(f"Windows cannot make a symbolic link here ({exc.winerror})")
+        raise
+
+
 def lock(profile: Path, pid: int, host: str | None = None) -> None:
-    os.symlink(f"{host or socket.gethostname()}-{pid}", profile / macos.SINGLETON_LOCK)
+    symlink(f"{host or socket.gethostname()}-{pid}", profile / macos.SINGLETON_LOCK)
 
 
 @mac_only
@@ -94,7 +106,7 @@ class TestTheLockLink:
         assert macos.lock_pid(tmp_path) is None
 
     def test_a_link_without_a_number_is_ignored(self, tmp_path):
-        os.symlink("nonsense", tmp_path / macos.SINGLETON_LOCK)
+        symlink("nonsense", tmp_path / macos.SINGLETON_LOCK)
         assert macos.lock_pid(tmp_path) is None
 
 
@@ -136,7 +148,8 @@ class TestStartingChromeOnAMac:
     def test_open_starts_a_new_one_in_the_background(self, tmp_path):
         command = chrome.mac_launch_command(self.args(tmp_path), visible=False)
         assert command[:3] == ["open", "-n", "-g"]
-        assert command[command.index("-a") + 1] == "/Applications/Google Chrome.app"
+        # As a path: Windows, running this test, writes its slashes the other way.
+        assert Path(command[command.index("-a") + 1]) == Path("/Applications/Google Chrome.app")
         flags = command[command.index("--args") + 1:]
         assert f"--user-data-dir={tmp_path}" in flags
         assert "--remote-debugging-port=9222" in flags
