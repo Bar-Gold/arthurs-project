@@ -101,6 +101,11 @@ MAX_COMPANIONS = pace.GROUPS_PER_POST - 1
 # Waiting for the picker's list to answer a search, at most; then a moment
 # more, so a second group of the same name still loading is seen too.
 PICKER_WAIT_MS = 10_000
+# How long the empty list is given to show groups again once its search box is
+# cleared, for the log line that says why a search found nothing.
+EMPTY_LIST_WAIT_MS = 5_000
+# What the log says when the list shows no group at all.
+NO_ROWS = "(no rows)"
 PICKER_SETTLE_MS = 1_000
 # Waiting for a tick to show on its box.
 TICK_WAIT_MS = 3_000
@@ -789,9 +794,47 @@ class GroupPoster:
             names = []
             for text in rows.all_inner_texts()[:12]:
                 names.append((text or "").strip().split("\n")[0])
-            return " | ".join(names) or "(no rows)"
+            return " | ".join(names) or NO_ROWS
         except Exception as exc:
             return f"(could not read the rows: {type(exc).__name__})"
+
+    def _explain_empty_list(self, picker: Any, search: Any, name: str) -> None:
+        """Log what the list shows once a search for `name` found no group at
+        all: what the search box held, how many groups it shows with the box
+        empty, and the list's own words (Facebook may say something there).
+
+        Shahar's log (2026-11-18) held 2305 searches that showed "(no rows)"
+        and nothing else, and could not say whether Facebook was leaving
+        those groups out (the empty box still lists others) or showing no
+        groups at all. Once per post. Only explains: it never raises, and the
+        next search clears the box again before typing.
+        """
+        try:
+            try:
+                held = search.input_value()
+            except Exception:
+                held = "(could not read it)"
+            self._search_for(search, "")
+            rows = picker.get_by_role("button").filter(
+                has=self.page.locator('input[type="checkbox"]')
+            )
+            waited = 0
+            count = rows.count()
+            while not count and waited < EMPTY_LIST_WAIT_MS:
+                self.page.wait_for_timeout(RENDER_POLL_MS)
+                waited += RENDER_POLL_MS
+                count = rows.count()
+            try:
+                words = " ".join(picker.inner_text().split())[:400]
+            except Exception:
+                words = "(could not read it)"
+            log.info(
+                "Add groups: the search for %s showed no groups at all (the search box held %r). "
+                "With the box empty the list shows %d groups: %s. The list's own words: %r",
+                name, held, count, self._row_names(picker), words,
+            )
+        except Exception as exc:
+            log.info("Add groups: could not read the empty list (%s).", type(exc).__name__)
 
     def _becomes_checked(self, box: Any) -> bool:
         waited = 0
@@ -837,6 +880,7 @@ class GroupPoster:
 
         ticked: list[Companion] = []
         unsure: list[Companion] = []
+        explained = False
         for companion in companions:
             self._search_for(search, companion.name)
             matches = self._rows_named(picker, companion.name)
@@ -845,10 +889,14 @@ class GroupPoster:
                     "no group in the list has exactly this name" if not matches
                     else "more than one group in the list has this name"
                 )
+                shown = self._row_names(picker)
                 log.info(
                     "Add groups: %s not ticked, %s. The list showed: %s",
-                    companion.name, self.not_ticked[companion.name], self._row_names(picker),
+                    companion.name, self.not_ticked[companion.name], shown,
                 )
+                if shown == NO_ROWS and not explained:
+                    explained = True
+                    self._explain_empty_list(picker, search, companion.name)
                 continue
             row = matches[0]
             # Still this group, right before the click: a row the list moved

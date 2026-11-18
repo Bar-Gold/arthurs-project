@@ -19,6 +19,7 @@ from fbposter import pace, strings
 from fbposter.automation.detect import PageVerdict
 from fbposter.automation.poster import (
     MAX_COMPANIONS,
+    NO_ROWS,
     TOGETHER_FOUND,
     TOGETHER_NOT_FOUND,
     TOGETHER_PICTURES,
@@ -237,6 +238,30 @@ class TestWhatIsRecorded:
         worker.run_once()
         assert poster.requests[1].group_url == two.url
 
+    def test_a_group_not_ticked_is_never_searched_for_again_in_the_batch(self, db, repos):
+        # Shahar's log, 2026-11-18: a group the list did not show went back in
+        # the queue and was searched for again in the next post, and the next,
+        # about 7 times. Now it goes out on its own.
+        groups, tasks, _ = repos
+        made = named_groups(groups, 20)
+        task = tasks.create(BODY, [(g.id, BODY) for g in made])
+        missing = {made[1].url, made[2].url}
+
+        poster = TickingPoster(cannot_tick=missing)
+        ticker = Clock()
+        worker = make_worker(db, poster, ticker)
+        for _ in range(3):
+            worker.run_once()
+            ticker.advance(minutes=30)
+
+        first, second, third = poster.requests
+        assert {c.group_url for c in first.companions} >= missing
+        assert second.group_url == made[1].url
+        assert made[2].url not in {c.group_url for c in second.companions}
+        assert [c.group_url for c in second.companions] == [g.url for g in made[10:19]]
+        assert third.group_url == made[2].url
+        assert set(states(tasks, task)) == {TARGET_DONE}
+
     def test_one_gap_per_post_not_per_group(self, db, repos):
         groups, tasks, settings = repos
         made = named_groups(groups, 11)
@@ -430,3 +455,95 @@ class TestCheckingATickedGroup:
         with pytest.raises(AutomationHalted) as caught:
             poster.check_companion(Companion(GROUP, "bar-test"), WORDS)
         assert caught.value.verdict is PageVerdict.CHECKPOINT
+
+
+class Rows:
+    def __init__(self, picker) -> None:
+        self.picker = picker
+
+    def filter(self, **_kwargs):
+        return self
+
+    def count(self):
+        return self.picker.rows_when_empty if self.picker.box == "" else 0
+
+
+class Picker:
+    """Just enough of the "Add groups" list for `_explain_empty_list`."""
+
+    def __init__(self, rows_when_empty=0, words="Add groups Search for groups", fails=False):
+        self.rows_when_empty = rows_when_empty
+        self.words = words
+        self.fails = fails
+        self.box = "Group 1"
+
+    def get_by_role(self, _role, **_kwargs):
+        if self.fails:
+            raise RuntimeError("the list went away")
+        return Rows(self)
+
+    def inner_text(self):
+        return self.words
+
+
+class SearchBox:
+    def __init__(self, picker) -> None:
+        self.picker = picker
+
+    def input_value(self):
+        return self.picker.box
+
+
+class TestAnEmptyAddGroupsList:
+    def poster(self):
+        page = Page({})
+        page.locator = lambda _selector: None
+        return GroupPoster(page, humanizer=quiet_humanizer())
+
+    def explain(self, picker, caplog):
+        import logging
+
+        poster = self.poster()
+        poster._search_for = lambda _search, text: setattr(picker, "box", text)
+        poster._row_names = lambda _picker: "Group 7 | Group 8" if picker.rows_when_empty else NO_ROWS
+        with caplog.at_level(logging.INFO, logger="fbposter.automation.poster"):
+            poster._explain_empty_list(picker, SearchBox(picker), "Group 1")
+        return caplog.text
+
+    def test_it_says_facebook_left_the_group_out(self, caplog):
+        text = self.explain(Picker(rows_when_empty=2), caplog)
+        assert "'Group 1'" in text  # what the box held
+        assert "list shows 2 groups: Group 7 | Group 8" in text
+
+    def test_it_says_the_whole_list_is_empty_and_its_words(self, caplog):
+        text = self.explain(Picker(rows_when_empty=0, words="Try again later"), caplog)
+        assert "list shows 0 groups" in text
+        assert "Try again later" in text
+
+    def test_it_never_raises(self, caplog):
+        text = self.explain(Picker(fails=True), caplog)
+        assert "could not read the empty list" in text
+
+    def test_once_per_post_and_nothing_is_ticked(self):
+        poster = self.poster()
+        picker = Picker()
+        picker.wait_for = lambda **_kwargs: None
+        search = SearchBox(picker)
+        search.wait_for = lambda **_kwargs: None
+        picker.locator = lambda _selector: type("L", (), {"first": search})()
+        poster._first_present = lambda _candidates: object()
+        explained = []
+        poster._find_add_groups = lambda _dialog: object()
+        poster.human.hover_then_click = lambda _element: None
+        poster._picker = lambda: picker
+        poster._search_for = lambda _search, _text: None
+        poster._rows_named = lambda _picker, _name: []
+        poster._row_names = lambda _picker: NO_ROWS
+        poster._explain_empty_list = lambda _picker, _search, name: explained.append(name)
+        companions = [Companion(f"https://www.facebook.com/groups/{i}/", f"Group {i}") for i in range(3)]
+
+        added: list = []
+        assert poster.add_groups(object(), companions, added) == []
+        assert added == []
+        assert explained == ["Group 0"]
+        assert set(poster.not_ticked) == {"Group 0", "Group 1", "Group 2"}

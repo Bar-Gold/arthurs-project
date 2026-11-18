@@ -327,6 +327,12 @@ class PostingWorker:
         # behaviour rather than a lost detail.
         self._connection_trouble: dict[int, Any] = {}
         self._connection_announced: set[int] = set()
+        # Turns (target ids) that "Add groups" could not tick once already, so
+        # they are never searched for again in that batch and go out on their
+        # own (Shahar's log, 2026-11-18: one missing group was searched for in
+        # about 7 posts in a row, about 10 seconds each time). In memory on
+        # purpose: a restart costs one more search at most, never a post.
+        self._not_in_list: set[int] = set()
         self._recovery_deferred = False
         self._recovery_announced = False
         self._next_recovery_at = None
@@ -1343,7 +1349,8 @@ class PostingWorker:
         name, or with a name another of the client's groups shares: the
         picker shows nothing but the name, so it could not tell them apart.
         Claimed like the first group, so a second copy of the app can never
-        post to them too.
+        post to them too. Never one the list already failed to tick in this
+        batch: it goes out on its own instead (`_not_in_list`).
         """
         if self.settings.get(pace.TOGETHER_KEY, pace.TOGETHER_DEFAULT) != "1":
             return []
@@ -1353,6 +1360,8 @@ class PostingWorker:
             if len(chosen) >= MAX_COMPANIONS:
                 break
             if other.id == target.id or other.state != TARGET_PENDING:
+                continue
+            if other.id in self._not_in_list:
                 continue
             if other.body != target.body:
                 continue
@@ -1394,7 +1403,11 @@ class PostingWorker:
         for other, other_group in together:
             result = results.get(other_group.url)
             if result is None or not result.posted:
-                log.info("Add groups: %s was not ticked, back in the queue.", other_group.name)
+                log.info(
+                    "Add groups: %s was not ticked, back in the queue to go out on its own.",
+                    other_group.name,
+                )
+                self._not_in_list.add(other.id)
                 self.tasks.release_target(other.id)
                 continue
             log.info(
