@@ -39,8 +39,11 @@ class FakeKeyboard:
     def __init__(self) -> None:
         self.chunks: list[str] = []
 
-    def type(self, text: str) -> None:
+    def insert_text(self, text: str) -> None:
         self.chunks.append(text)
+
+    def press(self, key: str) -> None:
+        self.chunks.append(f"<{key}>")
 
 
 class FakeMouse:
@@ -56,64 +59,40 @@ class FakePage:
         self.mouse = FakeMouse()
 
 
-class TestTyping:
-    def test_text_is_typed_one_character_at_a_time(self):
-        """A whole block pasted in 0ms is the clearest automation tell there is."""
+class TestPasting:
+    """Pasted, as an agent pastes a listing (the user's choice, 2026-11-13)."""
+
+    def test_a_line_goes_in_at_once(self):
         human, _ = make()
         keyboard = FakeKeyboard()
+        assert human.paste_text(keyboard, "hello world") == 11
+        assert keyboard.chunks == ["hello world"]
 
-        human.type_text(keyboard, "hello world")
+    def test_lines_are_joined_by_enter_as_when_typed(self):
+        human, _ = make()
+        keyboard = FakeKeyboard()
+        human.paste_text(keyboard, "Flat for sale\n\nCall Dana\r\n050")
+        assert keyboard.chunks == [
+            "Flat for sale", "<Enter>", "<Enter>", "Call Dana", "<Enter>", "050",
+        ]
 
-        assert keyboard.chunks == list("hello world")
-        assert "".join(keyboard.chunks) == "hello world"
+    def test_a_moment_to_reach_for_the_keys_first(self):
+        human, recorder = make()
+        human.paste_text(FakeKeyboard(), "hello")
+        low, high = HumanProfile().paste_reach_ms
+        assert len(recorder.waits) == 1
+        assert low / 1000 <= recorder.waits[0] <= high / 1000
 
-    def test_every_character_is_followed_by_a_wait(self):
+    def test_the_look_over_is_inside_the_profile(self):
+        human, recorder = make()
+        human.review_pause()
+        low, high = HumanProfile().paste_review_ms
+        assert low / 1000 <= recorder.waits[0] <= high / 1000
+
+    def test_empty_text_pastes_nothing_and_waits_for_nothing(self):
         human, recorder = make()
         keyboard = FakeKeyboard()
-
-        typed = human.type_text(keyboard, "abcdef")
-
-        assert typed == 6
-        assert len(recorder.waits) >= 6
-
-    def test_keystroke_delays_vary(self):
-        """Constant timing is its own fingerprint."""
-        human, recorder = make()
-        human.type_text(FakeKeyboard(), "abcdefghijklmnop")
-        assert len(set(recorder.waits)) > 1
-
-    def test_keystroke_delays_stay_inside_the_profile(self):
-        profile = HumanProfile(keystroke_ms=(50, 150), word_pause_chance=0.0)
-        human, recorder = make(profile=profile)
-
-        human.type_text(FakeKeyboard(), "abcdefghij")
-
-        for wait in recorder.waits:
-            assert 0.050 <= wait <= 0.150
-
-    def test_word_pauses_can_be_turned_off_and_on(self):
-        never = HumanProfile(word_pause_chance=0.0)
-        always = HumanProfile(word_pause_chance=1.0)
-
-        human_a, rec_a = make(profile=never)
-        human_a.type_text(FakeKeyboard(), "one two three four")
-
-        human_b, rec_b = make(profile=always)
-        human_b.type_text(FakeKeyboard(), "one two three four")
-
-        assert len(rec_b.waits) > len(rec_a.waits)
-
-    def test_typing_is_reproducible_for_a_given_seed(self):
-        human_a, rec_a = make(seed=99)
-        human_a.type_text(FakeKeyboard(), "reproducible")
-        human_b, rec_b = make(seed=99)
-        human_b.type_text(FakeKeyboard(), "reproducible")
-        assert rec_a.waits == rec_b.waits
-
-    def test_empty_text_types_nothing(self):
-        human, recorder = make()
-        keyboard = FakeKeyboard()
-        assert human.type_text(keyboard, "") == 0
+        assert human.paste_text(keyboard, "") == 0
         assert keyboard.chunks == []
         assert recorder.waits == []
 

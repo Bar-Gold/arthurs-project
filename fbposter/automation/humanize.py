@@ -1,8 +1,9 @@
 """Making the automation behave like a person using the site.
 
-This is a safety requirement rather than a nicety. Instant field fills, zero
-hover time and machine-regular pacing are exactly the signals that separate a
-script from a member, and the account is what is at stake.
+This is a safety requirement rather than a nicety. Zero hover time and
+machine-regular pacing are signals that separate a script from a member, and
+the account is what is at stake. Text is pasted, as an agent pastes a listing
+(the user's choice, 2026-11-13); it used to be typed key by key.
 
 `rng` and `sleep` are injected so tests are deterministic and instant while
 production gets real randomness and real waiting.
@@ -17,19 +18,20 @@ from typing import Callable, Protocol
 
 
 class _Typable(Protocol):  # the slice of Playwright's keyboard we use
-    def type(self, text: str) -> None: ...
+    def insert_text(self, text: str) -> None: ...
+
+    def press(self, key: str) -> None: ...
 
 
 @dataclass(frozen=True)
 class HumanProfile:
     """Timing ranges, all in milliseconds unless the name says seconds."""
 
-    # Per keystroke. Real typing is uneven, so this is a wide range rather than
-    # a constant delay -- a fixed 100ms per character is its own fingerprint.
-    keystroke_ms: tuple[float, float] = (55, 185)
-    # Now and then a person stops mid-sentence.
-    word_pause_chance: float = 0.09
-    word_pause_ms: tuple[float, float] = (220, 900)
+    # Pasting, not typing (the user's choice, 2026-11-13): an agent copies the
+    # listing from somewhere and pastes it. A moment to reach for Ctrl+V, and
+    # after a whole post, a moment to look it over.
+    paste_reach_ms: tuple[float, float] = (600, 1800)
+    paste_review_ms: tuple[float, float] = (2000, 5000)
 
     hover_ms: tuple[float, float] = (120, 420)
     click_settle_ms: tuple[float, float] = (350, 1100)
@@ -40,12 +42,12 @@ class HumanProfile:
     scroll_delta: tuple[int, int] = (240, 620)
     scroll_pause_ms: tuple[float, float] = (280, 950)
 
-    # Between groups in a batch: 2-4 minutes (the user's choice, 2026-10-18;
-    # it was 10-25). A post itself takes about a minute and a half, so one
-    # listing to 80 groups is about six hours. Guides put the floor at 2-3
-    # minutes: closer than that reads as automation. Since 2026-11-03 the
-    # client picks the speed on Settings (`fbposter/pace.py`), and the worker
-    # passes it in; this is the range when nothing is passed.
+    # From the start of one post to the start of the next: 2-4 minutes (the
+    # user's choice, 2026-10-18; it was 10-25 between posts). Since 2026-11-13
+    # the post's own time is inside it, not added to it. Guides put the floor
+    # at 2-3 minutes: closer than that reads as automation. Since 2026-11-03
+    # the client picks the speed on Settings (`fbposter/pace.py`), and the
+    # worker passes it in; this is the range when nothing is passed.
     group_gap_seconds: tuple[float, float] = (120, 240)
 
 
@@ -95,20 +97,26 @@ class Humanizer:
         locator.click()
         self.settle()
 
-    def type_text(self, keyboard: _Typable, text: str) -> int:
-        """Type character by character with variance.
+    def paste_text(self, keyboard: _Typable, text: str) -> int:
+        """Put the text in the way a person pastes it: all at once, after a
+        moment to reach for the keys (the user's choice, 2026-11-13).
 
-        Deliberately not `fill()` or a single `type(text)`: pasting a whole
-        block in 0ms is the clearest automation tell there is. Returns the
-        number of characters typed.
+        Each line goes in whole and Enter starts the next, which is how the
+        post box got a line break when the text was typed key by key. Never
+        the real clipboard: that would overwrite what the user has copied
+        while they work, and a copy made in between would be posted.
+        Returns the number of characters put in.
         """
-        for index, character in enumerate(text):
-            keyboard.type(character)
-            self._pause_ms(self.profile.keystroke_ms)
-
-            # A pause after a word, sometimes -- not after every one.
-            following = text[index + 1] if index + 1 < len(text) else ""
-            if following == " " and self.rng.random() < self.profile.word_pause_chance:
-                self._pause_ms(self.profile.word_pause_ms)
-
+        if not text:
+            return 0
+        self._pause_ms(self.profile.paste_reach_ms)
+        for index, line in enumerate(text.replace("\r\n", "\n").split("\n")):
+            if index:
+                keyboard.press("Enter")
+            if line:
+                keyboard.insert_text(line)
         return len(text)
+
+    def review_pause(self) -> float:
+        """Looking the post over once it is in."""
+        return self._pause_ms(self.profile.paste_review_ms)

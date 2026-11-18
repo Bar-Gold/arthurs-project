@@ -89,10 +89,10 @@ PAGES = {
             ),
             Tip(
                 "Leave time between groups",
-                "The app waits between posts by itself, on top of the time each "
-                "post takes: 2-4 minutes on Safe, the speed it starts on, less on "
-                "Normal or Fast (Settings). Faster finishes sooner, but looks more "
-                "like a bot.",
+                "The app spaces the posts out by itself: on Safe, the speed it "
+                "starts on, a new post starts every 2-4 minutes, the time to write "
+                "it included, and more often on Normal or Fast (Settings). Faster "
+                "finishes sooner, but looks more like a bot.",
             ),
             Tip(
                 "Two posts due at the same time",
@@ -190,10 +190,10 @@ PAGES = {
             ),
             Tip(
                 "זמן בין קבוצה לקבוצה",
-                "התוכנה ממתינה מעצמה בין פוסט לפוסט, בנוסף לזמן שכל פוסט לוקח: "
-                "2 עד 4 דקות במהירות Safe, שאיתה היא מתחילה, ופחות ב-Normal או "
-                "ב-Fast (במסך Settings). פרסום מהיר יותר מסתיים מוקדם יותר, אבל "
-                "נראה יותר כמו בוט.",
+                "התוכנה שומרת מעצמה על רווח בין הפוסטים: במהירות Safe, ברירת "
+                "המחדל, פוסט חדש מתחיל כל 2 עד 4 דקות, כולל הזמן שלוקח לכתוב "
+                "אותו, ובתדירות גבוהה יותר ב-Normal או ב-Fast (במסך Settings). "
+                "פרסום מהיר יותר מסתיים מוקדם יותר, אבל נראה יותר כמו בוט.",
             ),
             Tip(
                 "שני פוסטים באותה שעה",
@@ -292,9 +292,9 @@ PAGES = {
             ),
             Tip(
                 "Паузы между группами",
-                "Между постами программа сама делает паузу, не считая времени на "
-                "публикацию самого поста: от 2 до 4 минут на скорости Safe, с "
-                "которой она начинает, и меньше на Normal или Fast (экран "
+                "Программа сама делает паузы между постами: на скорости Safe, с "
+                "которой она начинает, новый пост начинается каждые 2-4 минуты, "
+                "включая время на его написание, и чаще на Normal или Fast (экран "
                 "Settings). Чем быстрее, тем раньше всё выйдет, но тем больше это "
                 "похоже на работу бота.",
             ),

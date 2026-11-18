@@ -26,9 +26,9 @@ QUIET_ON_KEY = "quiet_hours_on"
 QUIET_START_KEY = "quiet_hours_start"
 QUIET_END_KEY = "quiet_hours_end"
 
-# The wait between one post and the next, in seconds: picked at random in the
-# range each time. Safe is the 2-4 minutes the app always used, and the default,
-# so nothing changes for a client until they choose.
+# From the start of one post to the start of the next, in seconds, the post's
+# own time included (2026-11-13): picked at random in the range each time.
+# Safe, 2-4 minutes, is the default.
 SPEEDS: dict[str, tuple[str, tuple[float, float]]] = {
     "safe": ("Safe", (120, 240)),
     "normal": ("Normal", (60, 120)),

@@ -49,7 +49,7 @@ NO_COMPOSER = tuple(strings.COMPOSER_TRIGGERS)
 def quiet_humanizer() -> Humanizer:
     """Same logic as production, but instant and deterministic."""
     return Humanizer(
-        profile=HumanProfile(word_pause_chance=0.0),
+        profile=HumanProfile(),
         rng=random.Random(1),
         sleep=lambda _seconds: None,
     )

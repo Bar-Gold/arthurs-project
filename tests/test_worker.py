@@ -3271,3 +3271,40 @@ class TestAttachmentsAreKeptInTheAppsFolder:
         os.utime(orphan, (two_days_ago, two_days_ago))
         worker._maybe_prune_media(now + timedelta(hours=1))
         assert orphan.exists()
+
+
+class TestTheSpeedIncludesThePost:
+    """The speed counts from the start of one post to the start of the next,
+    the post's own time included (the user's choice, 2026-11-13)."""
+
+    class SlowPoster(FakePoster):
+        def __init__(self, ticker, takes) -> None:
+            super().__init__()
+            self.ticker = ticker
+            self.takes = takes
+
+        def post(self, request):
+            self.ticker.advance(**self.takes)
+            return super().post(request)
+
+    def _wait_after(self, db, repos, takes):
+        groups, tasks, settings = repos
+        one, two = add_groups(groups)
+        tasks.create(BODY, [(one.id, BODY), (two.id, BODY)])
+        ticker = Clock()
+        started = ticker.now
+        worker = make_worker(db, self.SlowPoster(ticker, takes), ticker, gap_seconds=(120, 240))
+        worker.run_once()
+        due = from_iso(settings.get("next_post_after", ""))
+        return started, ticker.now, due
+
+    def test_the_next_post_starts_two_to_four_minutes_after_this_one_began(self, db, repos):
+        started, finished, due = self._wait_after(db, repos, {"seconds": 50})
+        assert timedelta(minutes=2) <= due - started <= timedelta(minutes=4)
+        assert due - finished < timedelta(minutes=4) - timedelta(seconds=40)
+
+    def test_a_post_longer_than_the_speed_still_leaves_a_moment(self, db, repos):
+        from fbposter.worker import MIN_REST
+
+        _started, finished, due = self._wait_after(db, repos, {"minutes": 6})
+        assert due - finished == MIN_REST

@@ -8,6 +8,7 @@ cookies, IP and device fingerprint, and no automation flags are set on it.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import subprocess
 import threading
@@ -19,6 +20,8 @@ from typing import Any, Sequence
 
 from . import config
 from .errors import ChromeLaunchError, ChromeNotFoundError
+
+log = logging.getLogger(__name__)
 
 # One launch at a time. Several things start Chrome -- the startup check, the
 # wizard's button, the window noticing it has closed (see keepalive.py) -- and
@@ -248,6 +251,8 @@ def launch(
         # Popen on both systems, so there is one place a launch happens (and
         # one place the tests stand in for). On a Mac it runs `open`, which
         # hands Chrome to macOS and returns at once.
+        log.info("Starting Chrome (%s).", "on screen" if visible
+                 else "hidden" if config.IS_MAC else "off screen")
         subprocess.Popen(
             mac_launch_command(args, visible=visible) if config.IS_MAC else args,
             creationflags=_creation_flags(),
@@ -258,4 +263,5 @@ def launch(
         version = wait_for_cdp(port)
         if config.IS_MAC and not visible:
             _tuck_away_mac(version, profile_dir)
+        log.info("Chrome is up on port %s.", port)
         return True

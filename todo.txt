@@ -1,9 +1,11 @@
 Craete general server for myself
 Clients can send the exe file
-Shahar's logs (French group)
 Check competitors (PostPro, Nexus, PostPilot, EzPost)
 after warning behaviour
 add language change to the whole app
 remove removed groups
 check about battery health if always on
 Check about how chrome apears in mac
+make logs clearer (internet connection for example)
+remove groups that the user not realy in (pedning)
+see shahar's logs in 2 days
