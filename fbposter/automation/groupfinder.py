@@ -60,6 +60,12 @@ LIST_POLL_MS = 200
 # took 30 seconds for one batch live.
 MAX_SCROLLS = 200
 QUIET_SCROLLS = 3
+# While the heading's count says groups are still missing, twice the patience
+# (90 seconds at the bottom). The first read after a client's login, on a Mac,
+# stopped at the first 20 of 46 (2026-11-12): the batch was late, three rounds
+# ran out, and every read after it got all 46 in about 9 seconds. Without a
+# count there is nothing known to be missing, so the usual three.
+QUIET_SCROLLS_SHORT = 6
 # With the last round (up to a minute) and the page load, well under the daily
 # look's 10-minute clearance (`GROUPS_CHECK_CLEARANCE`), so a
 # read never shares Chrome with a post.
@@ -298,10 +304,13 @@ def read_your_groups(
 
     started = clock()
     quiet = 0
+    # The loop only goes on while short of a known count, so a known count
+    # means groups are known to be missing.
+    patience = QUIET_SCROLLS if expected is None else QUIET_SCROLLS_SHORT
     for _ in range(MAX_SCROLLS):
         if expected is not None and len(found) >= expected:
             break
-        if quiet >= QUIET_SCROLLS or clock() - started > TIME_LIMIT_S:
+        if quiet >= patience or clock() - started > TIME_LIMIT_S:
             break
         known = len(found)
         _to_the_bottom(page, humanizer, links)

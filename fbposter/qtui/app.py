@@ -768,10 +768,14 @@ class App(QMainWindow):
         end = clock.sane_hour(settings.get_int("posting_window_end_hour", 23), 23)
         if not clock.inside_window(clock.local_hour(now), start, end):
             return False
-        soon = now + GROUPS_CHECK_CLEARANCE
-        if self.task_repo.claimable(soon) or self.schedule_repo.due(soon):
-            return False
-        return True
+        return self.clear_of_posts(now)
+
+    def clear_of_posts(self, now: datetime | None = None) -> bool:
+        """No batch claimable and no repeating post due in the next
+        `GROUPS_CHECK_CLEARANCE`, so a read of the groups never shares Chrome
+        with a post. The daily look and a short read's retry both ask."""
+        soon = (now or clock.utcnow()) + GROUPS_CHECK_CLEARANCE
+        return not (self.task_repo.claimable(soon) or self.schedule_repo.due(soon))
 
     def check_groups_daily(self, now: datetime | None = None) -> None:
         if self.daily_groups_check_due(now):

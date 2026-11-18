@@ -32,6 +32,8 @@ from fbposter.qtui.views.groups import (
     IMPORT_PENDING_KEY,
     IMPORTING_LABEL,
     REPLACE_PENDING_KEY,
+    SHORT_READ_RETRIES,
+    SHORT_READ_RETRY_MS,
 )
 
 G = strings.BASE_URL + "/groups/"
@@ -212,10 +214,27 @@ class TestReadingThePage:
         assert result.expected == 5 and len(result.groups) == 5
 
     def test_stops_when_nothing_new_appears(self):
+        """Short of the heading's count it is twice as patient (2026-11-12)."""
         page = FakeListPage([card("1", "A")], heading="All groups you've joined (50)")
         result = read_your_groups(page, instant())
         assert result.ok and len(result.groups) == 1 and result.expected == 50
+        assert page.shown == groupfinder.QUIET_SCROLLS_SHORT
+        assert groupfinder.QUIET_SCROLLS_SHORT > groupfinder.QUIET_SCROLLS
+
+    def test_without_a_count_the_usual_patience(self):
+        page = FakeListPage([card("1", "A")], heading="Your groups")
+        result = read_your_groups(page, instant())
+        assert result.ok and result.expected is None
         assert page.shown == groupfinder.QUIET_SCROLLS
+
+    def test_a_late_batch_inside_the_extra_patience_is_still_read(self):
+        """The first read after a client's login got 20 of 46: the next batch
+        came after three rounds. It now has six."""
+        late = groupfinder.QUIET_SCROLLS + 1
+        page = FakeListPage([card("1", "A")] * late + [card("1", "A") + card("2", "B")],
+                            heading="All groups you've joined (2)")
+        result = read_your_groups(page, instant())
+        assert len(result.groups) == 2 and result.complete
 
     def test_stops_at_the_time_limit(self):
         ticks = iter(range(0, 10_000, 100))
@@ -846,3 +865,96 @@ class TestTheButtonFollowsFacebook:
         look(daily)
         assert old.id not in {g.id for g in daily.group_repo.list()}
         assert "Took 1 group you are no longer in" in daily.toast_label.text()
+
+
+class TestAShortReadIsTriedAgain:
+    """The user's request, 2026-11-12: the first read after the login got 20 of
+    46 groups, was taken as done, and the rest never came by themselves."""
+
+    @pytest.fixture
+    def later(self, window):
+        """The retry timer, run by hand instead of after a minute."""
+        due = []
+        window.views["groups"]._later = lambda ms, fn: due.append((ms, fn))
+        return due
+
+    @staticmethod
+    def short(*pairs, of):
+        return FoundGroups(groups=found(*pairs).groups, expected=of)
+
+    def test_the_first_read_stays_owed_until_it_has_them_all(self, window, later):
+        window.group_finder = StubFinder(self.short(("1", "A"), of=3))
+        connect(window)
+        assert window.settings_repo.get(IMPORT_PENDING_KEY) == "1"
+        assert "look for the rest by itself" in window.toast_label.text()
+        window.group_finder = StubFinder(found(("1", "A"), ("2", "B"), ("3", "C")))
+        _ms, again = later[0]
+        again()
+        assert [g.name for g in window.group_repo.list()] == ["A", "B", "C"]
+        assert window.settings_repo.get(IMPORT_PENDING_KEY) == "0"
+        assert window.selected_groups == {g.id for g in window.group_repo.list()}
+
+    def test_a_minute_later_and_at_most_three_times(self, window, later):
+        window.settings_repo.set(SETUP_COMPLETE_KEY, "1")
+        connect(window)
+        window.group_finder = StubFinder(self.short(("1", "A"), of=3))
+        groups = window.views["groups"]
+        groups.import_from_facebook()
+        for _ in range(10):
+            if not later:
+                break
+            ms, again = later.pop()
+            assert ms == SHORT_READ_RETRY_MS
+            again()
+        assert window.group_finder.calls == 1 + SHORT_READ_RETRIES
+        assert f"Press {IMPORT_LABEL} again" in window.toast_label.text()
+
+    def test_a_complete_read_needs_no_retry(self, window, later):
+        window.settings_repo.set(SETUP_COMPLETE_KEY, "1")
+        connect(window)
+        window.views["groups"].import_from_facebook()
+        assert later == []
+
+    def test_without_a_count_nothing_is_known_to_be_missing(self, window, later):
+        window.group_finder = StubFinder(FoundGroups(groups=found(("1", "A")).groups))
+        connect(window)
+        assert later == []
+        assert window.settings_repo.get(IMPORT_PENDING_KEY) == "0"
+
+    def test_it_waits_while_a_post_is_due(self, window, later, monkeypatch):
+        window.settings_repo.set(SETUP_COMPLETE_KEY, "1")
+        connect(window)
+        window.group_finder = StubFinder(self.short(("1", "A"), of=3))
+        window.views["groups"].import_from_facebook()
+        monkeypatch.setattr(window, "clear_of_posts", lambda now=None: False)
+        later.pop()[1]()
+        assert window.group_finder.calls == 1, "read the groups with a post due"
+
+    def test_not_once_the_connection_is_gone(self, window, later):
+        window.settings_repo.set(SETUP_COMPLETE_KEY, "1")
+        connect(window)
+        window.group_finder = StubFinder(self.short(("1", "A"), of=3))
+        window.views["groups"].import_from_facebook()
+        window._on_check_result(ConnectionResult(ConnectionState.ERROR, "gone"))
+        later.pop()[1]()
+        assert window.group_finder.calls == 1
+
+    def test_a_press_of_the_button_starts_the_count_afresh(self, window, later):
+        window.settings_repo.set(SETUP_COMPLETE_KEY, "1")
+        connect(window)
+        window.group_finder = StubFinder(self.short(("1", "A"), of=3))
+        groups = window.views["groups"]
+        groups._short_retries = SHORT_READ_RETRIES
+        groups.import_from_facebook()
+        assert len(later) == 1
+
+    def test_the_daily_look_keeps_its_groups_unticked(self, window, later):
+        window.settings_repo.set(SETUP_COMPLETE_KEY, "1")
+        connect(window)
+        window.group_finder = StubFinder(self.short(("1", "A"), of=2))
+        groups = window.views["groups"]
+        groups.import_from_facebook(daily=True)
+        window.group_finder = StubFinder(found(("1", "A"), ("2", "B")))
+        later.pop()[1]()
+        assert len(window.group_repo.list()) == 2
+        assert window.selected_groups == set()

@@ -21,7 +21,7 @@ user's choice (2026-10-15) was that a set is picked whole or not at all.
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -62,6 +62,12 @@ REPLACE_PENDING_KEY = "groups_replace_pending"
 # rather than every ten minutes.
 GROUPS_CHECKED_KEY = "groups_checked_at"
 IMPORT_LABEL = "Get my groups from Facebook"
+# A read that came back short of Facebook's count is tried again by itself,
+# this long after, at most this many times in a row (2026-11-12, the user's
+# request: the first read after a client's login got 20 of 46 and stopped).
+# Bounded, never a loop: nothing may open Facebook on an endless timer.
+SHORT_READ_RETRY_MS = 60_000
+SHORT_READ_RETRIES = 3
 IMPORTING_LABEL = "Getting your groups…"
 SEARCH_PLACEHOLDER = "Search your groups"
 SHOW_REMOVED = "Show removed groups ({count})"
@@ -222,6 +228,10 @@ class GroupsView(QWidget):
         self.removed_list: RowList | None = None
         # True while the groups are being read off Facebook.
         self._importing = False
+        # How many times in a row a short read has been tried again, and the
+        # timer that does it (a seam: the tests run it at once).
+        self._short_retries = 0
+        self._later = QTimer.singleShot
         # The group set boxes, and the sets they were drawn from. Picking one
         # does not rebuild them (the box clicked would be destroyed under the
         # click); only a set being made, renamed, refilled or deleted does.
@@ -475,7 +485,8 @@ class GroupsView(QWidget):
             "" if connected else "Available once the app is connected to Facebook."
         )
 
-    def import_from_facebook(self, automatic: bool = False, daily: bool = False) -> None:
+    def import_from_facebook(self, automatic: bool = False, daily: bool = False,
+                             retry: bool = False) -> None:
         """Read every group the account is in, add the ones not in the list,
         and take off it the ones the account left (`_add_found`).
 
@@ -497,6 +508,8 @@ class GroupsView(QWidget):
         finder = self.app.group_finder
         if self._importing or finder is None:
             return
+        if not retry:
+            self._short_retries = 0  # a read of its own starts the count afresh
         self._importing = True
         self.refresh_import_button()
 
@@ -525,6 +538,7 @@ class GroupsView(QWidget):
                 self._replace_with_found(result)
             else:
                 self._add_found(result, automatic, tick=not daily)
+                self._after_a_read(result, daily)
             self.refresh_import_button()
 
         def failed(exc):
@@ -535,6 +549,29 @@ class GroupsView(QWidget):
             self.refresh_import_button()
 
         self.app.run_in_background(work, done, failed)
+
+    def _after_a_read(self, result, daily: bool) -> None:
+        """Try a short read again by itself, a minute later, a few times.
+
+        Short is short of a count Facebook gave: without one nothing is known
+        to be missing. The retry is automatic (it says nothing if it fails),
+        keeps the daily look's groups unticked, and waits while a post is due,
+        so it never shares Chrome with one.
+        """
+        if result.complete or result.expected is None:
+            self._short_retries = 0
+            return
+        if self._short_retries >= SHORT_READ_RETRIES:
+            return
+        self._short_retries += 1
+
+        def again():
+            if (self.app.connection_state is ConnectionState.CONNECTED
+                    and self.app.group_finder is not None
+                    and self.app.clear_of_posts()):
+                self.import_from_facebook(automatic=True, daily=daily, retry=True)
+
+        self._later(SHORT_READ_RETRY_MS, again)
 
     def _stamp_checked(self) -> None:
         self.app.settings_repo.set(GROUPS_CHECKED_KEY, to_iso(clock.utcnow()))
@@ -554,7 +591,12 @@ class GroupsView(QWidget):
             new, left = sync.added + sync.rejoined, sync.left
         else:
             new, left = self.app.group_repo.import_found(found), {}
-        self.app.settings_repo.set(IMPORT_PENDING_KEY, "0")
+        # The first read after the login is done only once it has every group
+        # Facebook counts (the user's request, 2026-11-12). Short, it stays
+        # owed: tried again shortly (`_after_a_read`), and at the next
+        # connection. Without a count, what it got is all there is to know.
+        if result.complete or result.expected is None:
+            self.app.settings_repo.set(IMPORT_PENDING_KEY, "0")
         if tick:
             for group in new:
                 self.app.set_group_selected(group.id, True)
@@ -585,17 +627,26 @@ class GroupsView(QWidget):
                 f"Took {gone} group{'s' if gone != 1 else ''} you are no longer in "
                 "off your list" + (f", and out of {listed}." if listed else ".")
             )
-        if not parts:
-            if automatic:
-                return  # nothing new, and nobody asked
-            parts.append("No new groups found. Every group you are in is already in the list.")
-        message = " ".join(parts)
         short = result.expected is not None and len(result.groups) < result.expected
+        given_up = short and self._short_retries >= SHORT_READ_RETRIES
+        if not parts:
+            if automatic and not given_up:
+                return  # nothing new, and nobody asked
+            if not automatic:
+                parts.append(
+                    "No new groups found. Every group you are in is already in the list."
+                )
+        message = " ".join(parts)
         if short:
+            # The last of the retries says so even with nothing new: the
+            # client is still missing groups, and only the button is left.
             message += (
                 f" Facebook lists {result.expected} groups and {len(result.groups)} "
-                f"could be read; press {IMPORT_LABEL} again for the rest."
+                "could be read. "
+                + (f"Press {IMPORT_LABEL} again for the rest." if given_up
+                   else "The app will look for the rest by itself in a minute.")
             )
+            message = message.strip()
         self.notify(message, "warning" if short else "success")
         # A group whose name could not be read off the list gets the usual
         # lookup, one at a time.

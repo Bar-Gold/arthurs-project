@@ -6,3 +6,4 @@ after warning behaviour
 add language change to the whole app
 remove removed groups
 check about battery health if always on
+Check about how chrome apears in mac

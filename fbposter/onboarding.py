@@ -19,6 +19,7 @@ from __future__ import annotations
 import enum
 from dataclasses import dataclass
 
+from .config import IS_MAC
 from .connection import ConnectionResult, ConnectionState
 
 
@@ -65,8 +66,11 @@ GUIDANCE: dict[SetupStep, Guidance] = {
     SetupStep.CHROME_DOWN: Guidance(
         headline="Chrome is not running yet",
         detail=(
-            "The app uses its own separate Chrome window, kept off-screen so it "
-            "never gets in your way."
+            # A Mac will not put a window off-screen, so it is hidden there
+            # instead (macos.py).
+            "The app uses its own separate Chrome window, kept "
+            + ("hidden" if IS_MAC else "off-screen")
+            + " so it never gets in your way."
         ),
         action="Start Chrome",
         done=False,
