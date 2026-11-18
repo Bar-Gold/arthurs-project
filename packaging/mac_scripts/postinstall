@@ -1,0 +1,14 @@
+#!/bin/bash
+# Runs as root once the Mac installer has copied the app into /Applications.
+# Opens it for the person at the screen, as the Windows installer's last page
+# offers ("Open Facebook Auto-Poster now"). Never fails the install: an app
+# that does not open is opened from Applications instead.
+APP="/Applications/FacebookAutoPoster.app"
+user_id="$(stat -f %u /dev/console 2>/dev/null)"
+# Nobody logged in at the screen (root owns the console then): nothing to open.
+if [ -z "$user_id" ] || [ "$user_id" -eq 0 ]; then
+  exit 0
+fi
+# In that person's own session and as them, never as root.
+launchctl asuser "$user_id" sudo -u "#$user_id" open -a "$APP" >/dev/null 2>&1 || true
+exit 0

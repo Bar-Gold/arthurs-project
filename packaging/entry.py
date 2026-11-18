@@ -1,4 +1,4 @@
-"""Entry point for the packaged .exe.
+"""Entry point for the packaged app (the .exe on Windows, the .app on a Mac).
 
 Deliberately tiny. Almost everything it does is start the Qt window, which is
 what the client's Start Menu shortcut points at -- there is no console behind
@@ -104,8 +104,9 @@ def selftest(show_dialog: bool = True) -> int:
     lines.append("ALL CHECKS PASSED" if failures == 0 else f"{failures} CHECK(S) FAILED")
     report = "\n".join(lines)
 
-    # Written beside the user's data rather than beside the .exe: Program Files
-    # is not writable by the account the app runs as.
+    # Written beside the user's data rather than beside the program: Program
+    # Files (and /Applications on a Mac) is not writable by the account the app
+    # runs as.
     written = ""
     try:
         from fbposter import config

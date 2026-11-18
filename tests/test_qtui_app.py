@@ -214,6 +214,98 @@ class TestChromeClosesWithTheApp:
         assert win.app._close_chrome() == tabs.GONE
 
 
+class TestAMacClosesToTheDock:
+    """The user's choice (2026-11-18): on a Mac the red button hides the
+    window and posting goes on, as in Mail; a quit (the app menu, the Dock,
+    Cmd+Q) is what stops it, and asks first as closing does on Windows."""
+
+    @pytest.fixture
+    def mac(self, window):
+        built = []
+
+        def build(**kwargs):
+            win = window(**kwargs)
+            win.app.hide_on_close = True
+            built.append(win)
+            return win
+
+        yield build
+        # So the window fixture's own close really closes it.
+        for win in built:
+            win.app.hide_on_close = False
+
+    @staticmethod
+    def quit_event():
+        from PySide6.QtCore import QEvent
+
+        return QEvent(QEvent.Quit)
+
+    def test_the_red_button_hides_and_nothing_stops(self, mac):
+        win = mac()
+        win.batch()
+        closed = []
+        win.app._close_chrome = lambda: closed.append(1)
+        assert win.app.close() is False, "the window closed instead of hiding"
+        assert not win.app.isVisible()
+        assert win.asked == [], "hiding stops nothing, so there is nothing to ask"
+        assert not win.worker.stopped
+        assert closed == [], "Chrome closed with the posting still going on"
+        assert TaskRepo(win.db).unfinished_count() == 1, "the database was closed"
+
+    def test_a_click_on_the_dock_icon_brings_it_back(self, mac):
+        from PySide6.QtCore import Qt
+
+        win = mac()
+        win.app.close()
+        win.app.on_application_state(Qt.ApplicationActive)
+        assert win.app.isVisible()
+
+    def test_turning_active_shows_nothing_the_red_button_did_not_hide(self, mac):
+        from PySide6.QtCore import Qt
+
+        win = mac()
+        win.app.hide()
+        win.app.on_application_state(Qt.ApplicationActive)
+        assert not win.app.isVisible()
+
+    def test_quitting_stops_the_posting_and_closes_chrome(self, mac):
+        win = mac()
+        order = []
+        win.app._close_chrome = lambda: order.append("chrome")
+        win.worker.stop = lambda: order.append("worker")
+        event = self.quit_event()
+        assert win.app.eventFilter(win.app, event) is False, "Qt was not left to quit"
+        assert order == ["worker", "chrome"]
+
+    def test_quitting_with_posts_waiting_asks_and_no_calls_it_off(self, mac):
+        win = mac(answer=False)
+        win.batch()
+        win.app.close()  # to the Dock first, as it usually is
+        event = self.quit_event()
+        assert win.app.eventFilter(win.app, event) is True
+        assert not event.isAccepted(), "an accepted Quit tells macOS to go on quitting"
+        assert len(win.asked) == 1
+        assert win.app.isVisible(), "the question needs its window"
+        assert not win.worker.stopped
+        # And the next red button hides again, rather than quitting.
+        assert win.app._quitting is False
+
+    def test_windows_still_closes_on_the_red_button(self, window):
+        win = window()
+        assert win.app.hide_on_close is False
+        assert win.app.close() is True
+        assert win.worker.stopped
+
+    def test_the_question_says_quit_on_a_mac(self):
+        from fbposter.qtui.app import close_question
+
+        mac = close_question("1 batch still to go out", mac=True)
+        assert mac["go"] == "Quit anyway" and "quits" in mac["title"]
+        assert "1 batch still to go out" in mac["detail"]
+        windows = close_question("1 batch still to go out", mac=False)
+        assert windows["go"] == "Close anyway"
+
+
 class TestPostsToLookAtAreWarnings:
     """A post that might have gone out, and a post Facebook gave no id, are
     each something to look at, so neither may read as "that went fine"."""

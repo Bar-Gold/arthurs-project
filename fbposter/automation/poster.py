@@ -591,7 +591,7 @@ class GroupPoster:
         # today for short text -- it may keep one for a longer post or when
         # media was attached. Typing on top of a leftover draft would post
         # something the user never wrote, so this does not rely on it.
-        self.page.keyboard.press("Control+A")
+        self.page.keyboard.press("ControlOrMeta+A")
         self.page.keyboard.press("Delete")
 
         self.human.paste_text(self.page.keyboard, body)
@@ -742,7 +742,7 @@ class GroupPoster:
                     "Could not type in the list of groups to add. Nothing was "
                     "posted."
                 )
-        self.page.keyboard.press("Control+A")
+        self.page.keyboard.press("ControlOrMeta+A")
         self.page.keyboard.press("Delete")
         if text:
             self.human.paste_text(self.page.keyboard, text)

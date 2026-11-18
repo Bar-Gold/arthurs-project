@@ -289,6 +289,9 @@ def launch_agent_plist(command: list[str]) -> bytes:
         # Started once at login. Not kept alive: closing the app must close it.
         "KeepAlive": False,
         "ProcessType": "Interactive",
+        # macOS 13 and later name the item after this app in System Settings,
+        # Login Items, instead of an unknown item with no icon. The bundle id.
+        "AssociatedBundleIdentifiers": [LAUNCH_AGENT_LABEL],
     })
 
 

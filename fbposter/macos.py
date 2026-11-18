@@ -285,3 +285,60 @@ def keep_awake_while_running(pid: int | None = None, popen=subprocess.Popen):
         )
     except OSError:
         return None
+
+
+# Everything NSActivityUserInitiated holds except idle system sleep, which is
+# caffeinate's job above (so the lid and the user's own choice still decide).
+NS_ACTIVITY_USER_INITIATED_ALLOWING_IDLE_SYSTEM_SLEEP = 0x00EFFFFF
+KEEP_RUNNING_REASON = b"Posting to Facebook groups on a schedule"
+
+# The activity macOS handed back, held for the life of the app: letting it go
+# ends it, and macOS may then nap the app again.
+_activity = None
+
+
+def keep_running(objc_loader=None, send=None):
+    """Stop macOS putting the app to sleep (App Nap) while its window is hidden.
+
+    App Nap slows the timers and threads of an app nobody is looking at, which
+    is this app's normal state on a Mac: the window closed to the Dock, posting
+    going on. `caffeinate` does not prevent it; it only keeps the Mac awake.
+    `[NSProcessInfo beginActivityWithOptions:reason:]` is Apple's way, called
+    through the Objective-C runtime like `hide`. The bundle also says so in its
+    Info.plist (`LSAppNapIsDisabled`); this covers running from a checkout too.
+    Returns the activity, or None when it could not be had. Never raises.
+    """
+    global _activity
+    if _activity is not None:
+        return _activity
+    objc = (objc_loader or _objc)()
+    if objc is None:
+        return None
+    send = send or _send
+    pool = None
+    try:
+        pool_class = objc.objc_getClass(b"NSAutoreleasePool")
+        pool = send(objc, ctypes.c_void_p, send(objc, ctypes.c_void_p, pool_class, b"alloc"), b"init")
+        info = send(objc, ctypes.c_void_p, objc.objc_getClass(b"NSProcessInfo"), b"processInfo")
+        reason = send(
+            objc, ctypes.c_void_p, objc.objc_getClass(b"NSString"),
+            b"stringWithUTF8String:", KEEP_RUNNING_REASON, argtypes=(ctypes.c_char_p,),
+        )
+        activity = send(
+            objc, ctypes.c_void_p, info, b"beginActivityWithOptions:reason:",
+            NS_ACTIVITY_USER_INITIATED_ALLOWING_IDLE_SYSTEM_SLEEP, reason,
+            argtypes=(ctypes.c_uint64, ctypes.c_void_p),
+        )
+        if not activity:
+            return None
+        # Kept past the pool below, which would otherwise free it.
+        _activity = send(objc, ctypes.c_void_p, activity, b"retain")
+        return _activity
+    except Exception:
+        return None
+    finally:
+        if pool:
+            try:
+                send(objc, None, pool, b"drain")
+            except Exception:
+                pass

@@ -115,10 +115,10 @@ class TestHappyPath:
         names = page.call_names()
         presses = [i for i, c in enumerate(page.calls) if c[0] == "press"]
         first_type = names.index("type")
-        assert any(page.calls[i][1] == "Control+A" for i in presses)
+        assert any(page.calls[i][1] == "ControlOrMeta+A" for i in presses)
         assert any(page.calls[i][1] == "Delete" for i in presses)
         assert min(
-            i for i in presses if page.calls[i][1] in ("Control+A", "Delete")
+            i for i in presses if page.calls[i][1] in ("ControlOrMeta+A", "Delete")
         ) < first_type
 
     def test_the_post_button_is_clicked(self):
@@ -204,7 +204,7 @@ class TestPicturesOnly:
         """No words to type is not a reason to post whatever was there before."""
         page = FakePage()
         self.post(page)
-        assert ("press", "Control+A") in page.calls
+        assert ("press", "ControlOrMeta+A") in page.calls
         assert ("press", "Delete") in page.calls
 
     def test_invisible_characters_alone_are_no_words(self):

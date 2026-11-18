@@ -1,7 +1,8 @@
 #!/bin/bash
 # The Mac client deliverable: the suite, then PyInstaller, then a .pkg installer.
 # Like build.ps1 it refuses to build a release from a red suite, or from a
-# bundle that fails its own checks. Output: dist/FacebookAutoPoster-Setup-<v>.pkg
+# bundle that fails its own checks.
+# Output: dist/FacebookAutoPoster-Setup-<v>-mac-<arch>.pkg
 #
 #   packaging/build_mac.sh                   everything
 #   packaging/build_mac.sh --clean           start from an empty build folder
@@ -12,7 +13,8 @@
 # The installer shows the account blocking policy (policy.rtf) and will not
 # install until it is accepted, as the Windows one does. It is not signed: a
 # client's Mac calls it from an unidentified developer until it is signed and
-# notarised with an Apple Developer ID.
+# notarised with an Apple Developer ID; packaging/mac_install_steps.txt is what
+# to send the client with it until then.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -104,7 +106,9 @@ cp packaging/policy.rtf "$RESOURCES/policy.rtf"
 COMPONENTS="$BUILD/components.plist"
 pkgbuild --analyze --root "$STAGE" "$COMPONENTS" >/dev/null
 plutil -replace 0.BundleIsRelocatable -bool NO "$COMPONENTS"
+# The postinstall script opens the app at the end, as the Windows installer does.
 pkgbuild --root "$STAGE" --component-plist "$COMPONENTS" \
+  --scripts packaging/mac_scripts \
   --install-location /Applications --identifier "$BUNDLE_ID" --version "$VERSION" \
   "$BUILD/app.pkg" >/dev/null
 
@@ -115,6 +119,22 @@ cat > "$BUILD/distribution.xml" <<XML
     <license file="policy.rtf"/>
     <options customize="never" require-scripts="false" hostArchitectures="$ARCH"/>
     <domains enable_localSystem="true"/>
+    <!-- The oldest macOS the bundled Qt runs on, as the app's LSMinimumSystemVersion. -->
+    <allowed-os-versions><os-version min="12.0"/></allowed-os-versions>
+    <!-- As on Windows: a warning, never a block, when Chrome is not installed. -->
+    <installation-check script="chromeCheck()"/>
+    <script><![CDATA[
+function chromeCheck() {
+    var name = 'Google Chrome.app';
+    if (system.files.fileExistsAtPath('/Applications/' + name)) return true;
+    var home = system.env.HOME;
+    if (home && system.files.fileExistsAtPath(home + '/Applications/' + name)) return true;
+    my.result.type = 'Warning';
+    my.result.title = 'Google Chrome was not found on this Mac';
+    my.result.message = 'Facebook Auto-Poster posts through a real Chrome window, so Chrome needs to be installed before it can post. You can carry on with this installation and install Chrome afterwards.';
+    return false;
+}
+    ]]></script>
     <choices-outline>
         <line choice="default"><line choice="$BUNDLE_ID"/></line>
     </choices-outline>

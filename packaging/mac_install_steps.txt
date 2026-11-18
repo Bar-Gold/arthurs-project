@@ -1,0 +1,34 @@
+Installing Facebook Auto-Poster on your Mac
+============================================
+
+Your Mac will warn you the first time, because the app is not yet registered
+with Apple. This is expected. It takes one extra step, once.
+
+1. Double-click the file FacebookAutoPoster-Setup-....pkg.
+
+2. Your Mac says it cannot be opened, or that Apple could not check it.
+   Click "Done" (or "OK"). Do NOT click "Move to Bin".
+
+3. Open System Settings (the grey gear in the Dock, or the Apple menu at the
+   top left, then System Settings).
+
+4. Click "Privacy & Security" in the list on the left, then scroll down to the
+   "Security" part.
+
+5. You will see a line about FacebookAutoPoster-Setup. Click "Open Anyway".
+   Enter your Mac's password (or use Touch ID) when it asks.
+
+6. The installer opens. Click Continue, read the policy, click "Agree", then
+   Install. It asks for your Mac's password once more.
+
+7. When it finishes, the app opens by itself. Next time, open it from
+   Applications or from Launchpad.
+
+Good to know
+------------
+
+- Google Chrome must be installed. The installer warns you if it is not.
+- Closing the window with the red button keeps the app posting in the
+  background; its icon stays in the Dock. Click the icon to bring it back.
+- To quit the app: click its name at the top left of the screen, then "Quit",
+  or right-click its icon in the Dock and choose "Quit".

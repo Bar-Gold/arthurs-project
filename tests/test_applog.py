@@ -174,3 +174,30 @@ class TestTheSupportCallsQuestions:
         with caplog.at_level(logging.INFO, logger="fbposter"):
             qt_app.toast("Posting paused.", "warning")
         assert "Shown to the user (warning): Posting paused." in caplog.text
+
+
+class TestWhereAndWhat:
+    def test_a_mac_keeps_it_in_library_logs(self, monkeypatch):
+        """Where Mac apps keep their logs, and Console.app looks."""
+        from fbposter import config
+
+        monkeypatch.setattr(config, "IS_MAC", True)
+        assert applog.log_dir() == Path.home() / "Library" / "Logs" / "FBAutomation"
+
+    def test_windows_keeps_it_beside_the_database(self, monkeypatch, tmp_path):
+        from fbposter import config
+
+        monkeypatch.setattr(config, "IS_MAC", False)
+        monkeypatch.setattr(config, "database_path", lambda: tmp_path / "fbposter.db")
+        assert applog.log_dir() == tmp_path / applog.LOG_DIRNAME
+
+    def test_the_first_line_names_the_system_a_person_would(self, monkeypatch):
+        import platform
+        import sys
+
+        monkeypatch.setattr(sys, "platform", "darwin")
+        monkeypatch.setattr(platform, "mac_ver", lambda: ("13.6.6", ("", "", ""), "arm64"))
+        assert applog.system_name() == "macOS 13.6.6"
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setattr(platform, "version", lambda: "10.0.19045")
+        assert applog.system_name() == "Windows 10.0.19045"

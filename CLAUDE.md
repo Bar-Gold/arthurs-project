@@ -24,6 +24,7 @@ Text that reaches a post also passes Invisible characters (below) and Hebrew (`u
 
 Each is spelled out in its rule file. These are the ones no change may break:
 
+- **Everything works on Windows and on a Mac** (the user's rule, 2026-11-18). Every feature added or changed from now on is built, tested and checked on both: one system's code goes behind `config.IS_MAC` / `IS_WINDOWS` (or in `macos.py`) and the other's stays exactly as it was. Keys sent to Chrome use `ControlOrMeta`, never a bare `Control`. Paths come from `config`, never a `C:\` or a `~/Library` written in place. Words the user sees name the system they are on (taskbar or Dock, this PC or this Mac). What one system cannot be tested on here gets a test that pretends to be it (monkeypatch `config.IS_MAC`), and the gap is said out loud, never assumed fine.
 - **Never post twice.** A post is never retried once a composer was opened; the only exceptions are `ConnectionFailed` and `PageLoadFailed`, both raised before any post box exists (`worker.md`). A duplicate is worse than a missing post.
 - **Never automate login, and never click through a checkpoint, CAPTCHA or warning.** Halt the batch and tell the user (`automation.md`).
 - **One group failing never stops a batch.** Only a checkpoint, the login page or a "posting too fast" warning does; anything else is recorded for that group and the batch goes on (`worker.md`).
@@ -118,7 +119,11 @@ What is different on a Mac, all of it in `fbposter/macos.py` or behind `config.I
 - **The app's Chrome is hidden, not off-screen**, because macOS will not put a window off-screen (`macos.py` has what was verified). Started with `open -n -g`, parked as far left as macOS allows, then hidden like Cmd+H. Chrome un-hides itself whenever a tab opens, so **every tab the app opens for work goes through `session.new_page`**, which hides it again (`session.after_new_page`). Never call `context.new_page()` directly except for the login window, which `login.show_window` brings forward. Both seams are inert until `qtui.app.run()` sets them.
 - **The profile lock** is Chrome's `SingletonLock` link, not `lockfile`, and the process it names must be proven to be a Chrome on this profile (`macos.lock_owner`), because a crash leaves the link behind.
 - **The own-Chrome proof** reads the command line with `sysctl(KERN_PROCARGS2)` (`macos.command_line`), never by splitting `ps` output: "Application Support" has a space in it.
-- **One copy at a time** is `flock` on `/tmp/<name>.lock` (`single.py`), dropped by macOS when the process ends.
+- **One copy at a time** is `flock` on `<name>.lock` in the data folder (`single.py`), dropped by macOS when the process ends. Never `/tmp`: macOS empties it of files untouched for three days, lock held or not.
+- **The red button closes the window to the Dock and posting goes on; quitting stops it** (the user's choice, 2026-11-18; `.claude/rules/ui.md`, the close rule). A menu bar has Settings... (Cmd+comma) and Quit. Native parts stay light in dark mode (`setColorScheme(Light)`, `NSRequiresAquaSystemAppearance`).
+- **Never napped**: `macos.keep_running()` holds an `NSProcessInfo` activity for the app's life, because App Nap slows a hidden app's timers and threads, which is this app's normal state on a Mac; `caffeinate` does not prevent it. The bundle sets `LSAppNapIsDisabled` too.
+- **The log** is in `~/Library/Logs/FBAutomation/`, where Console.app looks (`applog.log_dir`).
+- **Keys pressed in Chrome**: Select all is `ControlOrMeta+A`, never `Control+A`, which on a Mac moves to the start of the line, so the post box was never cleared.
 - **Awake while the app is open** (the user's choice, 2026-11-12): `caffeinate -i -w <app pid>`, started by `run()`. Idle sleep only: the screen still turns off and closing the lid still sleeps the Mac. No switch for it on Settings; `SleepBlocker` holds nothing there. The battery warning reads `pmset -g batt`.
 - **Start at login** is a LaunchAgent in `~/Library/LaunchAgents` (`always_on.MacAlwaysOn`), no password.
 - **The font** is the Mac's own (`.AppleSystemUIFont`). Messages say "Dock" and "this Mac" where Windows says "taskbar" and "this PC".

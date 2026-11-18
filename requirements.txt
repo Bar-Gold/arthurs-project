@@ -11,7 +11,7 @@ pytest-xdist>=3.6
 # which only manages one run of one script at a time, so any line mixing Hebrew
 # with English or digits came out mirrored. Qt shapes text itself and needs no
 # help at all. LGPL, so PySide6 rather than PyQt6.
-PySide6>=6.6
+PySide6>=6.8
 
 # Tests only: tests/test_qtui_preview.py writes its test images with it, and
 # skips without it. The app decodes images with Qt and never imports it.

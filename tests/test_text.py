@@ -19,6 +19,8 @@ The two that matter are:
 
 from __future__ import annotations
 
+import sys
+
 import pytest
 
 from fbposter import text
@@ -161,22 +163,22 @@ class TestSingleInstance:
     """Second layer. The database claim is what makes a duplicate impossible;
     this stops two apps fighting over Chrome and the keep-awake request."""
 
-    def test_the_first_holder_gets_it(self):
+    def test_the_first_holder_gets_it(self, tmp_path):
         from fbposter.single import SingleInstance
 
-        first = SingleInstance(r"Global\FBPosterTest.First")
+        first = SingleInstance(r"Global\FBPosterTest.First", directory=tmp_path)
         try:
             assert first.acquired
         finally:
             first.release()
 
-    def test_a_second_holder_of_the_same_name_is_refused(self):
+    def test_a_second_holder_of_the_same_name_is_refused(self, tmp_path):
         from fbposter.single import SingleInstance
 
-        first = SingleInstance(r"Global\FBPosterTest.Contended")
+        first = SingleInstance(r"Global\FBPosterTest.Contended", directory=tmp_path)
         try:
             assert first.acquired
-            second = SingleInstance(r"Global\FBPosterTest.Contended")
+            second = SingleInstance(r"Global\FBPosterTest.Contended", directory=tmp_path)
             try:
                 assert not second.acquired, "two instances both think they are alone"
             finally:
@@ -184,21 +186,35 @@ class TestSingleInstance:
         finally:
             first.release()
 
-    def test_releasing_lets_the_next_one_in(self):
+    def test_releasing_lets_the_next_one_in(self, tmp_path):
         from fbposter.single import SingleInstance
 
-        first = SingleInstance(r"Global\FBPosterTest.Recycled")
+        first = SingleInstance(r"Global\FBPosterTest.Recycled", directory=tmp_path)
         assert first.acquired
         first.release()
-        second = SingleInstance(r"Global\FBPosterTest.Recycled")
+        second = SingleInstance(r"Global\FBPosterTest.Recycled", directory=tmp_path)
         try:
             assert second.acquired
         finally:
             second.release()
 
-    def test_release_is_safe_to_call_twice(self):
+    @pytest.mark.skipif(sys.platform != "darwin", reason="the Mac's lock file")
+    def test_on_a_mac_the_lock_lives_in_the_data_folder_not_tmp(self, monkeypatch, tmp_path):
+        """/tmp is emptied of files untouched for three days, lock or no lock."""
+        from fbposter import config
         from fbposter.single import SingleInstance
 
-        lock = SingleInstance(r"Global\FBPosterTest.DoubleRelease")
+        monkeypatch.setattr(config, "MAC_DATA_DIR", tmp_path / "FBAutomation")
+        lock = SingleInstance(r"Global\FBPosterTest.DataFolder")
+        try:
+            assert lock.acquired
+            assert (tmp_path / "FBAutomation" / "Global_FBPosterTest.DataFolder.lock").exists()
+        finally:
+            lock.release()
+
+    def test_release_is_safe_to_call_twice(self, tmp_path):
+        from fbposter.single import SingleInstance
+
+        lock = SingleInstance(r"Global\FBPosterTest.DoubleRelease", directory=tmp_path)
         lock.release()
         lock.release()

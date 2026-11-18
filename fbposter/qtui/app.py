@@ -14,7 +14,7 @@ import time
 from datetime import datetime, timedelta
 
 import shiboken6
-from PySide6.QtCore import QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QFont, QIcon
 from PySide6.QtWidgets import (
     QApplication,
@@ -178,6 +178,16 @@ class App(QMainWindow):
         # unless it adds one -- and then it passes a stub here, or detaches the
         # worker before closing, since a real dialog would hang the suite.
         self._confirm_close = confirm_close if confirm_close is not None else ask_before_closing
+        # On a Mac the red button hides the window and the posting goes on, as
+        # Mail does; quitting (the app menu, the Dock, Cmd+Q) is what stops it
+        # (the user's choice, 2026-11-18). Off by default: run() switches it
+        # on there, so every window the suite builds closes the old way.
+        self.hide_on_close = False
+        # True while a quit is going through closeEvent (`_on_quit`).
+        self._quitting = False
+        # True once the red button has hidden the window, so a click on the
+        # Dock icon brings back only what it hid.
+        self._hidden_by_close = False
         self.worker: PostingWorker | None = None
         self.worker_events: "queue.Queue" = queue.Queue()
         self.group_namer = group_namer if group_namer is not None else LiveGroupNamer()
@@ -1142,9 +1152,22 @@ class App(QMainWindow):
         daily repeat set up and then closed away simply never ran again, with
         nothing on screen to say so. Only asked when something is actually
         waiting -- an empty queue closes without a word.
+
+        On a Mac (`hide_on_close`) the red button only hides the window and
+        nothing stops; only a quit (`_on_quit`) comes past here.
         """
+        if self.hide_on_close and not self._quitting:
+            event.ignore()
+            self.hide()
+            self._hidden_by_close = True
+            log.info("Window closed to the Dock; posting goes on.")
+            return
         if self.worker is not None:
             waiting = self.unfinished_work()
+            if waiting is not None and self.hide_on_close and not self.isVisible():
+                # Quit from the Dock with the window closed to it: the
+                # question needs its window. The user just asked to quit.
+                self.show_again()
             if waiting is not None and not self._confirm_close(self, waiting):
                 event.ignore()
                 return
@@ -1167,6 +1190,62 @@ class App(QMainWindow):
             pass
         super().closeEvent(event)
 
+    # -- a Mac: closed to the Dock, quit from the menu ---------------------------
+    def show_again(self) -> None:
+        """Bring back the window the red button hid. Only ever because the user
+        clicked the app (its Dock icon, or opened it again) or asked to quit."""
+        self._hidden_by_close = False
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+    def on_application_state(self, state) -> None:
+        """A click on the Dock icon reaches Qt as the app turning active."""
+        if state == Qt.ApplicationActive and self._hidden_by_close:
+            self.show_again()
+
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802 - Qt's name
+        if event.type() == QEvent.Quit and self.hide_on_close:
+            return self._on_quit(event)
+        return super().eventFilter(watched, event)
+
+    def _on_quit(self, event) -> bool:
+        """Cmd+Q, the app menu's Quit, the Dock's Quit and logging out all send
+        the application a Quit. Closing runs closeEvent's whole path: it asks
+        when posts are waiting, stops the worker and closes Chrome. Turned
+        down, the quit is called off: an event left unaccepted tells macOS not
+        to quit. True means handled here."""
+        self._quitting = True
+        if self.close():
+            return False  # closed: let Qt go on and quit
+        self._quitting = False
+        event.ignore()
+        return True
+
+
+def close_question(waiting: str, mac: bool) -> dict[str, str]:
+    """The words of the question before posting stops. Pure, for the tests.
+
+    On a Mac it is asked on quitting, not on the red button, which only
+    closes the window to the Dock.
+    """
+    if mac:
+        return {
+            "title": "Posting stops when the app quits",
+            "detail": f"You have {waiting}. None of it will go out until you open the app again.",
+            "stay": "Don't quit",
+            "go": "Quit anyway",
+        }
+    return {
+        "title": "Posting stops when this closes",
+        "detail": (
+            f"You have {waiting}. None of it will go out until you open the app "
+            "again, because the scheduler runs in this window, not in the background."
+        ),
+        "stay": "Leave it open",
+        "go": "Close anyway",
+    }
+
 
 def ask_before_closing(parent, waiting: str) -> bool:
     """The one dialog the app raises of its own accord, and why it is allowed.
@@ -1177,22 +1256,67 @@ def ask_before_closing(parent, waiting: str) -> bool:
     the app already has focus and the user is looking straight at it. Same
     reasoning as the media file picker in Compose.
     """
+    words = close_question(waiting, mac=config.IS_MAC)
     box = QMessageBox(parent)
     box.setIcon(QMessageBox.Warning)
-    box.setWindowTitle("Posting stops when this closes")
+    box.setWindowTitle(words["title"])
     box.setText("Nothing is posted while the app is shut.")
-    box.setInformativeText(
-        f"You have {waiting}. None of it will go out until you open the app "
-        "again, because the scheduler runs in this window, not in the background."
-    )
-    stay = box.addButton("Leave it open", QMessageBox.RejectRole)
-    go = box.addButton("Close anyway", QMessageBox.AcceptRole)
+    box.setInformativeText(words["detail"])
+    stay = box.addButton(words["stay"], QMessageBox.RejectRole)
+    go = box.addButton(words["go"], QMessageBox.AcceptRole)
     box.setDefaultButton(stay)
     box.exec()
     # Positively "they chose to close", not "they did not choose to stay":
     # Escape and the title-bar X both leave clickedButton() at the reject
     # button or None, and either way the window should stay open.
     return box.clickedButton() is go
+
+
+def mac_menu_bar(window: "App"):
+    """The Mac's menu bar, along the top of the screen.
+
+    The app menu (named after the app) gets Settings... with Cmd+comma, where a
+    Mac user looks for it, and Quit, which takes the quit path (`_on_quit`).
+    Hide, Hide Others and Services are the Mac's own. A Window menu has
+    Minimize (Cmd+M) and the main window, which brings it back once it has
+    been closed to the Dock. Qt moves Settings and Quit into the app menu by
+    their roles.
+    """
+    from PySide6.QtGui import QAction, QKeySequence
+    from PySide6.QtWidgets import QMenuBar
+
+    bar = QMenuBar(None)  # no parent: the one menu bar the Mac shows
+    menu = bar.addMenu("Window")
+
+    settings = QAction("Settings…", bar)
+    settings.setMenuRole(QAction.PreferencesRole)
+    settings.setShortcut(QKeySequence.Preferences)
+
+    def open_settings() -> None:
+        window.show_again()
+        window.show_view("settings")
+
+    settings.triggered.connect(open_settings)
+    menu.addAction(settings)
+
+    quit_app = QAction("Quit", bar)
+    quit_app.setMenuRole(QAction.QuitRole)
+    quit_app.setShortcut(QKeySequence.Quit)
+    quit_app.triggered.connect(QApplication.quit)
+    menu.addAction(quit_app)
+
+    minimize = QAction("Minimize", bar)
+    minimize.setMenuRole(QAction.NoRole)
+    minimize.setShortcut(QKeySequence("Ctrl+M"))  # Ctrl is Cmd on a Mac
+    minimize.triggered.connect(window.showMinimized)
+    menu.addAction(minimize)
+    menu.addSeparator()
+
+    main = QAction(window.windowTitle() or APP_TITLE, bar)
+    main.setMenuRole(QAction.NoRole)
+    main.triggered.connect(window.show_again)
+    menu.addAction(main)
+    return bar
 
 
 # Where the user finds a running app's window: the Dock on a Mac.
@@ -1233,6 +1357,12 @@ def run() -> int:
 
     theme.activate()
     theme.load_fonts()
+    if config.IS_MAC:
+        # Light only (fbposter/qtui/CLAUDE.md). The stylesheet paints the
+        # window, but message boxes, menus and the file panel are the Mac's
+        # own and would turn dark with the Mac's dark mode; this keeps the
+        # whole app light, as a Mac app that has only a light look does.
+        application.styleHints().setColorScheme(Qt.ColorScheme.Light)
     # The style before the stylesheet: the stylesheet wraps whatever style is
     # installed when it is set.
     application.setStyle(AppStyle())
@@ -1260,6 +1390,17 @@ def run() -> int:
         # The Mac stays awake while the app is open, never longer: caffeinate
         # ends by itself with this process (the user's choice, 2026-11-12).
         window._keep_awake = macos.keep_awake_while_running()
+        # And at full speed while its window is closed to the Dock: App Nap
+        # would otherwise slow the timers and the worker (macos.keep_running).
+        macos.keep_running()
+        # The red button closes to the Dock, quitting stops the posting, and a
+        # click on the Dock icon brings the window back (the user's choice,
+        # 2026-11-18). The window watches for the quit itself.
+        window.hide_on_close = True
+        application.setQuitOnLastWindowClosed(False)
+        application.installEventFilter(window)
+        application.applicationStateChanged.connect(window.on_application_state)
+        window._menu_bar = mac_menu_bar(window)
     # Maximised, not full screen: the title bar and the taskbar stay (the
     # user's choice, 2026-11-01). Un-maximised it falls back to WINDOW_DEFAULT.
     window.showMaximized()

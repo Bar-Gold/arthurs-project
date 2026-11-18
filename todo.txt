@@ -9,3 +9,14 @@ Check about how chrome apears in mac
 make logs clearer (internet connection for example)
 remove groups that the user not realy in (pedning)
 see shahar's logs in 2 days
+Mac: sign and notarise the app (needs an Apple Developer account, $99 a year), then the warning on install goes away
+Mac: modern start-at-login (SMAppService), once the app is signed
+Mac: an uninstaller that also removes the start-at-login item (and keeps the data, as Windows does)
+Mac: a Mac notification when a post fails while the window is closed
+Remember the window's size and place
+Auto-update: the app finds and installs new versions by itself
+An About box with the version number
+A bigger app icon (1024 px; the source app.png is only 256 px)
+Mac: a start-at-login choice inside the installer, as Windows has
+Mac: check over a few hours that the hidden Chrome is not slowed by App Nap (Activity Monitor, App Nap column)
+Mac: an Intel build, if a client ever has an Intel Mac

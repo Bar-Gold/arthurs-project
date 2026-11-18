@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller build for the client .exe.
+"""PyInstaller build for the client app: the .exe on Windows, the .app on a Mac.
 
 One-folder, not one-file, and that is a decision rather than a default. The
 bundle carries Playwright's driver -- `node.exe` alone is 92MB -- plus Qt, and
@@ -162,5 +162,15 @@ if MAC:
             "LSMinimumSystemVersion": "12.0",
             # Not a document app: one window, opened from the Dock.
             "LSMultipleInstancesProhibited": True,
+            # The build number beside the release number; most Mac tools and
+            # the Installer's own version check read this one.
+            "CFBundleVersion": os.environ.get("FBPOSTER_VERSION", "0"),
+            # The app's normal state is its window closed to the Dock, posting
+            # on a timer: App Nap would slow exactly that (macos.keep_running
+            # asks the same while it runs).
+            "LSAppNapIsDisabled": True,
+            # Light only (fbposter/qtui/CLAUDE.md), the Mac's own parts too.
+            "NSRequiresAquaSystemAppearance": True,
+            "LSApplicationCategoryType": "public.app-category.productivity",
         },
     )

@@ -15,10 +15,13 @@ A Windows named mutex rather than a lock file, because the kernel drops it when
 the process ends however it ends. A lock file left behind by a crash would tell
 the user their app is already running when it is not.
 
-On a Mac the same promise comes from `flock` on a file in /tmp: it is the lock,
-not the file, that says "running", and macOS drops the lock when the process
-ends however it ends. The file left behind holds nothing. /tmp is shared by
-every account on the Mac, like the "Global" names on Windows.
+On a Mac the same promise comes from `flock` on a file in the app's data folder
+(`~/Library/Application Support/FBAutomation/`): it is the lock, not the file,
+that says "running", and macOS drops the lock when the process ends however it
+ends. The file left behind holds nothing. It used to be in /tmp, which macOS
+empties of files nobody has touched for three days (`periodic`), so a lock held
+for longer could be deleted and a second copy start. One per account, as the
+data folder is.
 """
 
 from __future__ import annotations
@@ -27,6 +30,7 @@ import ctypes
 import re
 import sys
 from ctypes import wintypes
+from pathlib import Path
 
 # One name per machine. Not per user: two accounts sharing C:\FBAutomation
 # would share the database too.
@@ -43,8 +47,10 @@ class SingleInstance:
     database claim still holds the line.
     """
 
-    def __init__(self, name: str = MUTEX_NAME) -> None:
+    def __init__(self, name: str = MUTEX_NAME, directory: Path | None = None) -> None:
         self.name = name
+        # Where a Mac keeps the lock file; the data folder unless a test says.
+        self.directory = directory
         self._handle = None
         self.acquired = self._acquire()
 
@@ -75,10 +81,13 @@ class SingleInstance:
         import fcntl
         import os
 
+        from . import config
+
         safe = re.sub(r"[^A-Za-z0-9._-]+", "_", self.name)
-        path = os.path.join("/tmp", f"{safe}.lock")
+        folder = self.directory or config.MAC_DATA_DIR
         try:
-            handle = os.open(path, os.O_RDWR | os.O_CREAT, 0o666)
+            folder.mkdir(parents=True, exist_ok=True)
+            handle = os.open(folder / f"{safe}.lock", os.O_RDWR | os.O_CREAT, 0o600)
         except OSError:
             return True  # could not lock at all; do not block the user
         try:

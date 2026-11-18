@@ -220,6 +220,35 @@ class TestPowerOnAMac:
         macos.keep_awake_while_running(1234, popen=lambda cmd, **k: started.append(cmd))
         assert started == [["caffeinate", "-i", "-w", "1234"]]
 
+    def test_app_nap_is_held_off_without_holding_off_sleep(self, monkeypatch):
+        """caffeinate keeps the Mac awake; this keeps the hidden app at speed.
+        Sleep stays caffeinate's, so the activity must allow idle sleep."""
+        monkeypatch.setattr(macos, "_activity", None)
+        sent = []
+
+        class FakeObjc:
+            def objc_getClass(self, name):
+                return name
+
+        def send(objc, restype, receiver, selector, *args, argtypes=()):
+            sent.append((selector, args))
+            return 77 if selector == b"retain" else 1
+
+        assert macos.keep_running(objc_loader=FakeObjc, send=send) == 77
+        begin = [args for sel, args in sent if sel == b"beginActivityWithOptions:reason:"]
+        assert begin and begin[0][0] == macos.NS_ACTIVITY_USER_INITIATED_ALLOWING_IDLE_SYSTEM_SLEEP
+        assert not begin[0][0] & (1 << 20), "NSActivityIdleSystemSleepDisabled is caffeinate's job"
+        assert (b"retain", ()) in sent, "an activity not kept ends at once"
+        assert sent[-1][0] == b"drain"
+        # Asked again, the one it holds: never a second activity.
+        assert macos.keep_running(objc_loader=FakeObjc, send=send) == 77
+        assert sum(sel == b"beginActivityWithOptions:reason:" for sel, _ in sent) == 1
+        monkeypatch.setattr(macos, "_activity", None)
+
+    def test_app_nap_is_nothing_where_there_is_no_mac(self, monkeypatch):
+        monkeypatch.setattr(macos, "_activity", None)
+        assert macos.keep_running(objc_loader=lambda: None) is None
+
     @mac_only
     def test_the_per_batch_blocker_holds_nothing_on_a_mac(self):
         assert power.SleepBlocker().available is False
@@ -232,6 +261,8 @@ class TestStartAtLoginOnAMac:
         assert data["Label"] == always_on.LAUNCH_AGENT_LABEL
         assert data["ProgramArguments"] == ["/x/app", "start"]
         assert data["RunAtLoad"] is True and data["KeepAlive"] is False
+        # Named after the app in System Settings, Login Items.
+        assert data["AssociatedBundleIdentifiers"] == [always_on.LAUNCH_AGENT_LABEL]
 
     def test_on_and_off(self, tmp_path):
         agent = tmp_path / "LaunchAgents" / "x.plist"

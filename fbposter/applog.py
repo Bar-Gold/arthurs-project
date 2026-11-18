@@ -10,7 +10,9 @@ traceback.
 
 It is capped so it can never fill a client's disk: `MAX_BYTES` a file, and
 `BACKUPS` older files kept beside it, the oldest dropped as a new one starts.
-That is 8 MB at most, in `C:\\FBAutomation\\logs`, beside the database.
+That is 8 MB at most, in `C:\\FBAutomation\\logs` beside the database on
+Windows, and on a Mac in `~/Library/Logs/FBAutomation`, the Mac's own place for
+an app's logs, which Console.app lists by itself.
 
 Only `run()` turns it on. A window the suite builds writes no log, and nothing
 is printed either: the package's logger has a `NullHandler` (`__init__.py`),
@@ -45,9 +47,12 @@ _previous_hooks: tuple | None = None
 
 
 def log_dir() -> Path:
-    """Beside the database, where the client's other data is."""
+    """Beside the database on Windows, where the client's other data is. On a
+    Mac, in ~/Library/Logs, where Mac apps keep theirs."""
     from . import config
 
+    if config.IS_MAC:
+        return Path.home() / "Library" / "Logs" / "FBAutomation"
     return config.database_path().parent / LOG_DIRNAME
 
 
@@ -77,11 +82,7 @@ def start(directory: Path | None = None) -> Path | None:
     logger.setLevel(logging.INFO)
     _handler = handler
     _catch_crashes(logger)
-    logger.info(
-        "App started (%s), Windows %s.",
-        _build(),
-        platform.version(),
-    )
+    logger.info("App started (%s), %s.", _build(), system_name())
     return Path(handler.baseFilename)
 
 
@@ -123,6 +124,15 @@ def _catch_crashes(logger: logging.Logger) -> None:
         previous_thread(args)
 
     threading.excepthook = on_thread
+
+
+def system_name() -> str:
+    """The system and its version, as a person names it: "macOS 13.6.1" or
+    "Windows 10.0.19045". `platform.version()` on a Mac is the Darwin kernel's
+    own long string, which says nothing useful on a support call."""
+    if sys.platform == "darwin":
+        return f"macOS {platform.mac_ver()[0] or platform.release()}"
+    return f"Windows {platform.version()}"
 
 
 def _build() -> str:
